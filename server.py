@@ -1182,6 +1182,22 @@ def admin_dashboard():
         </div>
       </div>
 
+      <!-- UI Confirmation Modal (Confirm / Cancel) -->
+      <div id="confirm-modal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(15,23,42,0.65); backdrop-filter:blur(3px); z-index:10001; justify-content:center; align-items:center; padding:16px;">
+        <div style="background:white; border-radius:12px; padding:24px; max-width:440px; width:100%; box-shadow:0 20px 25px -5px rgba(0,0,0,0.25), 0 8px 10px -6px rgba(0,0,0,0.1); border:1px solid #cbd5e1;">
+          <h3 id="confirm-modal-title" style="margin-top:0; color:#0f172a; font-size:1.15rem; display:flex; align-items:center; gap:8px;">
+            ⚠️ Confirm Action
+          </h3>
+          <p id="confirm-modal-msg" style="color:#475569; font-size:0.92rem; line-height:1.5; margin:12px 0 24px 0;">
+            Are you sure you want to proceed?
+          </p>
+          <div style="display:flex; justify-content:flex-end; gap:10px;">
+            <button type="button" id="confirm-modal-btn-cancel" class="btn" style="background:#f1f5f9; color:#475569; border:1px solid #cbd5e1; font-weight:600; padding:9px 18px; border-radius:6px; font-size:0.9rem; cursor:pointer;">Cancel</button>
+            <button type="button" id="confirm-modal-btn-confirm" class="btn btn-danger" style="font-weight:600; padding:9px 20px; border-radius:6px; font-size:0.9rem; cursor:pointer;">Confirm</button>
+          </div>
+        </div>
+      </div>
+
       <script>
         let fullHierarchyRows = [];
 
@@ -1402,10 +1418,55 @@ def admin_dashboard():
           }
         }
 
+        function showConfirmModal(title, message, confirmBtnText = 'Confirm', confirmBtnColor = '#dc2626') {
+          return new Promise((resolve) => {
+            const modal = document.getElementById('confirm-modal');
+            const titleEl = document.getElementById('confirm-modal-title');
+            const msgEl = document.getElementById('confirm-modal-msg');
+            const confirmBtn = document.getElementById('confirm-modal-btn-confirm');
+            const cancelBtn = document.getElementById('confirm-modal-btn-cancel');
+
+            titleEl.innerHTML = title;
+            msgEl.innerText = message;
+            confirmBtn.innerText = confirmBtnText;
+            confirmBtn.style.background = confirmBtnColor;
+
+            modal.style.display = 'flex';
+
+            const cleanup = () => {
+              modal.style.display = 'none';
+              confirmBtn.removeEventListener('click', onConfirm);
+              cancelBtn.removeEventListener('click', onCancel);
+              modal.removeEventListener('click', onBackdrop);
+            };
+            const onConfirm = () => {
+              cleanup();
+              resolve(true);
+            };
+            const onCancel = () => {
+              cleanup();
+              resolve(false);
+            };
+            const onBackdrop = (e) => {
+              if (e.target === modal) onCancel();
+            };
+
+            confirmBtn.addEventListener('click', onConfirm);
+            cancelBtn.addEventListener('click', onCancel);
+            modal.addEventListener('click', onBackdrop);
+          });
+        }
+
         async function deleteSelectedOlts() {
           const checked = document.querySelectorAll('#hierarchy-table-body .row-cb:checked');
           if (checked.length === 0) return;
-          if (!confirm(`Are you sure you want to delete ${checked.length} selected OLT(s)? This cannot be undone.`)) return;
+          const confirmed = await showConfirmModal(
+            '🗑️ Confirm Bulk Deletion',
+            `Are you sure you want to delete ${checked.length} selected OLT(s)? This action cannot be undone.`,
+            'Confirm Delete',
+            '#dc2626'
+          );
+          if (!confirmed) return;
 
           const items = [];
           checked.forEach(cb => {
@@ -1475,6 +1536,15 @@ def admin_dashboard():
 
         async function saveOltModal(e) {
           e.preventDefault();
+          const isEdit = !!document.getElementById('modal-old-olt').value.trim();
+          const confirmTitle = isEdit ? '✏️ Confirm Save Edit' : '➕ Confirm Add OLT';
+          const confirmMsg = isEdit 
+            ? 'Are you sure you want to save the changes to this OLT node?' 
+            : 'Are you sure you want to add this new OLT node?';
+
+          const confirmed = await showConfirmModal(confirmTitle, confirmMsg, 'Confirm & Save', '#16a34a');
+          if (!confirmed) return;
+
           const oltTypeVal = document.getElementById('modal-ports').value;
           const portCnt = oltTypeVal.includes('16') ? 16 : (oltTypeVal.includes('32') ? 32 : 8);
           const payload = {
@@ -1511,7 +1581,14 @@ def admin_dashboard():
           const c = decodeURIComponent(encC);
           const rt = decodeURIComponent(encRt);
           const olt = decodeURIComponent(encOlt);
-          if (!confirm(`Are you sure you want to delete OLT "${olt}" from ${c} (${rt})?`)) return;
+          const confirmed = await showConfirmModal(
+            '🗑️ Confirm Deletion',
+            `Are you sure you want to delete OLT "${olt}" from ${c} (${rt})? This action cannot be undone.`,
+            'Confirm Delete',
+            '#dc2626'
+          );
+          if (!confirmed) return;
+
           try {
             const res = await fetch('/api/hierarchy/olt', {
               method: 'DELETE',
@@ -1640,7 +1717,13 @@ def admin_dashboard():
         }
 
         async function deleteUser(u) {
-          if (!confirm('Delete user ' + u + '?')) return;
+          const confirmed = await showConfirmModal(
+            '🗑️ Confirm User Deletion',
+            `Are you sure you want to delete surveyor user "${u}"?`,
+            'Confirm Delete',
+            '#dc2626'
+          );
+          if (!confirmed) return;
           await fetch('/api/users/' + u, { method: 'DELETE' });
           fetchUsers();
         }
