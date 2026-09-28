@@ -318,8 +318,10 @@ const COLOR_CODES_BY_RATIO = {
 };
 ```
 
-### 7.3 High-Precision Geolocation Polling
-When a technician enters a KSEB Post or Enclosure, `app.js` queries the browser Geolocation API with high accuracy:
+### 7.3 High-Precision Geolocation Polling (Strict On-Demand Triggering)
+GPS coordinate acquisition is strictly **on-demand** upon clicking the `[📍 GPS]` button (or map recenter target). The system intentionally **does not** query GPS automatically on page load or refresh, preventing battery drain, unwanted coordinate overrides, and device permission prompts when simply reviewing records.
+
+When triggered, `app.js` runs a multi-sample satellite convergence loop with high accuracy:
 
 ```javascript
 navigator.geolocation.getCurrentPosition(

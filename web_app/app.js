@@ -2058,7 +2058,7 @@ document.addEventListener('DOMContentLoaded', () => {
   updateRecordsBadge();
   updateSyncUI();
   checkServerConnection();
-  captureGPS(); // Automatically attempt GPS lock on app launch
+  // GPS is strictly manual / on-demand: only triggered when surveyor taps the "📍 GPS" button
   
   // Smart Lightweight Heartbeat: Periodic background check (every 20 seconds, active tab only)
   setInterval(() => {
