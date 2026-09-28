@@ -14,7 +14,7 @@
 
   <!-- Local Offline Vendor Styles -->
   <link rel="stylesheet" href="vendor/leaflet.css">
-  <link rel="stylesheet" href="style.css?v=27">
+  <link rel="stylesheet" href="style.css?v=28">
 </head>
 <body>
 
@@ -312,10 +312,27 @@
     </div>
   </div>
 
+  <!-- Record Submitted Successfully Confirmation Modal Overlay -->
+  <div id="submit-confirm-modal" class="login-overlay" style="display: none; z-index: 99999;" onclick="if(event.target === this) closeSubmitConfirmModal()">
+    <div class="login-card" style="max-width: 420px; text-align: center; padding: 26px 22px; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2), 0 10px 10px -5px rgba(0, 0, 0, 0.1);">
+      <div style="font-size: 3.2rem; line-height: 1; margin-bottom: 8px;">✅</div>
+      <h2 style="margin: 0 0 4px; font-size: 1.3rem; font-weight: 700; color: #0f9d58;">Record Submitted Successfully</h2>
+      <p style="font-size: 0.82rem; color: #64748b; margin-bottom: 16px;">The survey record has been recorded and safely saved.</p>
+      
+      <div id="submit-confirm-details" style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 14px; text-align: left; font-size: 0.85rem; margin-bottom: 20px; line-height: 1.6;">
+        <!-- Populated dynamically via showSubmitConfirmModal() -->
+      </div>
+      
+      <button type="button" id="btn-submit-confirm-ok" onclick="closeSubmitConfirmModal()" class="btn-add-row" style="margin-top: 0; width: 100%; padding: 12px; font-size: 1rem; font-weight: 600; background: #0f9d58; justify-content: center;">
+        ✓ OK / Enter Next Point
+      </button>
+    </div>
+  </div>
+
   <!-- Local Offline Vendor Scripts -->
   <script src="vendor/leaflet.js"></script>
   <script src="vendor/xlsx.full.min.js"></script>
   <script src="preload_data.js"></script>
-  <script src="app.js?v=27"></script>
+  <script src="app.js?v=28"></script>
 </body>
 </html>

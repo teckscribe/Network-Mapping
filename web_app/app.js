@@ -1093,7 +1093,8 @@ function saveRecord() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
   updateRecordsBadge();
   updateSyncUI();
-  showToast('Saved locally: ' + eid);
+  showToast('Record Submitted Successfully');
+  showSubmitConfirmModal(entry);
 
   // Clear pole-specific inputs
   postInput.value = '';
@@ -1110,6 +1111,69 @@ function saveRecord() {
   // Trigger silent background sync if server is reachable
   syncWithServer(true);
 }
+
+// Confirmation Message Modal
+function showSubmitConfirmModal(entry) {
+  const modal = document.getElementById('submit-confirm-modal');
+  const detailsEl = document.getElementById('submit-confirm-details');
+  if (!modal || !detailsEl) return;
+
+  const postNo = entry["KSEB Post Number"] || '-';
+  const encId = entry["Enclosure ID"] || '-';
+  const splitInfo = `${entry["Splitter ID"] || '-'} (${entry["Splitter Ratio"] || '-'})`;
+  const nodeInfo = `${entry["OLT/Node  Name"] || '-'} [Port ${entry["Port Number"] || '-'}]`;
+  const centerInfo = entry["Center"] || '-';
+  const custCount = entry["No: Of Customer Connected"] || 0;
+  const timeStr = entry["Date & Time"] || '';
+
+  detailsEl.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+      <span style="color:#64748b;">KSEB Post No:</span>
+      <strong style="color:#0f172a; font-size:1.05rem;">${postNo}</strong>
+    </div>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+      <span style="color:#64748b;">Enclosure ID:</span>
+      <strong style="color:#0284c7; font-family:monospace; font-size:0.95rem;">${encId}</strong>
+    </div>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+      <span style="color:#64748b;">Splitter ID:</span>
+      <strong style="color:#334155;">${splitInfo}</strong>
+    </div>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+      <span style="color:#64748b;">Center / Node:</span>
+      <span style="color:#334155; font-size:0.83rem;">${centerInfo} • ${nodeInfo}</span>
+    </div>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+      <span style="color:#64748b;">Connected Customers:</span>
+      <strong style="color:#10b981; font-size:0.95rem;">${custCount}</strong>
+    </div>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; padding-top:6px; border-top:1px dashed #cbd5e1; font-size:0.75rem;">
+      <span style="color:#64748b;">Survey Time:</span>
+      <span style="color:#64748b; font-family:monospace;">${timeStr}</span>
+    </div>
+  `;
+
+  modal.style.display = 'flex';
+  const okBtn = document.getElementById('btn-submit-confirm-ok');
+  if (okBtn) okBtn.focus();
+}
+
+function closeSubmitConfirmModal() {
+  const modal = document.getElementById('submit-confirm-modal');
+  if (modal) modal.style.display = 'none';
+  if (postInput) postInput.focus();
+}
+
+// Allow Enter key or Escape to dismiss confirmation modal
+document.addEventListener('keydown', (e) => {
+  const modal = document.getElementById('submit-confirm-modal');
+  if (modal && modal.style.display === 'flex') {
+    if (e.key === 'Enter' || e.key === 'Escape') {
+      e.preventDefault();
+      closeSubmitConfirmModal();
+    }
+  }
+});
 
 function updateRecordsBadge() {
   if (recordsBadge) recordsBadge.innerText = records.length;
