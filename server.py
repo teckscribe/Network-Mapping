@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Union
 
 # Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -420,8 +420,8 @@ class UserCreateModel(BaseModel):
     username: str
     password: str
     full_name: str
-    assigned_center: str
-    assigned_region: Optional[str] = "Thrissur"
+    assigned_center: Union[str, List[str]]
+    assigned_region: Optional[Union[str, List[str]]] = "Thrissur"
     role: Optional[str] = "field_technician"
 
 class SurveyRecordModel(BaseModel):
@@ -486,14 +486,21 @@ def login(req: LoginRequest):
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
 
+    raw_center = user["assigned_center"] or "ALL"
+    raw_region = user["assigned_region"] or "Thrissur"
+    centers_list = [c.strip() for c in raw_center.split(",") if c.strip()]
+    regions_list = [r.strip() for r in raw_region.split(",") if r.strip()]
+
     user_role = normalize_role(user["role"])
     return {
         "status": "success",
         "user": {
             "username": user["username"],
             "full_name": user["full_name"],
-            "assigned_center": user["assigned_center"],
-            "assigned_region": user["assigned_region"],
+            "assigned_center": raw_center,
+            "assigned_centers": centers_list,
+            "assigned_region": raw_region,
+            "assigned_regions": regions_list,
             "role": user_role,
             "role_label": VALID_ROLES.get(user_role, "Field Technician")
         }
@@ -510,7 +517,9 @@ def get_users():
             "username": u["username"],
             "full_name": u["full_name"],
             "assigned_center": u["assigned_center"],
+            "assigned_centers": [c.strip() for c in (u["assigned_center"] or "").split(",") if c.strip()],
             "assigned_region": u["assigned_region"],
+            "assigned_regions": [r.strip() for r in (u["assigned_region"] or "Thrissur").split(",") if r.strip()],
             "role": normalize_role(u["role"]),
             "role_label": VALID_ROLES.get(normalize_role(u["role"]), "Field Technician"),
             "created_at": u["created_at"]
@@ -525,6 +534,23 @@ def create_user(u: UserCreateModel):
     cur = conn.cursor()
     now = datetime.datetime.now().isoformat()
     role_clean = normalize_role(u.role)
+
+    # Normalize assigned_center (support list or comma string)
+    if isinstance(u.assigned_center, list):
+        center_str = ", ".join([c.strip() for c in u.assigned_center if c.strip()])
+    else:
+        center_str = u.assigned_center.strip()
+    if not center_str:
+        center_str = "ALL"
+
+    # Normalize assigned_region (support list or comma string)
+    if isinstance(u.assigned_region, list):
+        region_str = ", ".join([r.strip() for r in u.assigned_region if r.strip()])
+    else:
+        region_str = (u.assigned_region or "Thrissur").strip()
+    if not region_str:
+        region_str = "Thrissur"
+
     try:
         cur.execute("""
         INSERT INTO users (username, password, full_name, assigned_center, assigned_region, role, created_at)
@@ -535,14 +561,14 @@ def create_user(u: UserCreateModel):
             assigned_center=excluded.assigned_center,
             assigned_region=excluded.assigned_region,
             role=excluded.role
-        """, (u.username.strip(), u.password.strip(), u.full_name.strip(), u.assigned_center.strip(), u.assigned_region, role_clean, now))
+        """, (u.username.strip(), u.password.strip(), u.full_name.strip(), center_str, region_str, role_clean, now))
         conn.commit()
     except Exception as e:
         conn.close()
         raise HTTPException(status_code=400, detail=str(e))
     conn.close()
     save_users_to_json()
-    return {"status": "success", "message": f"User {u.username} ({VALID_ROLES.get(role_clean, role_clean)}) saved successfully."}
+    return {"status": "success", "message": f"User {u.username} ({VALID_ROLES.get(role_clean, role_clean)}) saved successfully with charge of: {center_str}."}
 
 @app.delete("/api/users/{username}")
 def delete_user(username: str):
@@ -1602,17 +1628,37 @@ def admin_dashboard():
               <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:4px;">Full Name</label>
               <input type="text" id="new-name" placeholder="Full Name" required style="width:100%;">
             </div>
-            <div style="flex:1; min-width:140px;">
-              <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:4px;">Region</label>
-              <select id="new-region" onchange="onUserRegionChange()" required style="width:100%;">
-                <option value="ALL">ALL Regions</option>
-              </select>
+            <!-- Multi-Region Selector -->
+            <div style="position:relative; flex:1; min-width:150px;">
+              <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:4px;">
+                Assigned Region(s)
+              </label>
+              <button type="button" id="btn-region-picker" onclick="toggleMultiDropdown('region-dropdown-panel')" style="width:100%; text-align:left; background:white; border:1.5px solid #cbd5e1; padding:8px 12px; border-radius:6px; font-size:0.83rem; display:flex; justify-content:space-between; align-items:center; cursor:pointer;">
+                <span id="region-picker-label" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">ALL Regions</span>
+                <span style="font-size:0.75rem; color:#64748b;">▼</span>
+              </button>
+              <div id="region-dropdown-panel" style="display:none; position:absolute; top:100%; left:0; right:0; z-index:1000; background:white; border:1.5px solid #0284c7; border-radius:8px; padding:10px; margin-top:4px; box-shadow:0 10px 25px -5px rgba(0,0,0,0.15); max-height:220px; overflow-y:auto;">
+                <div id="region-checkbox-list"></div>
+              </div>
             </div>
-            <div style="flex:1.2; min-width:180px;">
-              <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:4px;">Assigned Center</label>
-              <select id="new-center" onchange="onUserCenterChange()" required style="width:100%;">
-                <option value="ALL">ALL (Admin / Supervisor)</option>
-              </select>
+
+            <!-- Multi-Center Selector (Charge of Multiple Centers) -->
+            <div style="position:relative; flex:1.4; min-width:210px;">
+              <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:4px;">
+                Assigned Center(s) <span style="font-size:0.7rem; color:#0284c7; font-weight:normal;">(Select 1 or more)</span>
+              </label>
+              <button type="button" id="btn-center-picker" onclick="toggleMultiDropdown('center-dropdown-panel')" style="width:100%; text-align:left; background:white; border:1.5px solid #cbd5e1; padding:8px 12px; border-radius:6px; font-size:0.83rem; display:flex; justify-content:space-between; align-items:center; cursor:pointer;">
+                <span id="center-picker-label" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">ALL (All Network)</span>
+                <span style="font-size:0.75rem; color:#64748b;">▼</span>
+              </button>
+              <div id="center-dropdown-panel" style="display:none; position:absolute; top:100%; left:0; right:0; min-width:280px; z-index:1000; background:white; border:1.5px solid #0284c7; border-radius:8px; padding:10px; margin-top:4px; box-shadow:0 10px 25px -5px rgba(0,0,0,0.15); max-height:280px; overflow-y:auto;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; padding-bottom:6px; border-bottom:1px solid #e2e8f0;">
+                  <input type="text" id="center-search-input" placeholder="🔍 Search centers..." oninput="filterCenterChecklist(this.value)" style="flex:1; padding:4px 8px; font-size:0.78rem; border:1px solid #cbd5e1; border-radius:4px; outline:none;">
+                  <button type="button" onclick="selectAllCenters(true)" style="background:none; border:none; color:#0284c7; font-size:0.75rem; font-weight:700; cursor:pointer; margin-left:8px;">All</button>
+                  <button type="button" onclick="selectAllCenters(false)" style="background:none; border:none; color:#64748b; font-size:0.75rem; font-weight:700; cursor:pointer; margin-left:4px;">None</button>
+                </div>
+                <div id="center-checkbox-list"></div>
+              </div>
             </div>
             <div style="flex:1.5; min-width:200px;">
               <label style="display:block; font-size:0.75rem; font-weight:700; color:#0369a1; margin-bottom:4px;">👤 Role (Defines User Rights)</label>
@@ -1628,6 +1674,11 @@ def admin_dashboard():
               <button type="button" id="btn-cancel-edit-user" onclick="resetUserForm()" class="btn btn-outline" style="display:none;">Cancel</button>
             </div>
           </form>
+          <!-- Active Centers Selected Tags Ribbon -->
+          <div style="margin-top:10px; padding-top:8px; border-top:1px dashed #cbd5e1; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <span style="font-size:0.75rem; font-weight:700; color:#64748b;">Selected Center Coverage:</span>
+            <div id="selected-centers-tags-bar" style="display:flex; flex-wrap:wrap; gap:6px;"></div>
+          </div>
         </div>
 
         <!-- Users Table -->
@@ -2125,84 +2176,281 @@ def admin_dashboard():
           fetchData();
         }
 
-        // Tab 2 User Access Management: Strictly ONLY regions and centers from uploaded Node Master Excel
+        // State for User Multi-Region and Multi-Center selection
+        let selectedUserRegions = new Set(['ALL']);
+        let selectedUserCenters = new Set(['ALL']);
+
+        function toggleMultiDropdown(panelId) {
+          const p = document.getElementById(panelId);
+          if (!p) return;
+          const isShown = (p.style.display === 'block');
+          // Hide both first
+          document.getElementById('region-dropdown-panel').style.display = 'none';
+          document.getElementById('center-dropdown-panel').style.display = 'none';
+          p.style.display = isShown ? 'none' : 'block';
+        }
+
+        // Close dropdown panels on outside click
+        document.addEventListener('click', (e) => {
+          const rPanel = document.getElementById('region-dropdown-panel');
+          const rBtn = document.getElementById('btn-region-picker');
+          const cPanel = document.getElementById('center-dropdown-panel');
+          const cBtn = document.getElementById('btn-center-picker');
+
+          if (rPanel && rBtn && !rPanel.contains(e.target) && !rBtn.contains(e.target)) {
+            rPanel.style.display = 'none';
+          }
+          if (cPanel && cBtn && !cPanel.contains(e.target) && !cBtn.contains(e.target)) {
+            cPanel.style.display = 'none';
+          }
+        });
+
         function populateUserRegionAndCenterDropdowns(preferredRegion = null, preferredCenter = null) {
           const meta = getHierarchyMeta();
-          const regSelect = document.getElementById('new-region');
-          const centerSelect = document.getElementById('new-center');
-          if (!regSelect || !centerSelect) return;
-
-          let curReg = preferredRegion !== null ? preferredRegion : regSelect.value;
-          let curCenter = preferredCenter !== null ? preferredCenter : centerSelect.value;
-
-          if (curCenter && curCenter !== 'ALL' && meta.centerToRegion[curCenter] && (!curReg || curReg === 'ALL')) {
-            curReg = meta.centerToRegion[curCenter];
+          
+          if (preferredRegion !== null) {
+            selectedUserRegions = new Set(
+              String(preferredRegion).split(',').map(s => s.trim()).filter(Boolean)
+            );
           }
-          if (!curReg) curReg = 'ALL';
-          if (!curCenter) curCenter = 'ALL';
+          if (preferredCenter !== null) {
+            selectedUserCenters = new Set(
+              String(preferredCenter).split(',').map(s => s.trim()).filter(Boolean)
+            );
+          }
+          if (selectedUserRegions.size === 0) selectedUserRegions = new Set(['ALL']);
+          if (selectedUserCenters.size === 0) selectedUserCenters = new Set(['ALL']);
 
-          regSelect.innerHTML = '<option value="ALL">ALL Regions</option>';
+          renderRegionCheckboxes(meta);
+          renderCenterCheckboxes(meta);
+          updateUserPickerLabelsAndBadges();
+        }
+
+        function renderRegionCheckboxes(meta) {
+          const container = document.getElementById('region-checkbox-list');
+          if (!container) return;
+          const isAllChecked = selectedUserRegions.has('ALL');
+
+          let html = `
+            <label style="display:flex; align-items:center; gap:8px; padding:4px 0; font-size:0.82rem; cursor:pointer; font-weight:700; border-bottom:1px solid #f1f5f9; margin-bottom:4px;">
+              <input type="checkbox" value="ALL" ${isAllChecked ? 'checked' : ''} onchange="toggleAllRegionsCheckbox(this.checked)">
+              🌐 ALL Regions
+            </label>
+          `;
+
           meta.regions.forEach(reg => {
-            const opt = document.createElement('option');
-            opt.value = reg;
-            opt.innerText = reg;
-            if (reg.toLowerCase() === curReg.toLowerCase()) opt.selected = true;
-            regSelect.appendChild(opt);
+            const checked = isAllChecked || selectedUserRegions.has(reg);
+            html += `
+              <label style="display:flex; align-items:center; gap:8px; padding:3px 0; font-size:0.82rem; cursor:pointer;">
+                <input type="checkbox" class="user-reg-cb" value="${reg}" ${checked ? 'checked' : ''} onchange="onSingleRegionCheckboxChange(this)">
+                <span>${reg}</span>
+              </label>
+            `;
           });
-          if (curReg === 'ALL') regSelect.value = 'ALL';
-
-          updateUserCenterOptions(curReg, curCenter);
+          container.innerHTML = html;
         }
 
-        function updateUserCenterOptions(selectedReg, targetCenter = null) {
+        function toggleAllRegionsCheckbox(checked) {
           const meta = getHierarchyMeta();
-          const centerSelect = document.getElementById('new-center');
-          if (!centerSelect) return;
+          if (checked) {
+            selectedUserRegions = new Set(['ALL']);
+          } else {
+            selectedUserRegions.clear();
+          }
+          renderRegionCheckboxes(meta);
+          renderCenterCheckboxes(meta);
+          updateUserPickerLabelsAndBadges();
+        }
 
-          const prev = targetCenter !== null ? targetCenter : centerSelect.value;
-          centerSelect.innerHTML = '<option value="ALL">ALL (Admin / Supervisor)</option>';
+        function onSingleRegionCheckboxChange(cb) {
+          const meta = getHierarchyMeta();
+          selectedUserRegions.delete('ALL');
+          if (cb.checked) {
+            selectedUserRegions.add(cb.value);
+          } else {
+            selectedUserRegions.delete(cb.value);
+          }
+          if (selectedUserRegions.size === 0) {
+            selectedUserRegions.add('ALL');
+          }
+          renderRegionCheckboxes(meta);
+          renderCenterCheckboxes(meta);
+          updateUserPickerLabelsAndBadges();
+        }
 
-          let centerList = [];
-          if (!selectedReg || selectedReg === 'ALL') {
-            centerList = meta.allCenters;
-          } else if (meta.centersByRegion[selectedReg]) {
-            centerList = Array.from(meta.centersByRegion[selectedReg]).sort();
+        function renderCenterCheckboxes(meta) {
+          const container = document.getElementById('center-checkbox-list');
+          if (!container) return;
+
+          const isAllChecked = selectedUserCenters.has('ALL');
+
+          let html = `
+            <label style="display:flex; align-items:center; gap:8px; padding:4px 0; font-size:0.82rem; cursor:pointer; font-weight:700; border-bottom:1px solid #f1f5f9; margin-bottom:6px;">
+              <input type="checkbox" id="cb-all-centers" value="ALL" ${isAllChecked ? 'checked' : ''} onchange="toggleAllCentersCheckbox(this.checked)">
+              🌐 ALL Centers (All Network Coverage)
+            </label>
+          `;
+
+          // Determine which regions to show
+          let regionsToShow = meta.regions;
+          if (!selectedUserRegions.has('ALL') && selectedUserRegions.size > 0) {
+            regionsToShow = meta.regions.filter(r => selectedUserRegions.has(r));
           }
 
-          centerList.forEach(c => {
-            const opt = document.createElement('option');
-            opt.value = c;
-            opt.innerText = c;
-            if (prev && c.trim().toLowerCase() === prev.trim().toLowerCase()) {
-              opt.selected = true;
-            }
-            centerSelect.appendChild(opt);
+          regionsToShow.forEach(reg => {
+            const centers = meta.centersByRegion[reg] ? Array.from(meta.centersByRegion[reg]).sort() : [];
+            if (centers.length === 0) return;
+
+            html += `
+              <div class="center-region-group" data-region="${reg}" style="margin-top:6px; margin-bottom:4px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; background:#f8fafc; padding:3px 6px; border-radius:4px; font-size:0.75rem; font-weight:700; color:#334155; margin-bottom:4px;">
+                  <span>📍 ${reg} (${centers.length})</span>
+                  <button type="button" onclick="toggleRegionGroupCenters('${reg}')" style="background:none; border:none; color:#0284c7; font-size:0.7rem; cursor:pointer; font-weight:600;">Toggle</button>
+                </div>
+            `;
+
+            centers.forEach(c => {
+              const checked = isAllChecked || selectedUserCenters.has(c);
+              html += `
+                <label class="center-item-label" data-center="${c.toLowerCase()}" style="display:flex; align-items:center; gap:8px; padding:3px 8px; font-size:0.82rem; cursor:pointer;">
+                  <input type="checkbox" class="user-center-cb" data-region="${reg}" value="${c}" ${checked ? 'checked' : ''} onchange="onSingleCenterCheckboxChange(this)">
+                  <span>${c}</span>
+                </label>
+              `;
+            });
+
+            html += `</div>`;
           });
 
-          if (prev && (prev === 'ALL' || centerList.some(c => c.trim().toLowerCase() === prev.trim().toLowerCase()))) {
-            const matched = centerList.find(c => c.trim().toLowerCase() === prev.trim().toLowerCase());
-            centerSelect.value = matched || 'ALL';
+          container.innerHTML = html;
+        }
+
+        function toggleAllCentersCheckbox(checked) {
+          if (checked) {
+            selectedUserCenters = new Set(['ALL']);
           } else {
-            centerSelect.value = 'ALL';
+            selectedUserCenters.clear();
           }
+          const meta = getHierarchyMeta();
+          renderCenterCheckboxes(meta);
+          updateUserPickerLabelsAndBadges();
         }
 
-        function onUserRegionChange() {
-          const selectedReg = document.getElementById('new-region').value;
-          updateUserCenterOptions(selectedReg, 'ALL');
+        function onSingleCenterCheckboxChange(cb) {
+          selectedUserCenters.delete('ALL');
+          const meta = getHierarchyMeta();
+
+          if (cb.checked) {
+            selectedUserCenters.add(cb.value);
+            // Auto add region if not present
+            const reg = cb.dataset.region || meta.centerToRegion[cb.value];
+            if (reg && !selectedUserRegions.has('ALL')) {
+              selectedUserRegions.add(reg);
+              renderRegionCheckboxes(meta);
+            }
+          } else {
+            selectedUserCenters.delete(cb.value);
+          }
+
+          if (selectedUserCenters.size === 0) {
+            selectedUserCenters.add('ALL');
+          }
+
+          const metaNow = getHierarchyMeta();
+          renderCenterCheckboxes(metaNow);
+          updateUserPickerLabelsAndBadges();
         }
 
-        function onUserCenterChange() {
-          const selectedCenter = document.getElementById('new-center').value;
-          const regSelect = document.getElementById('new-region');
-          if (selectedCenter && selectedCenter !== 'ALL') {
-            const meta = getHierarchyMeta();
-            const assignedRegion = meta.centerToRegion[selectedCenter];
-            if (assignedRegion) {
-              regSelect.value = assignedRegion;
-              updateUserCenterOptions(assignedRegion, selectedCenter);
+        function toggleRegionGroupCenters(reg) {
+          const meta = getHierarchyMeta();
+          const centers = meta.centersByRegion[reg] ? Array.from(meta.centersByRegion[reg]) : [];
+          if (centers.length === 0) return;
+
+          selectedUserCenters.delete('ALL');
+          const allInRegSelected = centers.every(c => selectedUserCenters.has(c));
+          
+          if (allInRegSelected) {
+            centers.forEach(c => selectedUserCenters.delete(c));
+          } else {
+            centers.forEach(c => selectedUserCenters.add(c));
+          }
+
+          if (selectedUserCenters.size === 0) selectedUserCenters.add('ALL');
+          renderCenterCheckboxes(meta);
+          updateUserPickerLabelsAndBadges();
+        }
+
+        function selectAllCenters(check) {
+          toggleAllCentersCheckbox(check);
+        }
+
+        function filterCenterChecklist(q) {
+          const filter = (q || '').trim().toLowerCase();
+          const items = document.querySelectorAll('.center-item-label');
+          items.forEach(el => {
+            const name = el.getAttribute('data-center') || '';
+            el.style.display = name.includes(filter) ? 'flex' : 'none';
+          });
+        }
+
+        function updateUserPickerLabelsAndBadges() {
+          const rLabel = document.getElementById('region-picker-label');
+          const cLabel = document.getElementById('center-picker-label');
+          const tagsBar = document.getElementById('selected-centers-tags-bar');
+
+          // Region Label
+          if (rLabel) {
+            if (selectedUserRegions.has('ALL')) {
+              rLabel.innerText = '🌐 ALL Regions';
+            } else if (selectedUserRegions.size === 1) {
+              rLabel.innerText = Array.from(selectedUserRegions)[0];
+            } else {
+              rLabel.innerText = `${selectedUserRegions.size} Regions Selected`;
             }
           }
+
+          // Center Label
+          if (cLabel) {
+            if (selectedUserCenters.has('ALL')) {
+              cLabel.innerText = '🌐 ALL (All Centers in Network)';
+            } else if (selectedUserCenters.size === 1) {
+              cLabel.innerText = Array.from(selectedUserCenters)[0];
+            } else {
+              cLabel.innerText = `${selectedUserCenters.size} Centers Assigned (ACSO Charge)`;
+            }
+          }
+
+          // Render Tags Ribbon
+          if (tagsBar) {
+            tagsBar.innerHTML = '';
+            if (selectedUserCenters.has('ALL')) {
+              tagsBar.innerHTML = '<span class="tag" style="background:#059669; padding:4px 10px; border-radius:14px;">🌐 ALL (Full Network Charge)</span>';
+            } else {
+              selectedUserCenters.forEach(c => {
+                const badge = document.createElement('span');
+                badge.className = 'tag';
+                badge.style.cssText = 'background:#0284c7; padding:3px 9px; border-radius:12px; display:inline-flex; align-items:center; gap:6px; font-size:0.75rem;';
+                badge.innerHTML = `<span>${c}</span> <span onclick="removeSelectedCenterTag('${c}')" style="cursor:pointer; font-weight:bold; font-size:0.85rem;" title="Remove">&times;</span>`;
+                tagsBar.appendChild(badge);
+              });
+              if (selectedUserCenters.size > 1) {
+                const countBadge = document.createElement('span');
+                countBadge.style.cssText = 'font-size:0.75rem; color:#64748b; font-weight:700; align-self:center;';
+                countBadge.innerText = `(${selectedUserCenters.size} Centers in Charge)`;
+                tagsBar.appendChild(countBadge);
+              }
+            }
+          }
+        }
+
+        function removeSelectedCenterTag(c) {
+          selectedUserCenters.delete(c);
+          if (selectedUserCenters.size === 0) {
+            selectedUserCenters.add('ALL');
+          }
+          const meta = getHierarchyMeta();
+          renderCenterCheckboxes(meta);
+          updateUserPickerLabelsAndBadges();
         }
 
         function filterAndRenderFeed() {
@@ -2344,7 +2592,21 @@ def admin_dashboard():
                 <td><strong>${u.username}</strong></td>
                 <td>${u.full_name}</td>
                 <td><span style="background:#f1f5f9; padding:2px 8px; border-radius:4px; font-weight:600; font-size:0.8rem;">${u.assigned_region || 'Thrissur'}</span></td>
-                <td><span class="tag" style="background:#059669;">${u.assigned_center}</span></td>
+                <td>
+                  ${(() => {
+                    const centers = (u.assigned_center || 'ALL').split(',').map(s => s.trim()).filter(Boolean);
+                    if (centers.length === 0 || centers.includes('ALL')) {
+                      return '<span class="tag" style="background:#059669;">ALL (Network)</span>';
+                    }
+                    if (centers.length === 1) {
+                      return `<span class="tag" style="background:#0284c7;">${centers[0]}</span>`;
+                    }
+                    if (centers.length <= 2) {
+                      return centers.map(c => `<span class="tag" style="background:#0284c7; margin-right:3px;">${c}</span>`).join('');
+                    }
+                    return `<span class="tag" style="background:#0284c7;" title="${centers.join(', ')}">🏢 ${centers.length} Centers Charge</span>`;
+                  })()}
+                </td>
                 <td>${badgeHtml}</td>
                 <td style="color:#64748b; font-size:0.8rem; font-family:monospace;">${(u.created_at || '').slice(0, 19).replace('T', ' ')}</td>
                 <td style="text-align:center; white-space:nowrap;">
@@ -2397,14 +2659,24 @@ def admin_dashboard():
 
         async function createUser(e) {
           e.preventDefault();
+          
+          const regionsArr = Array.from(selectedUserRegions);
+          const centersArr = Array.from(selectedUserCenters);
+
+          if (centersArr.length === 0) {
+            alert('Please select at least one assigned center or ALL.');
+            return;
+          }
+
           const u = {
             username: document.getElementById('new-user').value.trim(),
             password: document.getElementById('new-pass').value.trim() || '1234',
             full_name: document.getElementById('new-name').value.trim(),
-            assigned_region: document.getElementById('new-region').value.trim() || 'Thrissur',
-            assigned_center: document.getElementById('new-center').value,
+            assigned_region: regionsArr.includes('ALL') ? 'ALL' : regionsArr.join(', '),
+            assigned_center: centersArr.includes('ALL') ? 'ALL' : centersArr.join(', '),
             role: document.getElementById('new-role').value
           };
+
           try {
             const res = await fetch('/api/users', {
               method: 'POST',

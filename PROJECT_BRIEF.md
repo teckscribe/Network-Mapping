@@ -256,6 +256,19 @@ The system enforces 4 non-overlapping operational roles:
   * A `super_admin` assigned to `THRISSUR NORTH` retains root administrative permissions across all tabs.
   * A `field_technician` assigned to `ALL` can record surveys for any center, but remains blocked from downloading datasets.
 
+### 6.3 Multi-Region & Multi-Center Assignment (ACSO Multi-Center Charge)
+* **The Operational Requirement**: Senior field officers such as ACSOs often oversee multiple network centers across one or more regions (e.g., an ACSO managing both `CHALAKKUDY` and `KODUNGALLUR`).
+* **Admin Portal Assignment (`/admin` Tab 2)**:
+  * Replaced static single-select dropdowns with dynamic, searchable checklist dropdown panels for both **Regions** and **Centers**.
+  * Quick-action toggles: "Select All" and "Clear" allow rapid assignment.
+  * Real-time badges: An active `#selected-centers-tags-bar` displays removable tag chips for every selected center.
+  * Persistence: Multiple centers are stored as canonical comma-separated strings (e.g., `"CHALAKKUDY, KODUNGALLUR"`) in the SQLite database and `users_config.json` backup file. The backend API dynamically delivers both string and parsed array formats (`assigned_centers` and `assigned_regions`).
+* **Field Portal Dynamic Switching (`web_app/app.js`)**:
+  * **Single-Center Users (e.g. Field Technicians)**: If a user is assigned exactly one center, `#center-select` remains securely locked (`disabled = true`) to prevent accidental misallocation of survey entries.
+  * **Multi-Center Users (e.g. Multi-Charge ACSOs)**: When a user has multiple assigned centers, `#center-select` is automatically **unlocked** (`disabled = false`) and populated exclusively with the centers under their jurisdiction. Selecting any center dynamically cascades down to filter the corresponding RT rooms, OLT devices, and regional parameters.
+  * **Global Users (`ALL` / Super Admin)**: Unrestricted access to all network centers across the hierarchy.
+  * **User Ribbon**: Displays `Charge of N Centers` badge when multiple centers are assigned.
+
 ---
 
 # Chapter 7: Field Mobile Web Application (Client-Side Architecture)

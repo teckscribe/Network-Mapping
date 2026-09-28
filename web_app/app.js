@@ -49,7 +49,14 @@ function updateUserBar() {
 
   if (currentUser) {
     nameEl.innerText = currentUser.full_name || currentUser.username;
-    centerEl.innerText = currentUser.assigned_center || 'ALL';
+        const assignedStr = currentUser.assigned_center || 'ALL';
+    const assignedArr = (currentUser.assigned_centers || assignedStr.split(',')).map(s => s.trim()).filter(Boolean);
+    if (assignedArr.length > 1 && !assignedArr.includes('ALL')) {
+      centerEl.innerText = `🏢 ${assignedArr.length} Centers Charge`;
+      centerEl.title = `Assigned Centers: ${assignedArr.join(', ')}`;
+    } else {
+      centerEl.innerText = assignedStr;
+    }
     userBar.style.display = 'flex';
 
     const role = normalizeClientRole(currentUser.role);
@@ -157,7 +164,7 @@ async function handleLogin(e) {
   const offlineUsers = {
     'thrissur_agent': { username: 'thrissur_agent', full_name: 'Thrissur Survey Technician', assigned_center: 'THRISSUR NORTH', assigned_region: 'Thrissur', role: 'field_technician' },
     'tmm_agent': { username: 'tmm_agent', full_name: 'Thathamangalam Survey Technician', assigned_center: 'THATHAMANGALAM', assigned_region: 'Thrissur', role: 'field_technician' },
-    'acso_thrissur': { username: 'acso_thrissur', full_name: 'Thrissur ACSO Officer', assigned_center: 'THRISSUR NORTH', assigned_region: 'Thrissur', role: 'acso' },
+    'acso_thrissur': { username: 'acso_thrissur', full_name: 'Thrissur ACSO Officer', assigned_center: 'THRISSUR NORTH, CHALAKKUDY', assigned_centers: ['THRISSUR NORTH', 'CHALAKKUDY'], assigned_region: 'Thrissur', assigned_regions: ['Thrissur'], role: 'acso' },
     'rcsm_thrissur': { username: 'rcsm_thrissur', full_name: 'Thrissur RCSM Manager', assigned_center: 'THRISSUR NORTH', assigned_region: 'Thrissur', role: 'rcsm' },
     'admin': { username: 'admin', full_name: 'Central Super Administrator', assigned_center: 'ALL', assigned_region: 'ALL', role: 'super_admin' }
   };
@@ -332,17 +339,42 @@ function initDropdowns(preserveSelection = false) {
   centerSelect.innerHTML = '';
   let centers = Object.keys(DEFAULT_PRELOAD.hierarchy);
   
-  // Filter centers based on logged-in user assignment
+  // Filter centers based on logged-in user assignment (supports multiple centers for ACSO)
   if (currentUser && currentUser.assigned_center && currentUser.assigned_center !== 'ALL') {
-    const assigned = currentUser.assigned_center;
-    const match = centers.find(c => c.trim().toLowerCase() === assigned.trim().toLowerCase());
-    if (match) {
-      centers = [match];
-    } else {
-      DEFAULT_PRELOAD.hierarchy[assigned] = {};
-      centers = [assigned];
+    let assignedList = [];
+    if (Array.isArray(currentUser.assigned_centers) && currentUser.assigned_centers.length > 0) {
+      assignedList = currentUser.assigned_centers;
+    } else if (currentUser.assigned_center) {
+      assignedList = currentUser.assigned_center.split(',').map(s => s.trim()).filter(Boolean);
     }
-    centerSelect.disabled = true; // Lock dropdown to assigned center
+
+    if (assignedList.includes('ALL')) {
+      // User has access to ALL centers in network
+      centerSelect.disabled = false;
+    } else if (assignedList.length > 1) {
+      // ACSO or Officer in charge of MULTIPLE centers:
+      // Allow user to drop down and switch between any of their assigned centers!
+      const allHierCenters = Object.keys(DEFAULT_PRELOAD.hierarchy);
+      const filtered = [];
+      assignedList.forEach(a => {
+        const m = allHierCenters.find(c => c.trim().toLowerCase() === a.trim().toLowerCase());
+        if (m && !filtered.includes(m)) filtered.push(m);
+        else if (!filtered.includes(a)) filtered.push(a);
+      });
+      centers = filtered.length > 0 ? filtered : centers;
+      centerSelect.disabled = false; // ACTIVE & SELECTABLE for multiple centers charge!
+    } else if (assignedList.length === 1) {
+      // Single assigned center: locked to that center
+      const assigned = assignedList[0];
+      const match = centers.find(c => c.trim().toLowerCase() === assigned.trim().toLowerCase());
+      if (match) {
+        centers = [match];
+      } else {
+        DEFAULT_PRELOAD.hierarchy[assigned] = {};
+        centers = [assigned];
+      }
+      centerSelect.disabled = true; // Locked to single center
+    }
   } else {
     centerSelect.disabled = false;
   }
