@@ -79,9 +79,10 @@
 
         <!-- Spreadsheet Cells Grid -->
         <div class="gs-grid">
-          <div class="gs-cell-group">
+          <!-- Hidden Region (Auto-defaulted against Center, not visible/editable for user) -->
+          <div class="gs-cell-group" style="display: none;">
             <label class="gs-cell-label" for="region-select">Region</label>
-            <select id="region-select" class="gs-select"></select>
+            <select id="region-select" class="gs-select" disabled></select>
           </div>
 
           <div class="gs-cell-group">

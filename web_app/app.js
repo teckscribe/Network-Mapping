@@ -210,20 +210,26 @@ function updateEnclosureId() {
   enclosureIdPreview.innerText = eid || '---';
 }
 
-function initDropdowns() {
-  // Region
-  if (regionSelect) {
-    regionSelect.innerHTML = '';
-    const regions = DEFAULT_PRELOAD.regions || ["Thrissur", "Palakkad", "Ernakulam", "Malappuram"];
-    regions.forEach(r => {
-      const opt = document.createElement('option');
-      opt.value = r;
-      opt.innerText = r;
-      regionSelect.appendChild(opt);
-    });
-    regionSelect.value = "Thrissur";
+function getRegionForCenter(centerName) {
+  if (!centerName) return "Thrissur";
+  const cData = DEFAULT_PRELOAD && DEFAULT_PRELOAD.hierarchy ? DEFAULT_PRELOAD.hierarchy[centerName] : null;
+  if (cData && typeof cData === 'object') {
+    for (const rt of Object.keys(cData)) {
+      const olts = cData[rt];
+      if (olts && typeof olts === 'object') {
+        for (const oltName of Object.keys(olts)) {
+          const entry = olts[oltName];
+          if (entry && typeof entry === 'object' && entry.region) {
+            return entry.region;
+          }
+        }
+      }
+    }
   }
+  return "Thrissur";
+}
 
+function initDropdowns() {
   // Center
   centerSelect.innerHTML = '';
   let centers = Object.keys(DEFAULT_PRELOAD.hierarchy);
@@ -249,6 +255,18 @@ function initDropdowns() {
     opt.innerText = c;
     centerSelect.appendChild(opt);
   });
+
+  // Region (Defaulted against Center, locked / not editable)
+  if (regionSelect) {
+    const reg = getRegionForCenter(centerSelect.value);
+    regionSelect.innerHTML = '';
+    const opt = document.createElement('option');
+    opt.value = reg;
+    opt.innerText = reg;
+    regionSelect.appendChild(opt);
+    regionSelect.value = reg;
+    regionSelect.disabled = true;
+  }
 
   // Technologies
   techSelect.innerHTML = '';
@@ -394,6 +412,16 @@ function updateAvailableSplitters() {
 
 function onCenterChange() {
   const c = centerSelect.value;
+  if (regionSelect) {
+    const reg = getRegionForCenter(c);
+    regionSelect.innerHTML = '';
+    const opt = document.createElement('option');
+    opt.value = reg;
+    opt.innerText = reg;
+    regionSelect.appendChild(opt);
+    regionSelect.value = reg;
+    regionSelect.disabled = true;
+  }
   rtRoomSelect.innerHTML = '';
   const rtRooms = DEFAULT_PRELOAD.hierarchy[c] ? Object.keys(DEFAULT_PRELOAD.hierarchy[c]) : [];
   rtRooms.forEach(rt => {
@@ -731,7 +759,7 @@ function saveRecord() {
     sync_status: 'pending',
     id: Date.now(),
     "Date & Time": formattedDateTime,
-    Region: regionSelect ? regionSelect.value : "Thrissur",
+    Region: (regionSelect && regionSelect.value) ? regionSelect.value : getRegionForCenter(centerSelect.value),
     Center: centerSelect.value,
     "RT Room": rtRoomSelect.value,
     "GPON/FTTH/WDM": techSelect.value,
