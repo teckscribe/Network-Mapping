@@ -237,11 +237,11 @@ body {
 }
 
 .gs-cell-label {
-  font-size: 0.7rem;
-  font-weight: 700;
-  color: var(--gs-text-muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+  color: #374151;
   text-transform: uppercase;
-  letter-spacing: 0.3px;
+  letter-spacing: 0.4px;
 }
 
 .gs-input, .gs-select {
@@ -403,8 +403,9 @@ body {
 
 .gs-sheet-table th {
   background: #f8f9fa;
-  color: #3c4043;
-  font-weight: 600;
+  color: #1e293b;
+  font-size: 0.88rem;
+  font-weight: 700;
   padding: 8px 10px;
   border: 1px solid var(--gs-border);
   text-align: left;
