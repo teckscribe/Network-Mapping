@@ -259,24 +259,16 @@
       <form onsubmit="handleLogin(event)">
         <div class="gs-cell-group" style="margin-bottom: 12px;">
           <label class="gs-cell-label" for="login-username">Username</label>
-          <input type="text" id="login-username" class="gs-input" placeholder="e.g. thrissur_agent" required autocomplete="username">
+          <input type="text" id="login-username" class="gs-input" placeholder="Enter your username" required autocomplete="username">
         </div>
         <div class="gs-cell-group" style="margin-bottom: 16px;">
           <label class="gs-cell-label" for="login-password">Password / PIN</label>
-          <input type="password" id="login-password" class="gs-input" placeholder="Default: 1234" required autocomplete="current-password">
+          <input type="password" id="login-password" class="gs-input" placeholder="Enter password / PIN" required autocomplete="current-password">
         </div>
         <button type="submit" class="btn-add-row" style="margin-top: 0; padding: 12px;">
           Sign In
         </button>
       </form>
-
-      <div style="margin-top: 18px; border-top: 1px solid #dadce0; padding-top: 14px;">
-        <div style="font-size: 0.75rem; color: #5f6368; margin-bottom: 8px; text-align: center;">Quick 1-Tap Login:</div>
-        <div style="display: flex; gap: 8px;">
-          <button type="button" class="btn-demo" onclick="quickLogin('thrissur_agent', '1234')">Thrissur Agent</button>
-          <button type="button" class="btn-demo" onclick="quickLogin('tmm_agent', '1234')">Thathamangalam</button>
-        </div>
-      </div>
     </div>
   </div>
 
