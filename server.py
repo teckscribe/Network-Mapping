@@ -1615,8 +1615,8 @@ def admin_dashboard():
               </select>
             </div>
             <div style="flex:1.5; min-width:200px;">
-              <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:4px;">Access Level (Role)</label>
-              <select id="new-role" required style="width:100%; font-weight:600;">
+              <label style="display:block; font-size:0.75rem; font-weight:700; color:#0369a1; margin-bottom:4px;">👤 Role (Defines User Rights)</label>
+              <select id="new-role" required style="width:100%; font-weight:600; border:1.5px solid #0284c7;">
                 <option value="field_technician">👷 Field Technician (Data Entry Only)</option>
                 <option value="acso">📝 ACSO (Data Entry & Downloads)</option>
                 <option value="rcsm">📊 RCSM (Center Dashboard & Downloads)</option>
@@ -1639,7 +1639,7 @@ def admin_dashboard():
                 <th>Full Name</th>
                 <th>Region</th>
                 <th>Assigned Center</th>
-                <th>Access Level (Role)</th>
+                <th>Role (User Rights)</th>
                 <th>Created At</th>
                 <th style="text-align:center;">Action</th>
               </tr>
