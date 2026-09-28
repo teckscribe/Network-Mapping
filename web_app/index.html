@@ -14,7 +14,7 @@
 
   <!-- Local Offline Vendor Styles -->
   <link rel="stylesheet" href="vendor/leaflet.css">
-  <link rel="stylesheet" href="style.css?v=35">
+  <link rel="stylesheet" href="style.css?v=36">
 </head>
 <body>
 
@@ -114,9 +114,9 @@
 
           <!-- GPS Coordinates Cell -->
           <div class="gs-cell-group col-full">
-            <label class="gs-cell-label">GPS Coordinates (Lat, Long)</label>
+            <label class="gs-cell-label">GPS Coordinates (Lat, Long) <span style="color:#ef4444; font-weight:700;">*</span></label>
             <div class="gs-gps-bar">
-              <input type="text" id="manual-coords-input" class="gs-input" placeholder="10.60665, 76.21449" onchange="onManualCoordsChange(this.value)">
+              <input type="text" id="manual-coords-input" class="gs-input" placeholder="e.g. 10.606650, 76.214490 (Mandatory)" onchange="onManualCoordsChange(this.value)">
               <button class="btn-gps-sheet" type="button" onclick="captureGPS()">🎯 GPS</button>
             </div>
             <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px; margin-bottom: 6px; flex-wrap: wrap; gap: 6px;">
@@ -364,6 +364,6 @@
   <script src="vendor/leaflet.js"></script>
   <script src="vendor/xlsx.full.min.js"></script>
   <script src="preload_data.js"></script>
-  <script src="app.js?v=35"></script>
+  <script src="app.js?v=36"></script>
 </body>
 </html>

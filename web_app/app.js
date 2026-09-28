@@ -1338,8 +1338,32 @@ function saveRecord() {
   let latLongStr = '';
   if (currentLat && currentLon) {
     latLongStr = `${currentLat.toFixed(6)}, ${currentLon.toFixed(6)}`;
-  } else if (manualCoordsInput.value && manualCoordsInput.value.includes(',')) {
+  } else if (manualCoordsInput && manualCoordsInput.value && manualCoordsInput.value.includes(',')) {
     latLongStr = manualCoordsInput.value.trim();
+  }
+
+  // Mandatory GPS Enforcement: Network mapping strictly requires coordinates for every surveyed pole
+  if (!latLongStr || !latLongStr.includes(',')) {
+    showToast('⚠️ GPS location is mandatory! Tap [🎯 GPS] to capture coordinates.', false);
+    const gpsBtn = document.querySelector('.btn-gps-sheet');
+    if (gpsBtn) {
+      gpsBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      gpsBtn.focus();
+      gpsBtn.style.boxShadow = '0 0 0 3px #ef4444';
+      setTimeout(() => { if (gpsBtn) gpsBtn.style.boxShadow = ''; }, 2500);
+    }
+    if (manualCoordsInput) {
+      manualCoordsInput.style.borderColor = '#ef4444';
+      setTimeout(() => { if (manualCoordsInput) manualCoordsInput.style.borderColor = ''; }, 2500);
+    }
+    return;
+  }
+
+  const coordsParts = latLongStr.split(',').map(s => parseFloat(s.trim()));
+  if (coordsParts.length < 2 || isNaN(coordsParts[0]) || isNaN(coordsParts[1]) || coordsParts[0] === 0 || coordsParts[1] === 0) {
+    showToast('⚠️ Invalid coordinates! Please tap [🎯 GPS] to capture a valid satellite fix.', false);
+    if (manualCoordsInput) manualCoordsInput.focus();
+    return;
   }
 
   const clientUuid = (typeof crypto !== 'undefined' && crypto.randomUUID) 
@@ -1434,6 +1458,27 @@ function saveRecord() {
   custCountInput.value = '0';
   if (adlSubInput) adlSubInput.value = '';
   if (acsSubInput) acsSubInput.value = '';
+
+  // Reset GPS state so each subsequent pole requires an explicit, fresh GPS capture
+  currentLat = null;
+  currentLon = null;
+  currentAccuracy = null;
+  bestAccuracy = Infinity;
+  if (manualCoordsInput) {
+    manualCoordsInput.value = '';
+    manualCoordsInput.placeholder = 'e.g. 10.606650, 76.214490 (Mandatory)';
+  }
+  if (gpsAccText) {
+    gpsAccText.innerHTML = '<span style="color:#d97706; font-weight:600;">⚠️ Tap 🎯 GPS at next pole</span>';
+  }
+  if (mapMarker && mapInstance) {
+    mapInstance.removeLayer(mapMarker);
+    mapMarker = null;
+  }
+  if (accuracyCircle && mapInstance) {
+    mapInstance.removeLayer(accuracyCircle);
+    accuracyCircle = null;
+  }
 
   // Refresh available enclosures & splitters for next entry
   updateAvailableEnclosures();

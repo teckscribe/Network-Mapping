@@ -335,6 +335,9 @@ navigator.geolocation.getCurrentPosition(
 );
 ```
 
+* **Mandatory Field Enforcement**: GPS coordinates are strictly mandatory (`*`). If a surveyor attempts to submit a record without capturing GPS coordinates, submission is blocked, a warning toast is displayed, and the `[🎯 GPS]` button pulses to prompt action.
+* **Per-Pole GPS Reset**: Upon saving a surveyed pole, the coordinates and map marker are reset immediately (`currentLat = null; manualCoordsInput.value = ''`). This guarantees that technicians cannot accidentally re-use the previous pole's coordinates when surveying the next post.
+
 ### 7.4 Real-Time Server Connectivity & Synchronization States
 The top-left header of the PWA displays an interactive status indicator directly reflecting live connectivity with the Ubuntu server (`/api/health`):
 
