@@ -31,6 +31,25 @@ NODE_MASTER_DIR = os.path.join(BASE_DIR, "Node Master")
 DATA_DIR = os.path.join(BASE_DIR, "data")
 HIERARCHY_FILE = os.path.join(NODE_MASTER_DIR, "custom_hierarchy.json")
 
+VALID_ROLES = {
+    "super_admin": "Super Admin",
+    "rcsm": "RCSM",
+    "acso": "ACSO",
+    "field_technician": "Field Technician"
+}
+
+def normalize_role(role: str) -> str:
+    r = (role or "").strip().lower()
+    if r in ("admin", "superadmin", "super_admin"):
+        return "super_admin"
+    if r in ("rcsm", "regional_manager", "manager"):
+        return "rcsm"
+    if r in ("acso", "officer"):
+        return "acso"
+    if r in ("field_agent", "field_technician", "technician", "agent", "user"):
+        return "field_technician"
+    return "field_technician"
+
 def save_users_to_json(conn=None):
     """Persists current SQLite users to users_config.json so git pulls never wipe user credentials."""
     close_at_end = False
@@ -49,7 +68,7 @@ def save_users_to_json(conn=None):
                 "full_name": r[2],
                 "assigned_center": r[3],
                 "assigned_region": r[4] or "Thrissur",
-                "role": r[5] or "field_agent",
+                "role": normalize_role(r[5]),
                 "created_at": r[6]
             })
         with open(USERS_CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -88,7 +107,7 @@ def load_users_from_json(conn):
                 u["full_name"].strip(),
                 u["assigned_center"].strip(),
                 u.get("assigned_region", "Thrissur"),
-                u.get("role", "field_agent"),
+                normalize_role(u.get("role", "field_technician")),
                 u.get("created_at", now)
             ))
         conn.commit()
@@ -141,7 +160,7 @@ def init_db():
         full_name TEXT NOT NULL,
         assigned_center TEXT NOT NULL,
         assigned_region TEXT DEFAULT 'Thrissur',
-        role TEXT DEFAULT 'field_agent',
+        role TEXT DEFAULT 'field_technician',
         created_at TEXT
     )
     """)
@@ -165,23 +184,29 @@ def init_db():
     # 1. Sync from persistent users_config.json if it exists
     load_users_from_json(conn)
 
-    # 2. Seed Default Users if none exist
-    cur.execute("SELECT COUNT(*) FROM users")
-    if cur.fetchone()[0] == 0:
-        now = datetime.datetime.now().isoformat()
-        default_users = [
-            ("thrissur_agent", "1234", "Thrissur Survey Agent", "Thrissur North", "Thrissur", "field_agent", now),
-            ("tmm_agent", "1234", "Thathamangalam Agent", "Thathamangalm", "Palakkad", "field_agent", now),
-            ("admin", "admin123", "Central Administrator", "ALL", "ALL", "admin", now)
-        ]
-        cur.executemany("""
-        INSERT INTO users (username, password, full_name, assigned_center, assigned_region, role, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, default_users)
-        conn.commit()
-        print("Default users initialized.")
+    # 2. Seed / Update 4 Type Access Users if missing
+    cur.execute("SELECT username FROM users")
+    existing_usernames = {row[0] for row in cur.fetchall()}
+    now = datetime.datetime.now().isoformat()
+    defaults = [
+        ("admin", "admin123", "Central Super Administrator", "ALL", "ALL", "super_admin", now),
+        ("rcsm_thrissur", "1234", "Thrissur RCSM Manager", "Thrissur North", "Thrissur", "rcsm", now),
+        ("acso_thrissur", "1234", "Thrissur ACSO Officer", "Thrissur North", "Thrissur", "acso", now),
+        ("thrissur_agent", "1234", "Thrissur Survey Technician", "Thrissur North", "Thrissur", "field_technician", now),
+        ("tmm_agent", "1234", "Thathamangalam Survey Technician", "Thathamangalm", "Palakkad", "field_technician", now)
+    ]
+    for u in defaults:
+        if u[0] not in existing_usernames:
+            cur.execute("""
+            INSERT INTO users (username, password, full_name, assigned_center, assigned_region, role, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, u)
 
+    # Normalize existing legacy roles in SQLite table
+    cur.execute("UPDATE users SET role = 'super_admin' WHERE role = 'admin'")
+    cur.execute("UPDATE users SET role = 'field_technician' WHERE role = 'field_agent'")
     conn.commit()
+
     # 3. Always ensure users_config.json is up-to-date with current database users
     save_users_to_json(conn)
     conn.close()
@@ -383,7 +408,7 @@ class UserCreateModel(BaseModel):
     full_name: str
     assigned_center: str
     assigned_region: Optional[str] = "Thrissur"
-    role: Optional[str] = "field_agent"
+    role: Optional[str] = "field_technician"
 
 class SurveyRecordModel(BaseModel):
     client_uuid: str
@@ -447,6 +472,7 @@ def login(req: LoginRequest):
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
 
+    user_role = normalize_role(user["role"])
     return {
         "status": "success",
         "user": {
@@ -454,7 +480,8 @@ def login(req: LoginRequest):
             "full_name": user["full_name"],
             "assigned_center": user["assigned_center"],
             "assigned_region": user["assigned_region"],
-            "role": user["role"]
+            "role": user_role,
+            "role_label": VALID_ROLES.get(user_role, "Field Technician")
         }
     }
 
@@ -464,7 +491,17 @@ def get_users():
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
     cur.execute("SELECT username, full_name, assigned_center, assigned_region, role, created_at FROM users")
-    users = [dict(u) for u in cur.fetchall()]
+    users = [
+        {
+            "username": u["username"],
+            "full_name": u["full_name"],
+            "assigned_center": u["assigned_center"],
+            "assigned_region": u["assigned_region"],
+            "role": normalize_role(u["role"]),
+            "role_label": VALID_ROLES.get(normalize_role(u["role"]), "Field Technician"),
+            "created_at": u["created_at"]
+        } for u in cur.fetchall()
+    ]
     conn.close()
     return {"users": users}
 
@@ -473,6 +510,7 @@ def create_user(u: UserCreateModel):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     now = datetime.datetime.now().isoformat()
+    role_clean = normalize_role(u.role)
     try:
         cur.execute("""
         INSERT INTO users (username, password, full_name, assigned_center, assigned_region, role, created_at)
@@ -483,14 +521,14 @@ def create_user(u: UserCreateModel):
             assigned_center=excluded.assigned_center,
             assigned_region=excluded.assigned_region,
             role=excluded.role
-        """, (u.username.strip(), u.password.strip(), u.full_name.strip(), u.assigned_center.strip(), u.assigned_region, u.role, now))
+        """, (u.username.strip(), u.password.strip(), u.full_name.strip(), u.assigned_center.strip(), u.assigned_region, role_clean, now))
         conn.commit()
     except Exception as e:
         conn.close()
         raise HTTPException(status_code=400, detail=str(e))
     conn.close()
     save_users_to_json()
-    return {"status": "success", "message": f"User {u.username} saved successfully."}
+    return {"status": "success", "message": f"User {u.username} ({VALID_ROLES.get(role_clean, role_clean)}) saved successfully."}
 
 @app.delete("/api/users/{username}")
 def delete_user(username: str):
@@ -962,14 +1000,35 @@ def sync_records(payload: SyncPayload):
     }
 
 @app.get("/api/records")
-def get_all_records():
+def get_all_records(center: Optional[str] = None, region: Optional[str] = None):
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
-    cur.execute("SELECT * FROM survey_records ORDER BY rowid DESC")
+    query = "SELECT * FROM survey_records WHERE 1=1"
+    params = []
+    if center and center.strip() and center.strip().upper() != "ALL":
+        query += " AND LOWER(TRIM(center)) = LOWER(TRIM(?))"
+        params.append(center.strip())
+    if region and region.strip() and region.strip().upper() != "ALL":
+        query += " AND LOWER(TRIM(region)) = LOWER(TRIM(?))"
+        params.append(region.strip())
+    query += " ORDER BY rowid DESC"
+    cur.execute(query, params)
     rows = [dict(r) for r in cur.fetchall()]
     conn.close()
     return {"records": rows, "count": len(rows)}
+
+@app.delete("/api/records/{client_uuid}")
+def delete_record(client_uuid: str):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("DELETE FROM survey_records WHERE client_uuid = ?", (client_uuid,))
+    deleted = cur.rowcount
+    conn.commit()
+    conn.close()
+    if deleted == 0:
+        raise HTTPException(status_code=404, detail="Record not found.")
+    return {"status": "success", "message": "Record deleted successfully."}
 
 @app.get("/api/export-excel")
 def export_server_excel():
@@ -1296,71 +1355,184 @@ def resync_data_folders():
 def admin_dashboard():
     return """
     <!DOCTYPE html>
-    <html>
+    <html lang="en">
     <head>
-      <title>Network Mapping</title>
+      <meta charset="UTF-8">
+      <title>Network Mapping - Admin & Management Portal</title>
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f1f5f9; color: #0f172a; margin: 0; padding: 20px; }
-        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #cbd5e1; padding-bottom: 15px; margin-bottom: 20px; }
-        .btn { background: #0284c7; color: white; border: none; border-radius: 8px; padding: 9px 14px; font-weight: bold; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem; }
+        * { box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f1f5f9; color: #0f172a; margin: 0; padding: 16px 20px; }
+        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #cbd5e1; padding-bottom: 14px; margin-bottom: 18px; flex-wrap: wrap; gap: 12px; }
+        .btn { background: #0284c7; color: white; border: none; border-radius: 8px; padding: 8px 14px; font-weight: 600; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem; transition: background 0.15s ease; }
         .btn:hover { background: #0369a1; }
         .btn-green { background: #059669; }
         .btn-green:hover { background: #047857; }
+        .btn-purple { background: #6366f1; }
+        .btn-purple:hover { background: #4f46e5; }
         .btn-danger { background: #dc2626; }
-        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
-        .stat-card { background: #ffffff; border: 1px solid #cbd5e1; border-radius: 10px; padding: 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
-        .stat-num { font-size: 2rem; font-weight: bold; color: #0284c7; }
-        .stat-label { font-size: 0.85rem; color: #64748b; font-weight: 600; margin-top: 4px; }
-        .tabs { display: flex; gap: 10px; margin-bottom: 16px; }
-        .tab-btn { background: #e2e8f0; color: #475569; border: 1px solid #cbd5e1; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: 700; }
+        .btn-danger:hover { background: #b91c1c; }
+        .btn-outline { background: white; color: #475569; border: 1.5px solid #cbd5e1; }
+        .btn-outline:hover { background: #f8fafc; border-color: #94a3b8; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-bottom: 20px; }
+        .stat-card { background: #ffffff; border: 1px solid #cbd5e1; border-radius: 10px; padding: 14px 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        .stat-num { font-size: 1.85rem; font-weight: 800; color: #0284c7; }
+        .stat-label { font-size: 0.82rem; color: #64748b; font-weight: 600; margin-top: 4px; }
+        .tabs { display: flex; gap: 8px; margin-bottom: 16px; border-bottom: 1px solid #cbd5e1; padding-bottom: 8px; overflow-x: auto; }
+        .tab-btn { background: #e2e8f0; color: #475569; border: 1px solid #cbd5e1; padding: 9px 18px; border-radius: 8px; cursor: pointer; font-weight: 700; font-size: 0.88rem; white-space: nowrap; transition: all 0.15s ease; }
         .tab-btn.active { background: #0284c7; color: white; border-color: #0284c7; }
-        table { width: 100%; border-collapse: collapse; background: #ffffff; border-radius: 10px; overflow: hidden; font-size: 0.85rem; border: 1px solid #cbd5e1; }
-        th, td { padding: 11px 12px; text-align: left; border-bottom: 1px solid #e2e8f0; color: #0f172a; }
+        .tab-btn:hover:not(.active) { background: #cbd5e1; }
+        table { width: 100%; border-collapse: collapse; background: #ffffff; border-radius: 10px; overflow: hidden; font-size: 0.84rem; border: 1px solid #cbd5e1; }
+        th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #e2e8f0; color: #0f172a; }
         th { background: #f8fafc; color: #334155; font-weight: 700; border-bottom: 2px solid #cbd5e1; }
-        tr:hover { background: #f1f5f9; }
-        .tag { font-size: 0.75rem; padding: 3px 8px; border-radius: 12px; background: #0284c7; color: white; font-weight: bold; }
+        tr:hover { background: #f8fafc; }
+        .tag { font-size: 0.72rem; padding: 3px 8px; border-radius: 12px; background: #0284c7; color: white; font-weight: 700; display: inline-block; }
         .form-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 15px; }
-        input, select { background: #ffffff; color: #0f172a; border: 1.5px solid #cbd5e1; padding: 8px 12px; border-radius: 6px; outline: none; }
+        input, select { background: #ffffff; color: #0f172a; border: 1.5px solid #cbd5e1; padding: 8px 12px; border-radius: 6px; outline: none; font-size: 0.85rem; }
         input:focus, select:focus { border-color: #0284c7; }
+        .role-tag-super_admin { background: #6366f1; color: white; font-weight: 700; font-size: 0.72rem; padding: 2px 8px; border-radius: 12px; }
+        .role-tag-rcsm { background: #0284c7; color: white; font-weight: 700; font-size: 0.72rem; padding: 2px 8px; border-radius: 12px; }
+        .role-tag-acso { background: #059669; color: white; font-weight: 700; font-size: 0.72rem; padding: 2px 8px; border-radius: 12px; }
+        .role-tag-field_technician { background: #64748b; color: white; font-weight: 700; font-size: 0.72rem; padding: 2px 8px; border-radius: 12px; }
       </style>
     </head>
     <body>
-      <div class="header">
-        <div>
-          <h1 style="margin:0; font-size:1.5rem; color:#0f172a;">📡 Network Mapping</h1>
-        </div>
-        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-          <input type="file" id="top-survey-upload-input" accept=".xlsx, .xls, .csv" style="display:none;" onchange="uploadSurveyExcel(event)">
-          <button class="btn" style="background:#0f766e; color:white;" onclick="document.getElementById('top-survey-upload-input').click()">📤 Import Survey Excel</button>
-          <a href="/api/export-excel" class="btn btn-green">📊 Download Master Excel</a>
-          <a href="/api/export-data-zip" class="btn" style="background:#2563eb; color:white; text-decoration:none;">🗂️ Download All Centers (ZIP)</a>
-          <button onclick="fetchData()" class="btn">🔄 Refresh</button>
-        </div>
-      </div>
 
-      <div class="tabs">
-        <button class="tab-btn active" onclick="switchTab('feed')">📋 Survey Feed</button>
-        <button class="tab-btn" onclick="switchTab('users')">👥 Field Users & Center Assignment</button>
-        <button class="tab-btn" onclick="switchTab('hierarchy')">📡 Upload Node Master Data</button>
-        <button class="tab-btn" onclick="switchTab('folders')">📁 Region & Center Folders</button>
-      </div>
-
-      <!-- Tab 1: Survey Feed -->
-      <div id="tab-feed" style="background:#ffffff; border-radius:10px; padding:16px; border:1px solid #cbd5e1; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
-        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
-          <h3 style="margin:0; color:#0284c7;">Survey Submissions (Live Feed)</h3>
-          <div style="display:flex; gap:8px;">
-            <input type="file" id="tab1-survey-upload-input" accept=".xlsx, .xls, .csv" style="display:none;" onchange="uploadSurveyExcel(event)">
-            <button class="btn" style="background:#0f766e; color:white; font-size:0.8rem; padding:6px 12px;" onclick="document.getElementById('tab1-survey-upload-input').click()">📤 Import Survey Data (.xlsx)</button>
+      <!-- Auth Overlay (Sign-in for /admin) -->
+      <div id="admin-auth-overlay" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(15,23,42,0.85); backdrop-filter:blur(4px); z-index:99999; justify-content:center; align-items:center; padding:16px;">
+        <div style="background:white; border-radius:12px; padding:28px; max-width:400px; width:100%; box-shadow:0 25px 50px -12px rgba(0,0,0,0.25);">
+          <div style="text-align:center; margin-bottom:20px;">
+            <div style="font-size:2.5rem; margin-bottom:6px;">📡</div>
+            <h2 style="margin:0; color:#0f172a; font-size:1.35rem;">Network Mapping Portal</h2>
+            <p style="margin:4px 0 0 0; color:#64748b; font-size:0.83rem;">Sign in with Super Admin or RCSM account</p>
+          </div>
+          <form onsubmit="handleAdminLogin(event)">
+            <div style="margin-bottom:12px;">
+              <label style="display:block; font-size:0.78rem; font-weight:700; color:#475569; margin-bottom:4px;">Username</label>
+              <input type="text" id="admin-login-user" required style="width:100%; padding:9px 12px;" placeholder="e.g. admin or rcsm_thrissur">
+            </div>
+            <div style="margin-bottom:16px;">
+              <label style="display:block; font-size:0.78rem; font-weight:700; color:#475569; margin-bottom:4px;">Password / PIN</label>
+              <input type="password" id="admin-login-pass" required style="width:100%; padding:9px 12px;" placeholder="Password">
+            </div>
+            <div id="admin-login-error" style="display:none; background:#fee2e2; color:#991b1b; padding:8px 12px; border-radius:6px; font-size:0.82rem; margin-bottom:14px;"></div>
+            <button type="submit" class="btn" style="width:100%; justify-content:center; padding:10px; font-size:0.92rem; background:#0284c7;">🔐 Sign In to Portal</button>
+          </form>
+          <div style="text-align:center; margin-top:16px;">
+            <a href="/" style="color:#0284c7; font-size:0.82rem; text-decoration:none; font-weight:600;">📱 Open Field Survey Mobile Web App &rarr;</a>
           </div>
         </div>
-        <div style="overflow-x:auto;">
+      </div>
+
+      <!-- Access Denied Modal (for ACSO / Field Tech attempting /admin) -->
+      <div id="access-denied-modal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(15,23,42,0.85); backdrop-filter:blur(4px); z-index:99998; justify-content:center; align-items:center; padding:16px;">
+        <div style="background:white; border-radius:12px; padding:28px; max-width:440px; width:100%; box-shadow:0 25px 50px -12px rgba(0,0,0,0.25); text-align:center;">
+          <div style="font-size:2.8rem; margin-bottom:10px;">⚠️</div>
+          <h3 style="margin:0 0 8px 0; color:#0f172a;">Field Surveyor Account Detected</h3>
+          <p id="access-denied-msg" style="color:#475569; font-size:0.88rem; line-height:1.5; margin-bottom:20px;">
+            Your account is assigned for field survey data entry. The Admin & Management Portal is restricted to Super Admins and RCSMs.
+          </p>
+          <div style="display:flex; justify-content:center; gap:10px;">
+            <a href="/" class="btn btn-green" style="padding:10px 18px; font-size:0.9rem;">📱 Go to Field Survey App</a>
+            <button onclick="adminLogout()" class="btn btn-outline" style="padding:10px 14px;">Sign Out</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Top Header -->
+      <div class="header">
+        <div>
+          <div style="display:flex; align-items:center; gap:10px;">
+            <h1 style="margin:0; font-size:1.45rem; color:#0f172a;">📡 Network Mapping</h1>
+            <span id="header-user-badge" class="tag" style="background:#6366f1;">Super Admin</span>
+          </div>
+          <p style="margin:4px 0 0 0; font-size:0.82rem; color:#64748b;">
+            Logged in as: <strong id="header-user-name">Administrator</strong> | Center: <span id="header-user-center">ALL</span>
+          </p>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <input type="file" id="top-survey-upload-input" accept=".xlsx, .xls, .csv" style="display:none;" onchange="uploadSurveyExcel(event)">
+          <button id="btn-top-import" class="btn" style="background:#0f766e; color:white;" onclick="document.getElementById('top-survey-upload-input').click()">📤 Import Survey Excel</button>
+          <a href="/api/export-excel" class="btn btn-green">📊 Master Excel</a>
+          <a href="/api/export-data-zip" class="btn" style="background:#2563eb; color:white; text-decoration:none;">🗂️ All Centers (ZIP)</a>
+          <a href="/" class="btn btn-outline" target="_blank" title="Open Field Survey Web App">📱 Field App</a>
+          <button onclick="fetchData()" class="btn btn-outline">🔄 Refresh</button>
+          <button onclick="adminLogout()" class="btn btn-danger" style="padding:8px 12px;" title="Sign Out">🚪 Exit</button>
+        </div>
+      </div>
+
+      <!-- Navigation Tabs -->
+      <div class="tabs">
+        <button id="tab-btn-feed" class="tab-btn active" onclick="switchTab('feed')">📋 Survey Feed & Center Dashboard</button>
+        <button id="tab-btn-users" class="tab-btn" onclick="switchTab('users')">👥 User Access Management (4 Tiers)</button>
+        <button id="tab-btn-hierarchy" class="tab-btn" onclick="switchTab('hierarchy')">📡 Upload Node Master Data</button>
+        <button id="tab-btn-folders" class="tab-btn" onclick="switchTab('folders')">📁 Dynamic Region & Center Folders</button>
+      </div>
+
+      <!-- Tab 1: Survey Feed & Center-Wise Dashboard -->
+      <div id="tab-feed" style="background:#ffffff; border-radius:10px; padding:16px; border:1px solid #cbd5e1; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+        
+        <!-- Live Metrics Cards -->
+        <div class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); margin-bottom:16px;">
+          <div class="stat-card">
+            <div class="stat-num" id="feed-stat-records">0</div>
+            <div class="stat-label">Filtered Survey Records</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-num" id="feed-stat-customers" style="color:#059669;">0</div>
+            <div class="stat-label">Total Connected Customers</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-num" id="feed-stat-enclosures" style="color:#6366f1;">0</div>
+            <div class="stat-label">Unique Enclosures</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-num" id="feed-stat-centers" style="color:#ea580c;">0</div>
+            <div class="stat-label">Centers Active</div>
+          </div>
+        </div>
+
+        <!-- Filter & Action Bar -->
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:14px; background:#f8fafc; padding:12px; border-radius:8px; border:1px solid #e2e8f0;">
+          <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; flex:1;">
+            <div>
+              <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:2px;">Filter Region:</label>
+              <select id="feed-filter-region" onchange="onFeedRegionChanged()" style="min-width:140px;">
+                <option value="ALL">All Regions</option>
+              </select>
+            </div>
+            <div>
+              <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:2px;">Filter Center:</label>
+              <select id="feed-filter-center" onchange="onFeedCenterChanged()" style="min-width:180px;">
+                <option value="ALL">All Centers</option>
+              </select>
+            </div>
+            <div style="flex:1; min-width:200px;">
+              <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:2px;">Search Survey Data:</label>
+              <input type="text" id="feed-search" placeholder="🔍 Search Enclosure, Post #, Landmark, Surveyor..." oninput="filterAndRenderFeed()" style="width:100%;">
+            </div>
+          </div>
+
+          <div style="display:flex; gap:8px; align-items:flex-end;">
+            <button id="btn-download-center" onclick="downloadSelectedCenterExcel()" class="btn btn-green" style="font-size:0.82rem; padding:8px 14px;">
+              📥 Download Center Excel
+            </button>
+            <input type="file" id="tab1-survey-upload-input" accept=".xlsx, .xls, .csv" style="display:none;" onchange="uploadSurveyExcel(event)">
+            <button id="btn-tab1-import" class="btn" style="background:#0f766e; color:white; font-size:0.82rem; padding:8px 12px;" onclick="document.getElementById('tab1-survey-upload-input').click()">
+              📤 Import Excel (.xlsx)
+            </button>
+          </div>
+        </div>
+
+        <!-- Survey Records Table -->
+        <div style="overflow-x:auto; max-height:560px; overflow-y:auto; border:1px solid #cbd5e1; border-radius:8px;">
           <table>
             <thead>
-              <tr>
+              <tr style="position:sticky; top:0; z-index:2; background:#f8fafc;">
+                <th>#</th>
                 <th>Date & Time</th>
                 <th>Enclosure ID</th>
+                <th>Region</th>
                 <th>Center / RT Room</th>
                 <th>Node & Port</th>
                 <th>KSEB Post #</th>
@@ -1371,70 +1543,112 @@ def admin_dashboard():
                 <th>ADL ID</th>
                 <th>ACS ID</th>
                 <th>Surveyor</th>
+                <th id="th-record-actions" style="text-align:center;">Action</th>
               </tr>
             </thead>
             <tbody id="table-body">
-              <tr><td colspan="12" style="text-align:center; padding:20px;">Loading data...</td></tr>
+              <tr><td colspan="15" style="text-align:center; padding:20px; color:#64748b;">Loading survey records...</td></tr>
             </tbody>
           </table>
         </div>
       </div>
 
-      <!-- Tab 2: User Management -->
+      <!-- Tab 2: User Access Management (Super Admin Only) -->
       <div id="tab-users" style="display:none; background:#ffffff; border-radius:10px; padding:16px; border:1px solid #cbd5e1; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
-        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
-          <h3 style="margin:0; color:#0284c7;">Add / Manage Field Surveyors</h3>
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:14px;">
+          <div>
+            <h3 style="margin:0 0 4px 0; color:#0284c7;">Add / Manage User Access (4 Access Tiers)</h3>
+            <p style="margin:0; font-size:0.82rem; color:#64748b;">
+              1. <strong>Super Admin</strong>: Full admin access | 
+              2. <strong>RCSM</strong>: Center dashboard & downloads only | 
+              3. <strong>ACSO</strong>: Field entry & download | 
+              4. <strong>Field Tech</strong>: Field entry only
+            </p>
+          </div>
           <div style="display:flex; gap:8px;">
-            <a href="/api/config/users" download="users_config.json" class="btn" style="background:#0284c7; color:white; font-size:0.8rem; text-decoration:none; padding:6px 12px; border-radius:6px; display:inline-flex; align-items:center; gap:4px;">📥 Backup Users JSON</a>
-            <button type="button" onclick="document.getElementById('import-users-file').click()" class="btn" style="background:#475569; color:white; font-size:0.8rem; padding:6px 12px; border-radius:6px; cursor:pointer;">📤 Restore Users JSON</button>
+            <a href="/api/config/users" download="users_config.json" class="btn" style="background:#0284c7; font-size:0.8rem; padding:6px 12px;">📥 Backup JSON</a>
+            <button type="button" onclick="document.getElementById('import-users-file').click()" class="btn btn-outline" style="font-size:0.8rem; padding:6px 12px;">📤 Restore JSON</button>
             <input type="file" id="import-users-file" accept=".json" style="display:none;" onchange="importUsersConfig(event)">
           </div>
         </div>
         
-        <form onsubmit="createUser(event)" class="form-row">
-          <input type="text" id="new-user" placeholder="Username (e.g. anoop)" required>
-          <input type="text" id="new-pass" placeholder="Password / PIN" required>
-          <input type="text" id="new-name" placeholder="Full Name" required>
-          <select id="new-center" required>
-            <option value="Thrissur North">Thrissur North</option>
-            <option value="Thathamangalm">Thathamangalm</option>
-            <option value="ALL">ALL (Admin / Supervisor)</option>
-          </select>
-          <button type="submit" class="btn btn-green">➕ Add / Update User</button>
-        </form>
+        <!-- Add / Edit User Form -->
+        <div style="background:#f8fafc; padding:16px; border-radius:8px; border:1px solid #e2e8f0; margin-bottom:18px;">
+          <h4 id="user-form-title" style="margin:0 0 12px 0; color:#1e293b; font-size:0.95rem;">➕ Add New User</h4>
+          <form onsubmit="createUser(event)" class="form-row" style="margin-bottom:0; align-items:flex-end;">
+            <div style="flex:1; min-width:140px;">
+              <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:4px;">Username</label>
+              <input type="text" id="new-user" placeholder="e.g. anoop" required style="width:100%;">
+            </div>
+            <div style="flex:1; min-width:130px;">
+              <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:4px;">Password / PIN</label>
+              <input type="text" id="new-pass" placeholder="PIN / Password" required style="width:100%;">
+            </div>
+            <div style="flex:1.2; min-width:160px;">
+              <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:4px;">Full Name</label>
+              <input type="text" id="new-name" placeholder="Full Name" required style="width:100%;">
+            </div>
+            <div style="flex:1; min-width:130px;">
+              <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:4px;">Region</label>
+              <input type="text" id="new-region" placeholder="e.g. Thrissur" value="Thrissur" required style="width:100%;">
+            </div>
+            <div style="flex:1.2; min-width:160px;">
+              <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:4px;">Assigned Center</label>
+              <select id="new-center" required style="width:100%;">
+                <option value="ALL">ALL (Admin / Supervisor)</option>
+              </select>
+            </div>
+            <div style="flex:1.5; min-width:200px;">
+              <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:4px;">Access Level (Role)</label>
+              <select id="new-role" required style="width:100%; font-weight:600;">
+                <option value="field_technician">👷 Field Technician (Data Entry Only)</option>
+                <option value="acso">📝 ACSO (Data Entry & Downloads)</option>
+                <option value="rcsm">📊 RCSM (Center Dashboard & Downloads)</option>
+                <option value="super_admin">👑 Super Admin (Full Control)</option>
+              </select>
+            </div>
+            <div style="display:flex; gap:6px;">
+              <button type="submit" id="btn-save-user" class="btn btn-green">➕ Save User</button>
+              <button type="button" id="btn-cancel-edit-user" onclick="resetUserForm()" class="btn btn-outline" style="display:none;">Cancel</button>
+            </div>
+          </form>
+        </div>
 
+        <!-- Users Table -->
         <div style="overflow-x:auto;">
           <table>
             <thead>
               <tr>
                 <th>Username</th>
                 <th>Full Name</th>
+                <th>Region</th>
                 <th>Assigned Center</th>
-                <th>Role</th>
-                <th>Action</th>
+                <th>Access Level (Role)</th>
+                <th>Created At</th>
+                <th style="text-align:center;">Action</th>
               </tr>
             </thead>
             <tbody id="users-table-body">
-              <tr><td colspan="5" style="text-align:center; padding:20px;">Loading users...</td></tr>
+              <tr><td colspan="7" style="text-align:center; padding:20px; color:#64748b;">Loading users...</td></tr>
             </tbody>
           </table>
         </div>
       </div>
 
-      <!-- Tab 3: Network Hierarchy Management -->
+      <!-- Tab 3: Network Hierarchy Management (Super Admin Only) -->
       <div id="tab-hierarchy" style="display:none; background:#ffffff; border-radius:10px; padding:16px; border:1px solid #cbd5e1; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
         <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px; margin-bottom:16px;">
           <div>
             <h3 style="margin:0 0 6px 0; color:#0284c7;">Upload Node Master Data (Region, Center, RT Room, Node Name)</h3>
-            <p style="margin:0; font-size:0.85rem; color:#64748b;">
-              Upload your Excel file (<code>.xlsx</code>, <code>.xls</code>, <code>.csv</code>) containing <strong>Center</strong>, <strong>RT Room</strong>, <strong>Node Name</strong> (or <strong>Device IP</strong>), and optional <strong>Number of Ports</strong> (8 Port/16 Port/32 Port).
-              All field surveyor devices will automatically download and cache this hierarchy upon connecting.
+            <p style="margin:0; font-size:0.83rem; color:#64748b;">
+              Upload your Excel file containing <strong>Region</strong>, <strong>Center</strong>, <strong>RT Room</strong>, <strong>Node Name</strong>, and <strong>Number of Ports</strong>.
+              All field devices will automatically cache this hierarchy.
             </p>
           </div>
-          <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
             <a href="/api/download-hierarchy-template" class="btn" style="background:#0f766e;">📥 Download Template (.xlsx)</a>
             <input type="file" id="hierarchy-upload-input" accept=".xlsx, .xls, .csv" style="display:none;" onchange="uploadHierarchyExcel(event)">
-            <button class="btn btn-green" onclick="document.getElementById('hierarchy-upload-input').click()">📂 Browse & Upload Excel File</button>
+            <button class="btn btn-green" onclick="document.getElementById('hierarchy-upload-input').click()">📂 Browse & Upload Excel</button>
             <button class="btn" style="background:#0284c7; color:white;" onclick="openAddOltModal()">➕ Add Single Node</button>
           </div>
         </div>
@@ -1457,18 +1671,18 @@ def admin_dashboard():
         </div>
 
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; gap:10px; flex-wrap:wrap;">
-          <input type="text" id="hierarchy-search" placeholder="🔍 Search Center, RT Room, or Node..." oninput="filterHierarchyTable()" style="flex:1; min-width:240px; max-width:400px;">
+          <input type="text" id="hierarchy-search" placeholder="🔍 Search Region, Center, RT Room, or Node..." oninput="filterHierarchyTable()" style="flex:1; min-width:240px; max-width:400px;">
           <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
             <span id="selection-count" style="font-size:0.8rem; color:#64748b; font-weight:600; display:none;">0 selected</span>
-            <button id="btn-delete-selected" onclick="deleteSelectedOlts()" class="btn btn-danger" style="padding:8px 12px; display:none;">🗑️ Delete Selected</button>
-            <button onclick="fetchHierarchy()" class="btn" style="background:#64748b; padding:8px 12px;">🔄 Refresh Table</button>
+            <button id="btn-delete-selected" onclick="deleteSelectedOlts()" class="btn btn-danger" style="padding:7px 12px; display:none;">🗑️ Delete Selected</button>
+            <button onclick="fetchHierarchy()" class="btn btn-outline" style="padding:7px 12px;">🔄 Refresh Table</button>
           </div>
         </div>
 
         <div style="overflow-x:auto; max-height:480px; overflow-y:auto; border:1px solid #cbd5e1; border-radius:8px;">
           <table>
             <thead>
-              <tr style="position:sticky; top:0; z-index:2;">
+              <tr style="position:sticky; top:0; z-index:2; background:#f8fafc;">
                 <th style="width:36px; text-align:center;"><input type="checkbox" id="select-all-cb" onchange="toggleSelectAll(this)" title="Select All"></th>
                 <th>#</th>
                 <th>Region</th>
@@ -1481,25 +1695,25 @@ def admin_dashboard():
               </tr>
             </thead>
             <tbody id="hierarchy-table-body">
-              <tr><td colspan="9" style="text-align:center; padding:20px;">Loading network hierarchy...</td></tr>
+              <tr><td colspan="9" style="text-align:center; padding:20px; color:#64748b;">Loading network hierarchy...</td></tr>
             </tbody>
           </table>
         </div>
       </div>
 
-      <!-- Tab 4: Region & Center Data Folders -->
+      <!-- Tab 4: Dynamic Region & Center Folders (Super Admin & RCSM) -->
       <div id="tab-folders" style="display:none; background:#ffffff; border-radius:10px; padding:16px; border:1px solid #cbd5e1; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
         <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px; margin-bottom:16px;">
           <div>
             <h3 style="margin:0 0 6px 0; color:#0284c7;">📁 Dynamic Region & Center Exports (In-Memory Streaming)</h3>
-            <p style="margin:0; font-size:0.85rem; color:#64748b;">
-              All survey records are stored securely in SQLite. Excel files are streamed dynamically on demand with zero disk waste on the server.
+            <p style="margin:0; font-size:0.83rem; color:#64748b;">
+              All survey records are stored securely in SQLite. Excel spreadsheets are generated and streamed dynamically on demand with zero disk waste on the server.
               Download any Center's spreadsheet individually, or download all Centers in a single structured ZIP archive.
             </p>
           </div>
           <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
             <a href="/api/export-data-zip" class="btn" style="background:#2563eb; color:white; font-size:0.85rem; text-decoration:none;">🗂️ Download All Centers (ZIP)</a>
-            <button onclick="resyncFoldersAction()" class="btn" style="background:#0f766e; color:white; font-size:0.85rem;">🧹 Optimize Storage & Recount</button>
+            <button id="btn-optimize-storage" onclick="resyncFoldersAction()" class="btn" style="background:#0f766e; color:white; font-size:0.85rem;">🧹 Optimize Storage & Recount</button>
           </div>
         </div>
 
@@ -1534,21 +1748,21 @@ def admin_dashboard():
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
               <div>
                 <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">Region</label>
-                <input type="text" id="modal-region" required style="width:100%; box-sizing:border-box;" value="Thrissur" placeholder="e.g. Thrissur">
+                <input type="text" id="modal-region" required style="width:100%;" value="Thrissur" placeholder="e.g. Thrissur">
               </div>
               <div>
                 <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">Center</label>
-                <input type="text" id="modal-center" required style="width:100%; box-sizing:border-box;" placeholder="e.g. CHALAKKUDY">
+                <input type="text" id="modal-center" required style="width:100%;" placeholder="e.g. CHALAKKUDY">
               </div>
             </div>
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
               <div>
                 <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">RT Room</label>
-                <input type="text" id="modal-rtroom" required style="width:100%; box-sizing:border-box;" placeholder="e.g. Potta">
+                <input type="text" id="modal-rtroom" required style="width:100%;" placeholder="e.g. Potta">
               </div>
               <div>
                 <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">GPON / FTTH / WDM / EDFA</label>
-                <select id="modal-tech" style="width:100%; box-sizing:border-box;">
+                <select id="modal-tech" style="width:100%;">
                   <option value="GPON">GPON</option>
                   <option value="FTTH">FTTH</option>
                   <option value="WDM">WDM</option>
@@ -1558,27 +1772,27 @@ def admin_dashboard():
             </div>
             <div style="margin-bottom:12px;">
               <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">Node Name</label>
-              <input type="text" id="modal-olt" required style="width:100%; box-sizing:border-box;" placeholder="e.g. CKY/116/OLT 01/Potta-1">
+              <input type="text" id="modal-olt" required style="width:100%;" placeholder="e.g. CKY/116/OLT 01/Potta-1">
             </div>
             <div style="margin-bottom:18px;">
               <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">Number of Ports</label>
-              <select id="modal-ports" style="width:100%; box-sizing:border-box;">
+              <select id="modal-ports" style="width:100%;">
                 <option value="8 P">8 Port</option>
                 <option value="16 P">16 Port</option>
                 <option value="32 P">32 Port</option>
               </select>
             </div>
             <div style="display:flex; justify-content:flex-end; gap:8px;">
-              <button type="button" class="btn" style="background:#94a3b8; color:white;" onclick="closeOltModal()">Cancel</button>
+              <button type="button" class="btn btn-outline" onclick="closeOltModal()">Cancel</button>
               <button type="submit" class="btn btn-green">💾 Save Node</button>
             </div>
           </form>
         </div>
       </div>
 
-      <!-- UI Confirmation Modal (Confirm / Cancel) -->
+      <!-- UI Confirmation Modal -->
       <div id="confirm-modal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(15,23,42,0.65); backdrop-filter:blur(3px); z-index:10001; justify-content:center; align-items:center; padding:16px;">
-        <div style="background:white; border-radius:12px; padding:24px; max-width:440px; width:100%; box-shadow:0 20px 25px -5px rgba(0,0,0,0.25), 0 8px 10px -6px rgba(0,0,0,0.1); border:1px solid #cbd5e1;">
+        <div style="background:white; border-radius:12px; padding:24px; max-width:440px; width:100%; box-shadow:0 20px 25px -5px rgba(0,0,0,0.25); border:1px solid #cbd5e1;">
           <h3 id="confirm-modal-title" style="margin-top:0; color:#0f172a; font-size:1.15rem; display:flex; align-items:center; gap:8px;">
             ⚠️ Confirm Action
           </h3>
@@ -1586,14 +1800,157 @@ def admin_dashboard():
             Are you sure you want to proceed?
           </p>
           <div style="display:flex; justify-content:flex-end; gap:10px;">
-            <button type="button" id="confirm-modal-btn-cancel" class="btn" style="background:#f1f5f9; color:#475569; border:1px solid #cbd5e1; font-weight:600; padding:9px 18px; border-radius:6px; font-size:0.9rem; cursor:pointer;">Cancel</button>
-            <button type="button" id="confirm-modal-btn-confirm" class="btn btn-danger" style="font-weight:600; padding:9px 20px; border-radius:6px; font-size:0.9rem; cursor:pointer;">Confirm</button>
+            <button type="button" id="confirm-modal-btn-cancel" class="btn btn-outline">Cancel</button>
+            <button type="button" id="confirm-modal-btn-confirm" class="btn btn-danger">Confirm</button>
           </div>
         </div>
       </div>
 
       <script>
+        let currentAdmin = null;
+        let cachedRecords = [];
         let fullHierarchyRows = [];
+        let cachedHierarchy = {};
+
+        // Normalization
+        function normalizeAdminRole(r) {
+          if (!r) return 'field_technician';
+          const s = String(r).toLowerCase().trim();
+          if (s === 'super_admin' || s === 'superadmin' || s === 'admin') return 'super_admin';
+          if (s === 'rcsm') return 'rcsm';
+          if (s === 'acso') return 'acso';
+          return 'field_technician';
+        }
+
+        // Check authentication & apply permissions
+        function checkAdminAuth() {
+          let userStr = localStorage.getItem('gpon_admin_user') || localStorage.getItem('gpon_logged_in_user');
+          if (!userStr) {
+            showAdminLoginModal();
+            return false;
+          }
+
+          try {
+            currentAdmin = JSON.parse(userStr);
+          } catch(e) {
+            showAdminLoginModal();
+            return false;
+          }
+
+          const role = normalizeAdminRole(currentAdmin.role);
+          currentAdmin.role = role;
+
+          if (role === 'field_technician' || role === 'acso') {
+            document.getElementById('access-denied-modal').style.display = 'flex';
+            document.getElementById('access-denied-msg').innerHTML = 
+              `Your account <strong>${currentAdmin.username}</strong> is registered as <strong>${role === 'acso' ? 'ACSO' : 'Field Technician'}</strong>.<br>The Admin Portal is reserved for Super Admins and RCSMs.`;
+            return false;
+          }
+
+          document.getElementById('admin-auth-overlay').style.display = 'none';
+          document.getElementById('access-denied-modal').style.display = 'none';
+
+          // Apply Role UI
+          applyAdminRoleUI(role);
+          return true;
+        }
+
+        function showAdminLoginModal() {
+          document.getElementById('admin-auth-overlay').style.display = 'flex';
+          document.getElementById('admin-login-error').style.display = 'none';
+        }
+
+        async function handleAdminLogin(e) {
+          e.preventDefault();
+          const u = document.getElementById('admin-login-user').value.trim();
+          const p = document.getElementById('admin-login-pass').value.trim();
+          const errEl = document.getElementById('admin-login-error');
+          errEl.style.display = 'none';
+
+          try {
+            const res = await fetch('/api/login', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({ username: u, password: p })
+            });
+            const data = await res.json();
+            if (res.ok && data.status === 'success') {
+              const role = normalizeAdminRole(data.user.role);
+              data.user.role = role;
+
+              if (role === 'field_technician' || role === 'acso') {
+                errEl.innerText = `Access Denied: Account role is ${role === 'acso' ? 'ACSO' : 'Field Technician'}. Only Super Admin & RCSM can access Admin.`;
+                errEl.style.display = 'block';
+                return;
+              }
+
+              localStorage.setItem('gpon_admin_user', JSON.stringify(data.user));
+              localStorage.setItem('gpon_logged_in_user', JSON.stringify(data.user));
+              currentAdmin = data.user;
+              checkAdminAuth();
+              initAdminData();
+            } else {
+              errEl.innerText = data.detail || 'Invalid username or password';
+              errEl.style.display = 'block';
+            }
+          } catch(err) {
+            errEl.innerText = 'Network error: ' + err.message;
+            errEl.style.display = 'block';
+          }
+        }
+
+        function adminLogout() {
+          localStorage.removeItem('gpon_admin_user');
+          currentAdmin = null;
+          showAdminLoginModal();
+        }
+
+        function applyAdminRoleUI(role) {
+          const nameEl = document.getElementById('header-user-name');
+          const centerEl = document.getElementById('header-user-center');
+          const badgeEl = document.getElementById('header-user-badge');
+
+          if (currentAdmin) {
+            nameEl.innerText = currentAdmin.full_name || currentAdmin.username;
+            centerEl.innerText = currentAdmin.assigned_center || 'ALL';
+          }
+
+          const btnUsers = document.getElementById('tab-btn-users');
+          const btnHierarchy = document.getElementById('tab-btn-hierarchy');
+          const btnTopImport = document.getElementById('btn-top-import');
+          const btnTab1Import = document.getElementById('btn-tab1-import');
+          const thRecordActions = document.getElementById('th-record-actions');
+          const btnOptimize = document.getElementById('btn-optimize-storage');
+
+          if (role === 'super_admin') {
+            badgeEl.innerText = '👑 Super Admin';
+            badgeEl.style.background = '#6366f1';
+            btnUsers.style.display = 'inline-block';
+            btnHierarchy.style.display = 'inline-block';
+            btnTopImport.style.display = 'inline-flex';
+            btnTab1Import.style.display = 'inline-flex';
+            thRecordActions.style.display = '';
+            if (btnOptimize) btnOptimize.style.display = 'inline-flex';
+          } else if (role === 'rcsm') {
+            badgeEl.innerText = '📊 RCSM';
+            badgeEl.style.background = '#0284c7';
+            // RCSM: Hide Tab 2 (Users) and Tab 3 (Node Master upload/edit)
+            btnUsers.style.display = 'none';
+            btnHierarchy.style.display = 'none';
+            // RCSM: View & download only, no survey data entry or import
+            btnTopImport.style.display = 'none';
+            btnTab1Import.style.display = 'none';
+            thRecordActions.style.display = 'none';
+            if (btnOptimize) btnOptimize.style.display = 'none';
+
+            // Ensure current tab is feed or folders
+            const currentTabFeedActive = document.getElementById('tab-btn-feed').classList.contains('active');
+            const currentTabFoldersActive = document.getElementById('tab-btn-folders').classList.contains('active');
+            if (!currentTabFeedActive && !currentTabFoldersActive) {
+              switchTab('feed');
+            }
+          }
+        }
 
         function switchTab(t) {
           document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -1603,188 +1960,386 @@ def admin_dashboard():
           document.getElementById('tab-folders').style.display = 'none';
 
           if (t === 'feed') {
-            document.querySelectorAll('.tab-btn')[0].classList.add('active');
+            document.getElementById('tab-btn-feed').classList.add('active');
             document.getElementById('tab-feed').style.display = 'block';
+            fetchData();
           } else if (t === 'users') {
-            document.querySelectorAll('.tab-btn')[1].classList.add('active');
+            if (currentAdmin && currentAdmin.role !== 'super_admin') {
+              alert('Permission Denied: User Management is reserved for Super Admin.');
+              switchTab('feed');
+              return;
+            }
+            document.getElementById('tab-btn-users').classList.add('active');
             document.getElementById('tab-users').style.display = 'block';
             fetchUsers();
           } else if (t === 'hierarchy') {
-            document.querySelectorAll('.tab-btn')[2].classList.add('active');
+            if (currentAdmin && currentAdmin.role !== 'super_admin') {
+              alert('Permission Denied: Node Master Hierarchy management is reserved for Super Admin.');
+              switchTab('feed');
+              return;
+            }
+            document.getElementById('tab-btn-hierarchy').classList.add('active');
             document.getElementById('tab-hierarchy').style.display = 'block';
             fetchHierarchy();
           } else if (t === 'folders') {
-            document.querySelectorAll('.tab-btn')[3].classList.add('active');
+            document.getElementById('tab-btn-folders').classList.add('active');
             document.getElementById('tab-folders').style.display = 'block';
             fetchFoldersSummary();
           }
         }
 
-        async function fetchFoldersSummary() {
+        // Tab 1: Survey Records & Center Filter
+        async function fetchData() {
+          const region = document.getElementById('feed-filter-region').value;
+          const center = document.getElementById('feed-filter-center').value;
+
+          let url = '/api/records';
+          const params = [];
+          if (region && region !== 'ALL') params.push(`region=${encodeURIComponent(region)}`);
+          if (center && center !== 'ALL') params.push(`center=${encodeURIComponent(center)}`);
+          if (params.length > 0) url += '?' + params.join('&');
+
           try {
-            const res = await fetch('/api/data-folders-summary');
+            const res = await fetch(url);
             const data = await res.json();
+            cachedRecords = data.records || [];
+            updateFeedFilterDropdowns();
+            filterAndRenderFeed();
+          } catch(e) {
+            console.error('Failed to fetch records:', e);
+          }
+        }
+
+        function updateFeedFilterDropdowns() {
+          const regSelect = document.getElementById('feed-filter-region');
+          const centerSelect = document.getElementById('feed-filter-center');
+
+          const curReg = regSelect.value;
+          const curCenter = centerSelect.value;
+
+          // Unique regions
+          const regions = new Set();
+          const centersByRegion = {};
+
+          cachedRecords.forEach(r => {
+            const reg = r.region || 'Thrissur';
+            const c = r.center || 'Unknown';
+            regions.add(reg);
+            if (!centersByRegion[reg]) centersByRegion[reg] = new Set();
+            centersByRegion[reg].add(c);
+          });
+
+          // Also pull from hierarchy if available
+          Object.keys(cachedHierarchy).forEach(c => {
+            const rts = cachedHierarchy[c] || {};
+            Object.keys(rts).forEach(rt => {
+              const olts = rts[rt] || {};
+              Object.keys(olts).forEach(o => {
+                const node = olts[o];
+                const reg = (node && typeof node === 'object' && node.region) ? node.region : 'Thrissur';
+                regions.add(reg);
+                if (!centersByRegion[reg]) centersByRegion[reg] = new Set();
+                centersByRegion[reg].add(c);
+              });
+            });
+          });
+
+          // Rebuild Region options
+          regSelect.innerHTML = '<option value="ALL">All Regions</option>';
+          Array.from(regions).sort().forEach(reg => {
+            const opt = document.createElement('option');
+            opt.value = reg;
+            opt.innerText = reg;
+            if (reg === curReg) opt.selected = true;
+            regSelect.appendChild(opt);
+          });
+
+          // Rebuild Center options
+          updateCenterFilterOptions(centersByRegion, curReg, curCenter);
+        }
+
+        function updateCenterFilterOptions(centersByRegion, selectedReg, curCenter) {
+          const centerSelect = document.getElementById('feed-filter-center');
+          centerSelect.innerHTML = '<option value="ALL">All Centers</option>';
+
+          const centers = new Set();
+          if (!selectedReg || selectedReg === 'ALL') {
+            Object.keys(centersByRegion).forEach(reg => {
+              centersByRegion[reg].forEach(c => centers.add(c));
+            });
+          } else if (centersByRegion[selectedReg]) {
+            centersByRegion[selectedReg].forEach(c => centers.add(c));
+          }
+
+          Array.from(centers).sort().forEach(c => {
+            const opt = document.createElement('option');
+            opt.value = c;
+            opt.innerText = c;
+            if (c === curCenter) opt.selected = true;
+            centerSelect.appendChild(opt);
+          });
+        }
+
+        function onFeedRegionChanged() {
+          const reg = document.getElementById('feed-filter-region').value;
+          document.getElementById('feed-filter-center').value = 'ALL';
+          fetchData();
+        }
+
+        function onFeedCenterChanged() {
+          fetchData();
+        }
+
+        function filterAndRenderFeed() {
+          const q = (document.getElementById('feed-search').value || '').toLowerCase().trim();
+          const isSuperAdmin = (currentAdmin && currentAdmin.role === 'super_admin');
+
+          let filtered = cachedRecords;
+          if (q) {
+            filtered = cachedRecords.filter(r => 
+              (r.enclosure_id || '').toLowerCase().includes(q) ||
+              (r.kseb_post_number || '').toLowerCase().includes(q) ||
+              (r.landmark || '').toLowerCase().includes(q) ||
+              (r.surveyor_name || '').toLowerCase().includes(q) ||
+              (r.surveyor_username || '').toLowerCase().includes(q) ||
+              (r.center || '').toLowerCase().includes(q) ||
+              (r.rt_room || '').toLowerCase().includes(q) ||
+              (r.olt_name || '').toLowerCase().includes(q) ||
+              (r.adl_subscriber_id || '').toLowerCase().includes(q) ||
+              (r.acs_subscriber_id || '').toLowerCase().includes(q)
+            );
+          }
+
+          // Compute stats
+          let custTotal = 0;
+          const encSet = new Set();
+          const centerSet = new Set();
+
+          filtered.forEach(r => {
+            custTotal += (r.customers_connected || 0);
+            if (r.enclosure_id) encSet.add(r.enclosure_id);
+            if (r.center) centerSet.add(r.center);
+          });
+
+          document.getElementById('feed-stat-records').innerText = filtered.length;
+          document.getElementById('feed-stat-customers').innerText = custTotal;
+          document.getElementById('feed-stat-enclosures').innerText = encSet.size;
+          document.getElementById('feed-stat-centers').innerText = centerSet.size;
+
+          const tbody = document.getElementById('table-body');
+          tbody.innerHTML = '';
+
+          if (filtered.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="15" style="text-align:center; padding:20px; color:#94a3b8;">No survey records match current filters.</td></tr>';
+            return;
+          }
+
+          filtered.forEach((r, idx) => {
+            const tr = document.createElement('tr');
+            const timeDisplay = (r.survey_date_time || r.created_at || r.synced_at || '').slice(0, 19).replace('T', ' ');
             
-            document.getElementById('folder-stat-regions').innerText = data.total_regions || 0;
-            document.getElementById('folder-stat-centers').innerText = data.total_centers || 0;
-            document.getElementById('folder-stat-records').innerText = data.total_records || 0;
-
-            const container = document.getElementById('folders-container');
-            container.innerHTML = '';
-
-            const regions = data.regions || {};
-            const regKeys = Object.keys(regions);
-
-            if (regKeys.length === 0) {
-              container.innerHTML = '<p style="text-align:center; padding:20px; color:#64748b;">No region or center data folders found.</p>';
-              return;
+            let actionHtml = '';
+            if (isSuperAdmin) {
+              actionHtml = `<td style="text-align:center; white-space:nowrap;">
+                <button class="btn btn-danger" style="padding:3px 7px; font-size:0.75rem;" onclick="deleteSurveyRecord('${r.client_uuid}')" title="Delete Record">🗑️</button>
+              </td>`;
+            } else {
+              actionHtml = `<td style="display:none;"></td>`;
             }
 
-            regKeys.forEach(regName => {
-              const centers = regions[regName] || [];
-              const regCard = document.createElement('div');
-              regCard.style.cssText = 'background:#f8fafc; border:1px solid #cbd5e1; border-radius:10px; padding:16px; margin-bottom:16px;';
-              
-              let tableRows = '';
-              centers.forEach((c, idx) => {
-                tableRows += `
-                  <tr>
-                    <td style="color:#64748b; font-family:monospace; font-size:0.8rem;">${idx + 1}</td>
-                    <td><strong style="color:#0f172a;">${c.center}</strong></td>
-                    <td style="font-family:monospace; font-size:0.8rem; color:#475569;">${c.folder}/</td>
-                    <td style="font-family:monospace; font-size:0.8rem; color:#0284c7;">${c.excel_file}</td>
-                    <td>
-                      <span class="tag" style="background:${c.records_count > 0 ? '#059669' : '#94a3b8'};">
-                        ${c.records_count} record${c.records_count === 1 ? '' : 's'}
-                      </span>
-                    </td>
-                    <td>
-                      <a href="/api/export-center-excel?center=${encodeURIComponent(c.center)}&region=${encodeURIComponent(c.region)}" 
-                         class="btn" 
-                         style="padding:5px 10px; font-size:0.75rem; background:#0284c7; text-decoration:none;">
-                        📥 Download Excel
-                      </a>
-                    </td>
-                  </tr>
-                `;
-              });
+            tr.innerHTML = `
+              <td style="color:#64748b; font-family:monospace; font-size:0.8rem;">${idx + 1}</td>
+              <td style="font-family:monospace; font-size:0.8rem; color:#64748b;">${timeDisplay || '-'}</td>
+              <td><strong style="color:#0284c7;">${r.enclosure_id || '-'}</strong></td>
+              <td><span style="background:#f1f5f9; color:#475569; padding:2px 6px; border-radius:4px; font-size:0.75rem; font-weight:600;">${r.region || 'Thrissur'}</span></td>
+              <td><strong>${r.center || '-'}</strong> / ${r.rt_room || '-'}</td>
+              <td>${r.olt_name || '-'} [${r.port_number || '-'}]</td>
+              <td><strong>${r.kseb_post_number || '-'}</strong></td>
+              <td>${r.landmark || '-'}</td>
+              <td><span style="font-family:monospace; font-size:0.8rem;">${r.lat_long || '-'}</span></td>
+              <td><span class="tag">${r.customers_connected || 0}</span></td>
+              <td><span style="background:#e0f2fe; color:#0369a1; padding:2px 6px; border-radius:4px; font-weight:600; font-size:0.75rem;">${r.splitter_lead_color || '-'}</span></td>
+              <td style="font-family:monospace; font-size:0.8rem;">${r.adl_subscriber_id || '-'}</td>
+              <td style="font-family:monospace; font-size:0.8rem;">${r.acs_subscriber_id || '-'}</td>
+              <td><strong style="color:#0284c7;">${r.surveyor_name || r.surveyor_username || 'App'}</strong></td>
+              ${actionHtml}
+            `;
+            tbody.appendChild(tr);
+          });
+        }
 
-              regCard.innerHTML = `
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
-                  <h4 style="margin:0; font-size:1.05rem; color:#1e293b;">
-                    📍 Region: <span style="color:#2563eb;">${regName}</span> 
-                    <span style="font-size:0.8rem; font-weight:normal; color:#64748b; margin-left:8px;">(${centers.length} Centers)</span>
-                  </h4>
-                  <span style="font-family:monospace; font-size:0.8rem; background:#e2e8f0; padding:4px 8px; border-radius:6px; color:#334155;">
-                    data/${regName}/
-                  </span>
-                </div>
-                <div style="overflow-x:auto;">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th style="width:36px;">#</th>
-                        <th>Center</th>
-                        <th>Folder Path (in ZIP)</th>
-                        <th>Excel Spreadsheet</th>
-                        <th>Captured Records</th>
-                        <th>Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      ${tableRows}
-                    </tbody>
-                  </table>
-                </div>
-              `;
-              container.appendChild(regCard);
-            });
-          } catch(err) {
-            console.error('Failed fetching folders summary:', err);
+        function downloadSelectedCenterExcel() {
+          const region = document.getElementById('feed-filter-region').value;
+          const center = document.getElementById('feed-filter-center').value;
+
+          if (center && center !== 'ALL') {
+            window.location.href = `/api/export-center-excel?center=${encodeURIComponent(center)}&region=${encodeURIComponent(region)}`;
+          } else {
+            window.location.href = '/api/export-excel';
           }
         }
 
-        async function resyncFoldersAction() {
+        async function deleteSurveyRecord(uuid) {
+          if (!currentAdmin || currentAdmin.role !== 'super_admin') {
+            alert('Permission Denied: Only Super Admin can delete records.');
+            return;
+          }
+          const confirmed = await showConfirmModal(
+            '🗑️ Confirm Record Deletion',
+            'Are you sure you want to permanently delete this survey record from the database?',
+            'Delete Record',
+            '#dc2626'
+          );
+          if (!confirmed) return;
+
           try {
-            const res = await fetch('/api/resync-data-folders', { method: 'POST' });
-            const data = await res.json();
-            alert(data.message || 'Storage optimized and counts refreshed!');
-            fetchFoldersSummary();
+            const res = await fetch(`/api/records/${uuid}`, { method: 'DELETE' });
+            if (res.ok) {
+              fetchData();
+            } else {
+              const err = await res.json();
+              alert('Error: ' + (err.detail || 'Could not delete record'));
+            }
           } catch(err) {
-            alert('Failed to optimize: ' + err.message);
+            alert('Network error: ' + err.message);
           }
         }
 
-        async function fetchData() {
+        // Tab 2: User Access Management (4 Tiers)
+        async function fetchUsers() {
           try {
-            const res = await fetch('/api/records');
+            const res = await fetch('/api/users');
             const data = await res.json();
-            const cntEl = document.getElementById('total-count');
-            if (cntEl) cntEl.innerText = data.count;
-            
-            let custTotal = 0;
-            const tbody = document.getElementById('table-body');
+            const tbody = document.getElementById('users-table-body');
             tbody.innerHTML = '';
 
-            if (data.records.length === 0) {
-              tbody.innerHTML = '<tr><td colspan="12" style="text-align:center; padding:20px; color:#94a3b8;">No records synced from field devices yet.</td></tr>';
-              return;
-            }
+            const roleBadges = {
+              'super_admin': '<span class="role-tag-super_admin">👑 Super Admin</span>',
+              'rcsm': '<span class="role-tag-rcsm">📊 RCSM</span>',
+              'acso': '<span class="role-tag-acso">📝 ACSO</span>',
+              'field_technician': '<span class="role-tag-field_technician">👷 Field Tech</span>'
+            };
 
-            data.records.forEach(r => {
-              custTotal += (r.customers_connected || 0);
-
+            data.users.forEach(u => {
               const tr = document.createElement('tr');
-              const timeDisplay = (r.survey_date_time || r.created_at || r.synced_at || '').slice(0, 19).replace('T', ' ');
+              const roleClean = normalizeAdminRole(u.role);
+              const badgeHtml = roleBadges[roleClean] || `<span class="tag">${u.role}</span>`;
+              
               tr.innerHTML = `
-                <td style="font-family:monospace; font-size:0.8rem; color:#64748b;">${timeDisplay || '-'}</td>
-                <td><strong style="color:#0284c7;">${r.enclosure_id || '-'}</strong></td>
-                <td>${r.center || '-'} / ${r.rt_room || '-'}</td>
-                <td>${r.olt_name || '-'} [${r.port_number || '-'}]</td>
-                <td><strong>${r.kseb_post_number || '-'}</strong></td>
-                <td>${r.landmark || '-'}</td>
-                <td><span style="font-family:monospace; font-size:0.8rem;">${r.lat_long || '-'}</span></td>
-                <td><span class="tag">${r.customers_connected || 0}</span></td>
-                <td><span style="background:#e0f2fe; color:#0369a1; padding:2px 6px; border-radius:4px; font-weight:600; font-size:0.75rem;">${r.splitter_lead_color || '-'}</span></td>
-                <td style="font-family:monospace; font-size:0.8rem;">${r.adl_subscriber_id || '-'}</td>
-                <td style="font-family:monospace; font-size:0.8rem;">${r.acs_subscriber_id || '-'}</td>
-                <td><strong style="color:#0284c7;">${r.surveyor_name || r.surveyor_username || 'App'}</strong></td>
+                <td><strong>${u.username}</strong></td>
+                <td>${u.full_name}</td>
+                <td><span style="background:#f1f5f9; padding:2px 8px; border-radius:4px; font-weight:600; font-size:0.8rem;">${u.assigned_region || 'Thrissur'}</span></td>
+                <td><span class="tag" style="background:#059669;">${u.assigned_center}</span></td>
+                <td>${badgeHtml}</td>
+                <td style="color:#64748b; font-size:0.8rem; font-family:monospace;">${(u.created_at || '').slice(0, 19).replace('T', ' ')}</td>
+                <td style="text-align:center; white-space:nowrap;">
+                  <button class="btn btn-outline" style="padding:3px 8px; font-size:0.75rem; margin-right:4px;" onclick="loadUserForEdit('${u.username}', '${encodeURIComponent(u.full_name)}', '${encodeURIComponent(u.assigned_center)}', '${encodeURIComponent(u.assigned_region || 'Thrissur')}', '${roleClean}')">✏️ Edit</button>
+                  ${u.username !== 'admin' ? `<button class="btn btn-danger" style="padding:3px 8px; font-size:0.75rem;" onclick="deleteUser('${u.username}')">🗑️</button>` : '<span style="color:#94a3b8; font-size:0.75rem;">Root</span>'}
+                </td>
               `;
               tbody.appendChild(tr);
             });
-
-            const custEl = document.getElementById('total-customers');
-            if (custEl) custEl.innerText = custTotal;
           } catch(e) {
             console.error(e);
           }
-          fetchUsers();
-          fetchHierarchyQuick();
         }
 
-        async function fetchHierarchyQuick() {
+        function loadUserForEdit(username, encName, encCenter, encRegion, role) {
+          document.getElementById('user-form-title').innerText = `✏️ Edit User: ${username}`;
+          document.getElementById('new-user').value = username;
+          document.getElementById('new-user').setAttribute('readonly', 'true');
+          document.getElementById('new-user').style.background = '#f1f5f9';
+          document.getElementById('new-pass').value = '';
+          document.getElementById('new-pass').placeholder = '(Keep existing password or enter new)';
+          document.getElementById('new-pass').removeAttribute('required');
+          document.getElementById('new-name').value = decodeURIComponent(encName);
+          document.getElementById('new-region').value = decodeURIComponent(encRegion);
+          document.getElementById('new-center').value = decodeURIComponent(encCenter);
+          document.getElementById('new-role').value = role;
+          document.getElementById('btn-save-user').innerText = '💾 Update User';
+          document.getElementById('btn-cancel-edit-user').style.display = 'inline-flex';
+        }
+
+        function resetUserForm() {
+          document.getElementById('user-form-title').innerText = '➕ Add New User';
+          document.getElementById('new-user').value = '';
+          document.getElementById('new-user').removeAttribute('readonly');
+          document.getElementById('new-user').style.background = '#ffffff';
+          document.getElementById('new-pass').value = '';
+          document.getElementById('new-pass').placeholder = 'PIN / Password';
+          document.getElementById('new-pass').setAttribute('required', 'true');
+          document.getElementById('new-name').value = '';
+          document.getElementById('new-region').value = 'Thrissur';
+          document.getElementById('new-center').value = 'ALL';
+          document.getElementById('new-role').value = 'field_technician';
+          document.getElementById('btn-save-user').innerText = '➕ Save User';
+          document.getElementById('btn-cancel-edit-user').style.display = 'none';
+        }
+
+        async function createUser(e) {
+          e.preventDefault();
+          const u = {
+            username: document.getElementById('new-user').value.trim(),
+            password: document.getElementById('new-pass').value.trim() || '1234',
+            full_name: document.getElementById('new-name').value.trim(),
+            assigned_region: document.getElementById('new-region').value.trim() || 'Thrissur',
+            assigned_center: document.getElementById('new-center').value,
+            role: document.getElementById('new-role').value
+          };
           try {
-            const res = await fetch('/api/hierarchy');
-            const data = await res.json();
-            const centerSelect = document.getElementById('new-center');
-            const existingVals = Array.from(centerSelect.options).map(o => o.value);
-            const hier = (data && data.hierarchy) ? data.hierarchy : data;
-            Object.keys(hier).forEach(c => {
-              if (!existingVals.includes(c)) {
-                const opt = document.createElement('option');
-                opt.value = c;
-                opt.innerText = c;
-                centerSelect.insertBefore(opt, centerSelect.lastElementChild);
-              }
+            const res = await fetch('/api/users', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify(u)
             });
-          } catch(e) {}
+            const data = await res.json();
+            if (res.ok) {
+              alert(data.message || 'User saved successfully!');
+              resetUserForm();
+              fetchUsers();
+            } else {
+              alert('Error: ' + (data.detail || 'Could not save user'));
+            }
+          } catch(err) {
+            alert('Network error: ' + err.message);
+          }
         }
 
+        async function deleteUser(u) {
+          const confirmed = await showConfirmModal(
+            '🗑️ Confirm User Deletion',
+            `Are you sure you want to delete user account "${u}"?`,
+            'Confirm Delete',
+            '#dc2626'
+          );
+          if (!confirmed) return;
+          await fetch('/api/users/' + u, { method: 'DELETE' });
+          fetchUsers();
+        }
+
+        async function importUsersConfig(e) {
+          const file = e.target.files[0];
+          if (!file) return;
+          const formData = new FormData();
+          formData.append('file', file);
+          try {
+            const res = await fetch('/api/config/users', { method: 'POST', body: formData });
+            const data = await res.json();
+            alert(data.message || 'Users restored successfully!');
+            fetchUsers();
+          } catch (err) {
+            alert('Error restoring users config: ' + err);
+          }
+          e.target.value = '';
+        }
+
+        // Tab 3: Network Hierarchy
         async function fetchHierarchy() {
           try {
             const res = await fetch('/api/hierarchy');
             const data = await res.json();
             const hier = (data && data.hierarchy) ? data.hierarchy : data;
+            cachedHierarchy = hier;
             const tbody = document.getElementById('hierarchy-table-body');
             tbody.innerHTML = '';
 
@@ -1836,10 +2391,23 @@ def admin_dashboard():
             document.getElementById('hier-total-olts').innerText = totalOLTs;
 
             renderHierarchyTable(fullHierarchyRows);
-            fetchHierarchyQuick();
+            populateCenterSelectsFromHierarchy();
           } catch(e) {
             console.error(e);
           }
+        }
+
+        function populateCenterSelectsFromHierarchy() {
+          const userCenterSelect = document.getElementById('new-center');
+          const existingVals = Array.from(userCenterSelect.options).map(o => o.value);
+          Object.keys(cachedHierarchy).sort().forEach(c => {
+            if (!existingVals.includes(c)) {
+              const opt = document.createElement('option');
+              opt.value = c;
+              opt.innerText = c;
+              userCenterSelect.appendChild(opt);
+            }
+          });
         }
 
         function renderHierarchyTable(rows) {
@@ -1865,8 +2433,8 @@ def admin_dashboard():
               <td><strong style="color:#0f172a;">${r.oltName}</strong></td>
               <td><span class="tag" style="background:#059669; color:white; font-size:0.75rem;">${r.oltType}</span></td>
               <td style="white-space:nowrap;">
-                <button class="btn" style="padding:4px 8px; font-size:0.75rem; background:#0284c7; color:white; margin-right:4px;" onclick="openEditOltModal('${encodeURIComponent(r.region)}', '${encodeURIComponent(r.center)}', '${encodeURIComponent(r.rtRoom)}', '${encodeURIComponent(r.tech)}', '${encodeURIComponent(r.oltName)}', '${encodeURIComponent(r.oltType)}')">✏️ Edit</button>
-                <button class="btn btn-danger" style="padding:4px 8px; font-size:0.75rem;" onclick="deleteOlt('${encodeURIComponent(r.center)}', '${encodeURIComponent(r.rtRoom)}', '${encodeURIComponent(r.oltName)}')">🗑️</button>
+                <button class="btn btn-outline" style="padding:3px 8px; font-size:0.75rem; margin-right:4px;" onclick="openEditOltModal('${encodeURIComponent(r.region)}', '${encodeURIComponent(r.center)}', '${encodeURIComponent(r.rtRoom)}', '${encodeURIComponent(r.tech)}', '${encodeURIComponent(r.oltName)}', '${encodeURIComponent(r.oltType)}')">✏️ Edit</button>
+                <button class="btn btn-danger" style="padding:3px 8px; font-size:0.75rem;" onclick="deleteOlt('${encodeURIComponent(r.center)}', '${encodeURIComponent(r.rtRoom)}', '${encodeURIComponent(r.oltName)}')">🗑️</button>
               </td>
             `;
             tbody.appendChild(tr);
@@ -1912,81 +2480,21 @@ def admin_dashboard():
           }
         }
 
-        function showConfirmModal(title, message, confirmBtnText = 'Confirm', confirmBtnColor = '#dc2626') {
-          return new Promise((resolve) => {
-            const modal = document.getElementById('confirm-modal');
-            const titleEl = document.getElementById('confirm-modal-title');
-            const msgEl = document.getElementById('confirm-modal-msg');
-            const confirmBtn = document.getElementById('confirm-modal-btn-confirm');
-            const cancelBtn = document.getElementById('confirm-modal-btn-cancel');
-
-            titleEl.innerHTML = title;
-            msgEl.innerText = message;
-            confirmBtn.innerText = confirmBtnText;
-            confirmBtn.style.background = confirmBtnColor;
-
-            modal.style.display = 'flex';
-
-            const cleanup = () => {
-              modal.style.display = 'none';
-              confirmBtn.removeEventListener('click', onConfirm);
-              cancelBtn.removeEventListener('click', onCancel);
-              modal.removeEventListener('click', onBackdrop);
-            };
-            const onConfirm = () => {
-              cleanup();
-              resolve(true);
-            };
-            const onCancel = () => {
-              cleanup();
-              resolve(false);
-            };
-            const onBackdrop = (e) => {
-              if (e.target === modal) onCancel();
-            };
-
-            confirmBtn.addEventListener('click', onConfirm);
-            cancelBtn.addEventListener('click', onCancel);
-            modal.addEventListener('click', onBackdrop);
-          });
-        }
-
-        async function deleteSelectedOlts() {
-          const checked = document.querySelectorAll('#hierarchy-table-body .row-cb:checked');
-          if (checked.length === 0) return;
-          const confirmed = await showConfirmModal(
-            '🗑️ Confirm Bulk Deletion',
-            `Are you sure you want to delete ${checked.length} selected node(s)? This action cannot be undone.`,
-            'Confirm Delete',
-            '#dc2626'
-          );
-          if (!confirmed) return;
-
-          const items = [];
-          checked.forEach(cb => {
-            items.push({
-              center: decodeURIComponent(cb.dataset.center),
-              rt_room: decodeURIComponent(cb.dataset.rt),
-              olt_name: decodeURIComponent(cb.dataset.olt)
-            });
-          });
-
-          try {
-            const res = await fetch('/api/hierarchy/bulk-delete', {
-              method: 'POST',
-              headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify({ items: items })
-            });
-            const data = await res.json();
-            if (res.ok) {
-              alert(data.message || 'Deleted successfully');
-              fetchHierarchy();
-            } else {
-              alert('Error: ' + (data.detail || 'Could not delete selected nodes'));
-            }
-          } catch(err) {
-            alert('Network error: ' + err.message);
+        function filterHierarchyTable() {
+          const q = (document.getElementById('hierarchy-search').value || '').toLowerCase().trim();
+          if (!q) {
+            renderHierarchyTable(fullHierarchyRows);
+            return;
           }
+          const filtered = fullHierarchyRows.filter(r => 
+            (r.region || '').toLowerCase().includes(q) ||
+            (r.center || '').toLowerCase().includes(q) || 
+            (r.rtRoom || '').toLowerCase().includes(q) || 
+            (r.tech || '').toLowerCase().includes(q) ||
+            (r.oltName || '').toLowerCase().includes(q) ||
+            (r.oltType || '').toLowerCase().includes(q)
+          );
+          renderHierarchyTable(filtered);
         }
 
         function openAddOltModal() {
@@ -2031,12 +2539,12 @@ def admin_dashboard():
         async function saveOltModal(e) {
           e.preventDefault();
           const isEdit = !!document.getElementById('modal-old-olt').value.trim();
-          const confirmTitle = isEdit ? '✏️ Confirm Save Edit' : '➕ Confirm Add Node';
-          const confirmMsg = isEdit 
-            ? 'Are you sure you want to save the changes to this node?' 
-            : 'Are you sure you want to add this new node?';
-
-          const confirmed = await showConfirmModal(confirmTitle, confirmMsg, 'Confirm & Save', '#16a34a');
+          const confirmed = await showConfirmModal(
+            isEdit ? '✏️ Confirm Save Edit' : '➕ Confirm Add Node',
+            isEdit ? 'Are you sure you want to save changes to this node?' : 'Are you sure you want to add this new node?',
+            'Confirm & Save',
+            '#16a34a'
+          );
           if (!confirmed) return;
 
           const oltTypeVal = document.getElementById('modal-ports').value;
@@ -2077,7 +2585,7 @@ def admin_dashboard():
           const olt = decodeURIComponent(encOlt);
           const confirmed = await showConfirmModal(
             '🗑️ Confirm Deletion',
-            `Are you sure you want to delete node "${olt}" from ${c} (${rt})? This action cannot be undone.`,
+            `Are you sure you want to delete node "${olt}" from ${c} (${rt})?`,
             'Confirm Delete',
             '#dc2626'
           );
@@ -2100,31 +2608,42 @@ def admin_dashboard():
           }
         }
 
-        async function clearAllHierarchy() {
-          if (!confirm('⚠️ WARNING: This will clear all uploaded network hierarchy data! Are you sure?')) return;
-          try {
-            await fetch('/api/hierarchy/clear', { method: 'DELETE' });
-            fetchHierarchy();
-          } catch(err) {
-            alert('Error: ' + err.message);
-          }
-        }
-
-        function filterHierarchyTable() {
-          const q = (document.getElementById('hierarchy-search').value || '').toLowerCase().trim();
-          if (!q) {
-            renderHierarchyTable(fullHierarchyRows);
-            return;
-          }
-          const filtered = fullHierarchyRows.filter(r => 
-            (r.region || '').toLowerCase().includes(q) ||
-            (r.center || '').toLowerCase().includes(q) || 
-            (r.rtRoom || '').toLowerCase().includes(q) || 
-            (r.tech || '').toLowerCase().includes(q) ||
-            (r.oltName || '').toLowerCase().includes(q) ||
-            (r.oltType || '').toLowerCase().includes(q)
+        async function deleteSelectedOlts() {
+          const checked = document.querySelectorAll('#hierarchy-table-body .row-cb:checked');
+          if (checked.length === 0) return;
+          const confirmed = await showConfirmModal(
+            '🗑️ Confirm Bulk Deletion',
+            `Are you sure you want to delete ${checked.length} selected node(s)?`,
+            'Confirm Delete',
+            '#dc2626'
           );
-          renderHierarchyTable(filtered);
+          if (!confirmed) return;
+
+          const items = [];
+          checked.forEach(cb => {
+            items.push({
+              center: decodeURIComponent(cb.dataset.center),
+              rt_room: decodeURIComponent(cb.dataset.rt),
+              olt_name: decodeURIComponent(cb.dataset.olt)
+            });
+          });
+
+          try {
+            const res = await fetch('/api/hierarchy/bulk-delete', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({ items: items })
+            });
+            const data = await res.json();
+            if (res.ok) {
+              alert(data.message || 'Deleted successfully');
+              fetchHierarchy();
+            } else {
+              alert('Error: ' + (data.detail || 'Could not delete selected nodes'));
+            }
+          } catch(err) {
+            alert('Network error: ' + err.message);
+          }
         }
 
         async function uploadHierarchyExcel(e) {
@@ -2203,85 +2722,156 @@ def admin_dashboard():
           }
         }
 
-        async function fetchUsers() {
+        // Tab 4: Dynamic Region & Center Folders
+        async function fetchFoldersSummary() {
           try {
-            const res = await fetch('/api/users');
+            const res = await fetch('/api/data-folders-summary');
             const data = await res.json();
-            const agentsEl = document.getElementById('active-agents');
-            if (agentsEl) agentsEl.innerText = data.users.length;
-            const tbody = document.getElementById('users-table-body');
-            tbody.innerHTML = '';
-            data.users.forEach(u => {
-              const tr = document.createElement('tr');
-              tr.innerHTML = `
-                <td><strong>${u.username}</strong></td>
-                <td>${u.full_name}</td>
-                <td><span class="tag" style="background:#059669;">${u.assigned_center}</span></td>
-                <td>${u.role}</td>
-                <td>
-                  ${u.username !== 'admin' ? `<button class="btn btn-danger" style="padding:4px 8px; font-size:0.75rem;" onclick="deleteUser('${u.username}')">Delete</button>` : '-'}
-                </td>
+            
+            document.getElementById('folder-stat-regions').innerText = data.total_regions || 0;
+            document.getElementById('folder-stat-centers').innerText = data.total_centers || 0;
+            document.getElementById('folder-stat-records').innerText = data.total_records || 0;
+
+            const container = document.getElementById('folders-container');
+            container.innerHTML = '';
+
+            const regions = data.regions || {};
+            const regKeys = Object.keys(regions);
+
+            if (regKeys.length === 0) {
+              container.innerHTML = '<p style="text-align:center; padding:20px; color:#64748b;">No region or center data folders found.</p>';
+              return;
+            }
+
+            regKeys.forEach(regName => {
+              const centers = regions[regName] || [];
+              const regCard = document.createElement('div');
+              regCard.style.cssText = 'background:#f8fafc; border:1px solid #cbd5e1; border-radius:10px; padding:16px; margin-bottom:16px;';
+              
+              let tableRows = '';
+              centers.forEach((c, idx) => {
+                tableRows += `
+                  <tr>
+                    <td style="color:#64748b; font-family:monospace; font-size:0.8rem;">${idx + 1}</td>
+                    <td><strong style="color:#0f172a;">${c.center}</strong></td>
+                    <td style="font-family:monospace; font-size:0.8rem; color:#475569;">${c.folder}/</td>
+                    <td style="font-family:monospace; font-size:0.8rem; color:#0284c7;">${c.excel_file}</td>
+                    <td>
+                      <span class="tag" style="background:${c.records_count > 0 ? '#059669' : '#94a3b8'};">
+                        ${c.records_count} record${c.records_count === 1 ? '' : 's'}
+                      </span>
+                    </td>
+                    <td>
+                      <a href="/api/export-center-excel?center=${encodeURIComponent(c.center)}&region=${encodeURIComponent(c.region)}" 
+                         class="btn btn-outline" 
+                         style="padding:4px 10px; font-size:0.75rem; text-decoration:none;">
+                        📥 Download Excel
+                      </a>
+                    </td>
+                  </tr>
+                `;
+              });
+
+              regCard.innerHTML = `
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+                  <h4 style="margin:0; font-size:1.05rem; color:#1e293b;">
+                    📍 Region: <span style="color:#2563eb;">${regName}</span> 
+                    <span style="font-size:0.8rem; font-weight:normal; color:#64748b; margin-left:8px;">(${centers.length} Centers)</span>
+                  </h4>
+                  <span style="font-family:monospace; font-size:0.8rem; background:#e2e8f0; padding:4px 8px; border-radius:6px; color:#334155;">
+                    data/${regName}/
+                  </span>
+                </div>
+                <div style="overflow-x:auto;">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th style="width:36px;">#</th>
+                        <th>Center</th>
+                        <th>Folder Path (in ZIP)</th>
+                        <th>Excel Spreadsheet</th>
+                        <th>Captured Records</th>
+                        <th>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${tableRows}
+                    </tbody>
+                  </table>
+                </div>
               `;
-              tbody.appendChild(tr);
+              container.appendChild(regCard);
             });
-          } catch(e) {}
-        }
-
-        async function createUser(e) {
-          e.preventDefault();
-          const u = {
-            username: document.getElementById('new-user').value.trim(),
-            password: document.getElementById('new-pass').value.trim(),
-            full_name: document.getElementById('new-name').value.trim(),
-            assigned_center: document.getElementById('new-center').value,
-            role: document.getElementById('new-center').value === 'ALL' ? 'admin' : 'field_agent'
-          };
-          await fetch('/api/users', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(u)
-          });
-          alert('User created / updated successfully!');
-          document.getElementById('new-user').value = '';
-          document.getElementById('new-pass').value = '';
-          document.getElementById('new-name').value = '';
-          fetchUsers();
-        }
-
-        async function deleteUser(u) {
-          const confirmed = await showConfirmModal(
-            '🗑️ Confirm User Deletion',
-            `Are you sure you want to delete surveyor user "${u}"?`,
-            'Confirm Delete',
-            '#dc2626'
-          );
-          if (!confirmed) return;
-          await fetch('/api/users/' + u, { method: 'DELETE' });
-          fetchUsers();
-        }
-
-        async function importUsersConfig(e) {
-          const file = e.target.files[0];
-          if (!file) return;
-          const formData = new FormData();
-          formData.append('file', file);
-          try {
-            const res = await fetch('/api/config/users', { method: 'POST', body: formData });
-            const data = await res.json();
-            alert(data.message || 'Users restored successfully!');
-            fetchUsers();
-          } catch (err) {
-            alert('Error restoring users config: ' + err);
+          } catch(err) {
+            console.error('Failed fetching folders summary:', err);
           }
-          e.target.value = '';
         }
 
-        fetchData();
-        setInterval(fetchData, 12000);
+        async function resyncFoldersAction() {
+          try {
+            const res = await fetch('/api/resync-data-folders', { method: 'POST' });
+            const data = await res.json();
+            alert(data.message || 'Storage optimized and counts refreshed!');
+            fetchFoldersSummary();
+          } catch(err) {
+            alert('Failed to optimize: ' + err.message);
+          }
+        }
+
+        // Confirmation Modal Helper
+        function showConfirmModal(title, message, confirmBtnText = 'Confirm', confirmBtnColor = '#dc2626') {
+          return new Promise((resolve) => {
+            const modal = document.getElementById('confirm-modal');
+            const titleEl = document.getElementById('confirm-modal-title');
+            const msgEl = document.getElementById('confirm-modal-msg');
+            const confirmBtn = document.getElementById('confirm-modal-btn-confirm');
+            const cancelBtn = document.getElementById('confirm-modal-btn-cancel');
+
+            titleEl.innerHTML = title;
+            msgEl.innerText = message;
+            confirmBtn.innerText = confirmBtnText;
+            confirmBtn.style.background = confirmBtnColor;
+
+            modal.style.display = 'flex';
+
+            const cleanup = () => {
+              modal.style.display = 'none';
+              confirmBtn.removeEventListener('click', onConfirm);
+              cancelBtn.removeEventListener('click', onCancel);
+              modal.removeEventListener('click', onBackdrop);
+            };
+            const onConfirm = () => { cleanup(); resolve(true); };
+            const onCancel = () => { cleanup(); resolve(false); };
+            const onBackdrop = (e) => { if (e.target === modal) onCancel(); };
+
+            confirmBtn.addEventListener('click', onConfirm);
+            cancelBtn.addEventListener('click', onCancel);
+            modal.addEventListener('click', onBackdrop);
+          });
+        }
+
+        function initAdminData() {
+          fetchHierarchy();
+          fetchData();
+        }
+
+        // Initialize Page
+        if (checkAdminAuth()) {
+          initAdminData();
+        }
+        setInterval(() => {
+          if (currentAdmin && (currentAdmin.role === 'super_admin' || currentAdmin.role === 'rcsm')) {
+            const currentTab = document.querySelector('.tab-btn.active');
+            if (currentTab && currentTab.id === 'tab-btn-feed') {
+              fetchData();
+            }
+          }
+        }, 15000);
       </script>
     </body>
     </html>
     """
+
 
 # Mount static files for the mobile PWA web app
 app.mount("/", StaticFiles(directory=WEB_APP_DIR, html=True), name="static")

@@ -37,11 +37,13 @@
 
   <!-- User & Center Ribbon -->
   <div class="gs-ribbon" id="user-bar">
-    <div class="gs-user-badge">
-      <span>👤 <span id="logged-user-name">Field Surveyor</span></span>
+    <div class="gs-user-badge" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+      <span>👤 <strong id="logged-user-name">Field Surveyor</strong></span>
+      <span class="gs-role-badge role-field_technician" id="logged-user-role">Field Technician</span>
       <span class="gs-center-tag" id="logged-user-center">Thrissur North</span>
     </div>
-    <div>
+    <div style="display:flex; align-items:center; gap:10px;">
+      <a id="admin-nav-link" href="/admin" class="btn-link" style="display:none; color:#0284c7; font-weight:700; text-decoration:none;">📊 Dashboard</a>
       <button class="btn-link" onclick="logout()">Sign Out</button>
     </div>
   </div>
@@ -49,8 +51,13 @@
   <!-- Main Content Container -->
   <div class="main-content">
 
+    <!-- RCSM Notice Banner (View-Only Mode) -->
+    <div id="rcsm-banner" class="rcsm-banner" style="display:none;">
+      <strong>👁️ RCSM View-Only Mode:</strong> Field survey data entry is disabled for your RCSM account. You can inspect surveyed records and download spreadsheets below, or open the <a href="/admin" style="color:#1d4ed8; font-weight:700; text-decoration:underline;">📊 Center-Wise Dashboard</a>.
+    </div>
+
     <!-- Active Row Entry Form (Spreadsheet Input Row) -->
-    <div class="gs-card">
+    <div class="gs-card" id="entry-form-card">
       <div class="gs-card-body">
         <!-- Spreadsheet Cells Grid -->
         <div class="gs-grid">

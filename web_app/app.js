@@ -28,14 +28,83 @@ let isServerReachable = false;
 // User Session & Authentication
 let currentUser = JSON.parse(localStorage.getItem('gpon_logged_in_user') || 'null');
 
+function normalizeClientRole(role) {
+  const r = (role || '').trim().toLowerCase();
+  if (r === 'admin' || r === 'super_admin' || r === 'superadmin') return 'super_admin';
+  if (r === 'rcsm') return 'rcsm';
+  if (r === 'acso') return 'acso';
+  return 'field_technician';
+}
+
 function updateUserBar() {
   const userBar = document.getElementById('user-bar');
   const nameEl = document.getElementById('logged-user-name');
   const centerEl = document.getElementById('logged-user-center');
+  const roleEl = document.getElementById('logged-user-role');
+  const adminLink = document.getElementById('admin-nav-link');
+  const rcsmBanner = document.getElementById('rcsm-banner');
+  const submitBtn = document.querySelector('.btn-add-row');
+  const excelBtn = document.querySelector('.btn-gs-excel');
+  const csvBtn = document.querySelector('.gs-bottom-bar button:nth-child(2)');
+
   if (currentUser) {
     nameEl.innerText = currentUser.full_name || currentUser.username;
     centerEl.innerText = currentUser.assigned_center || 'ALL';
     userBar.style.display = 'flex';
+
+    const role = normalizeClientRole(currentUser.role);
+    currentUser.role = role;
+
+    // 1. Role Badges
+    if (roleEl) {
+      roleEl.className = `gs-role-badge role-${role}`;
+      if (role === 'super_admin') {
+        roleEl.innerText = '👑 Super Admin';
+      } else if (role === 'rcsm') {
+        roleEl.innerText = '📊 RCSM';
+      } else if (role === 'acso') {
+        roleEl.innerText = '📝 ACSO';
+      } else {
+        roleEl.innerText = '👷 Field Tech';
+      }
+    }
+
+    // 2. Dashboard Link for Super Admin & RCSM
+    if (adminLink) {
+      if (role === 'super_admin') {
+        adminLink.innerText = '⚙️ Admin Dashboard';
+        adminLink.style.display = 'inline-block';
+      } else if (role === 'rcsm') {
+        adminLink.innerText = '📊 RCSM Dashboard';
+        adminLink.style.display = 'inline-block';
+      } else {
+        adminLink.style.display = 'none';
+      }
+    }
+
+    // 3. RCSM: "No option to enter the field inputs"
+    // Disable form and hide submit button for RCSM
+    const isEntryAllowed = (role !== 'rcsm');
+    if (rcsmBanner) rcsmBanner.style.display = isEntryAllowed ? 'none' : 'block';
+    if (submitBtn) submitBtn.style.display = isEntryAllowed ? 'flex' : 'none';
+
+    const formInputs = document.querySelectorAll('.gs-card-body input, .gs-card-body select');
+    formInputs.forEach(el => {
+      if (!isEntryAllowed) {
+        el.setAttribute('disabled', 'true');
+      } else {
+        if (!['tech-select', 'olt-type-select', 'region-select'].includes(el.id)) {
+          el.removeAttribute('disabled');
+        }
+      }
+    });
+
+    // 4. Field Technician: "Option to enter the field input only no options to download the data"
+    // ACSO & RCSM & Super Admin can download data. Field Technician cannot.
+    const isDownloadAllowed = (role !== 'field_technician');
+    if (excelBtn) excelBtn.style.display = isDownloadAllowed ? 'inline-flex' : 'none';
+    if (csvBtn) csvBtn.style.display = isDownloadAllowed ? 'inline-flex' : 'none';
+
   } else {
     userBar.style.display = 'none';
   }
@@ -86,9 +155,11 @@ async function handleLogin(e) {
 
   // 2. Offline fallback credentials for remote field areas
   const offlineUsers = {
-    'thrissur_agent': { username: 'thrissur_agent', full_name: 'Thrissur Survey Agent', assigned_center: 'Thrissur North', role: 'field_agent' },
-    'tmm_agent': { username: 'tmm_agent', full_name: 'Thathamangalam Agent', assigned_center: 'Thathamangalm', role: 'field_agent' },
-    'admin': { username: 'admin', full_name: 'Central Administrator', assigned_center: 'ALL', role: 'admin' }
+    'thrissur_agent': { username: 'thrissur_agent', full_name: 'Thrissur Survey Technician', assigned_center: 'Thrissur North', assigned_region: 'Thrissur', role: 'field_technician' },
+    'tmm_agent': { username: 'tmm_agent', full_name: 'Thathamangalam Survey Technician', assigned_center: 'Thathamangalm', assigned_region: 'Palakkad', role: 'field_technician' },
+    'acso_thrissur': { username: 'acso_thrissur', full_name: 'Thrissur ACSO Officer', assigned_center: 'Thrissur North', assigned_region: 'Thrissur', role: 'acso' },
+    'rcsm_thrissur': { username: 'rcsm_thrissur', full_name: 'Thrissur RCSM Manager', assigned_center: 'Thrissur North', assigned_region: 'Thrissur', role: 'rcsm' },
+    'admin': { username: 'admin', full_name: 'Central Super Administrator', assigned_center: 'ALL', assigned_region: 'ALL', role: 'super_admin' }
   };
 
   if (offlineUsers[u] && (p === '1234' || p === 'admin123')) {
@@ -811,6 +882,11 @@ function adjustCustomer(delta) {
 
 // Save Entry
 function saveRecord() {
+  if (currentUser && normalizeClientRole(currentUser.role) === 'rcsm') {
+    showToast('RCSM accounts cannot enter or submit field survey records.', false);
+    return;
+  }
+
   if (!postInput.value.trim()) {
     showToast('Please enter KSEB Post Number', false);
     postInput.focus();
@@ -975,6 +1051,11 @@ function renderSheetTable() {
 
 // Export to Excel (.xlsx)
 function exportToExcel() {
+  if (currentUser && normalizeClientRole(currentUser.role) === 'field_technician') {
+    showToast('Permission Denied: Field Technicians cannot download survey data.', false);
+    return;
+  }
+
   if (records.length === 0) {
     showToast('No records to export yet!', false);
     return;
@@ -1028,6 +1109,11 @@ function exportToExcel() {
 
 // Export to CSV
 function exportToCSV() {
+  if (currentUser && normalizeClientRole(currentUser.role) === 'field_technician') {
+    showToast('Permission Denied: Field Technicians cannot download survey data.', false);
+    return;
+  }
+
   if (records.length === 0) {
     showToast('No records to export yet!', false);
     return;

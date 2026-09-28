@@ -123,6 +123,30 @@ body {
   border: 1px solid #ceead6;
 }
 
+.gs-role-badge {
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 12px;
+  color: #ffffff;
+  display: inline-block;
+}
+.role-super_admin { background: #6366f1; }
+.role-rcsm { background: #0284c7; }
+.role-acso { background: #059669; }
+.role-field_technician { background: #64748b; }
+
+.rcsm-banner {
+  background: #eff6ff;
+  border: 1.5px solid #93c5fd;
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 14px;
+  color: #1e40af;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
 .btn-link {
   background: none;
   border: none;
