@@ -519,6 +519,10 @@ function updateEnclosureId() {
   const olt = oltSelect.value;
   const port = portSelect.value;
   const enc = enclosureSelect.value;
+  if (!olt || !port || !enc) {
+    enclosureIdPreview.innerText = '---';
+    return;
+  }
   const eid = computeEnclosureId(olt, port, enc);
   enclosureIdPreview.innerText = eid || '---';
 }
@@ -651,28 +655,32 @@ function initDropdowns(preserveSelection = false) {
     oltTypeSelect.disabled = true;
   }
 
-  // Enclosures
-  if (enclosureSelect.options.length === 0) {
-    DEFAULT_PRELOAD.enclosures.forEach(e => {
-      const opt = document.createElement('option');
-      opt.value = e;
-      opt.innerText = e;
-      enclosureSelect.appendChild(opt);
-    });
-  }
+  // Enclosures - placeholder only; cascade via updateAvailableEnclosures() will rebuild
+  enclosureSelect.innerHTML = '';
+  const encDefOpt = document.createElement('option');
+  encDefOpt.value = '';
+  encDefOpt.innerText = '-- Select Enclosure --';
+  enclosureSelect.appendChild(encDefOpt);
 
-  // Splitter Ratio
-  if (splitterRatioSelect.options.length === 0) {
-    DEFAULT_PRELOAD.ratios.forEach(r => {
-      const opt = document.createElement('option');
-      opt.value = r;
-      opt.innerText = r;
-      splitterRatioSelect.appendChild(opt);
-    });
-    if (DEFAULT_PRELOAD.ratios.includes("1:8")) {
-      splitterRatioSelect.value = "1:8";
-    }
-  }
+  // Splitter Ratio - always rebuild with empty default (no auto-selection)
+  splitterRatioSelect.innerHTML = '';
+  const ratioDefOpt = document.createElement('option');
+  ratioDefOpt.value = '';
+  ratioDefOpt.innerText = '-- Select Splitter Ratio --';
+  splitterRatioSelect.appendChild(ratioDefOpt);
+  DEFAULT_PRELOAD.ratios.forEach(r => {
+    const opt = document.createElement('option');
+    opt.value = r;
+    opt.innerText = r;
+    splitterRatioSelect.appendChild(opt);
+  });
+
+  // Splitter ID - placeholder only; cascade via updateAvailableSplitters() will rebuild
+  splitterIdSelect.innerHTML = '';
+  const sidDefOpt = document.createElement('option');
+  sidDefOpt.value = '';
+  sidDefOpt.innerText = '-- Select Splitter ID --';
+  splitterIdSelect.appendChild(sidDefOpt);
 
   updateSplitterColorOptions();
   onCenterChange(prevRt, prevOlt);
@@ -681,18 +689,21 @@ function initDropdowns(preserveSelection = false) {
 // Splitter Lead Colour Code dynamically based on Splitter Ratio
 function updateSplitterColorOptions() {
   if (!splitterColorSelect) return;
-  const ratio = splitterRatioSelect ? splitterRatioSelect.value : '1:8';
-  const colorList = (DEFAULT_PRELOAD.color_codes_by_ratio && DEFAULT_PRELOAD.color_codes_by_ratio[ratio])
-    ? DEFAULT_PRELOAD.color_codes_by_ratio[ratio]
-    : (DEFAULT_PRELOAD.color_codes || []);
+  const ratio = splitterRatioSelect ? splitterRatioSelect.value : '';
 
   const prev = splitterColorSelect.value;
   splitterColorSelect.innerHTML = '';
 
   const defOpt = document.createElement('option');
   defOpt.value = '';
-  defOpt.innerText = `-- Select Out Color (${ratio}) --`;
+  defOpt.innerText = ratio ? `-- Select Out Color (${ratio}) --` : '-- Select Ratio First --';
   splitterColorSelect.appendChild(defOpt);
+
+  if (!ratio) return; // No ratio selected, don't show color options
+
+  const colorList = (DEFAULT_PRELOAD.color_codes_by_ratio && DEFAULT_PRELOAD.color_codes_by_ratio[ratio])
+    ? DEFAULT_PRELOAD.color_codes_by_ratio[ratio]
+    : (DEFAULT_PRELOAD.color_codes || []);
 
   colorList.forEach(col => {
     const opt = document.createElement('option');
@@ -711,35 +722,39 @@ function updateAvailableEnclosures() {
   const olt = oltSelect ? oltSelect.value : '';
   const port = portSelect ? portSelect.value : '';
 
-  // Enclosures already used for this exact OLT & Port
-  const usedEnc = new Set(
-    records
-      .filter(r => (r["OLT/Node  Name"] || r.olt_name) === olt && (r["Port Number"] || r.port_number) === port)
-      .map(r => r["Enclosure Number"] || r.enclosure_number)
-  );
-
   const prevVal = enclosureSelect.value;
   enclosureSelect.innerHTML = '';
 
-  let firstAvailable = null;
-  DEFAULT_PRELOAD.enclosures.forEach(e => {
-    const opt = document.createElement('option');
-    opt.value = e;
-    if (usedEnc.has(e)) {
-      opt.innerText = `${e} (Already Used in ${port})`;
-      opt.disabled = true;
-      opt.style.color = '#94a3b8';
-    } else {
-      opt.innerText = e;
-      if (!firstAvailable) firstAvailable = e;
-    }
-    enclosureSelect.appendChild(opt);
-  });
+  // Empty default placeholder
+  const defOpt = document.createElement('option');
+  defOpt.value = '';
+  defOpt.innerText = (olt && port) ? '-- Select Enclosure --' : '-- Select Port First --';
+  enclosureSelect.appendChild(defOpt);
 
-  if (prevVal && !usedEnc.has(prevVal)) {
-    enclosureSelect.value = prevVal;
-  } else if (firstAvailable) {
-    enclosureSelect.value = firstAvailable;
+  if (olt && port) {
+    // Enclosures already used for this exact OLT & Port
+    const usedEnc = new Set(
+      records
+        .filter(r => (r["OLT/Node  Name"] || r.olt_name) === olt && (r["Port Number"] || r.port_number) === port)
+        .map(r => r["Enclosure Number"] || r.enclosure_number)
+    );
+
+    DEFAULT_PRELOAD.enclosures.forEach(e => {
+      const opt = document.createElement('option');
+      opt.value = e;
+      if (usedEnc.has(e)) {
+        opt.innerText = `${e} (Already Used in ${port})`;
+        opt.disabled = true;
+        opt.style.color = '#94a3b8';
+      } else {
+        opt.innerText = e;
+      }
+      enclosureSelect.appendChild(opt);
+    });
+
+    if (prevVal && !usedEnc.has(prevVal)) {
+      enclosureSelect.value = prevVal;
+    }
   }
 
   updateEnclosureId();
@@ -751,37 +766,42 @@ function updateAvailableSplitters() {
   const olt = oltSelect ? oltSelect.value : '';
   const port = portSelect ? portSelect.value : '';
   const enc = enclosureSelect ? enclosureSelect.value : '';
-  const eid = computeEnclosureId(olt, port, enc);
-
-  // Splitters already used under this exact Enclosure ID
-  const usedSplitters = new Set(
-    records
-      .filter(r => (r["Enclosure ID"] || r.enclosure_id) === eid)
-      .map(r => r["Splitter ID"] || r.splitter_id)
-  );
 
   const prevVal = splitterIdSelect.value;
   splitterIdSelect.innerHTML = '';
 
-  let firstAvailable = null;
-  DEFAULT_PRELOAD.splitters.forEach(s => {
-    const opt = document.createElement('option');
-    opt.value = s;
-    if (usedSplitters.has(s)) {
-      opt.innerText = `${s} (Already Used in ${eid})`;
-      opt.disabled = true;
-      opt.style.color = '#94a3b8';
-    } else {
-      opt.innerText = s;
-      if (!firstAvailable) firstAvailable = s;
-    }
-    splitterIdSelect.appendChild(opt);
-  });
+  // Empty default placeholder
+  const defOpt = document.createElement('option');
+  defOpt.value = '';
+  defOpt.innerText = enc ? '-- Select Splitter ID --' : '-- Select Enclosure First --';
+  splitterIdSelect.appendChild(defOpt);
 
-  if (prevVal && !usedSplitters.has(prevVal)) {
-    splitterIdSelect.value = prevVal;
-  } else if (firstAvailable) {
-    splitterIdSelect.value = firstAvailable;
+  if (enc) {
+    const eid = computeEnclosureId(olt, port, enc);
+
+    // Splitters already used under this exact Enclosure ID
+    const usedSplitters = new Set(
+      records
+        .filter(r => (r["Enclosure ID"] || r.enclosure_id) === eid)
+        .map(r => r["Splitter ID"] || r.splitter_id)
+    );
+
+    DEFAULT_PRELOAD.splitters.forEach(s => {
+      const opt = document.createElement('option');
+      opt.value = s;
+      if (usedSplitters.has(s)) {
+        opt.innerText = `${s} (Already Used in ${eid})`;
+        opt.disabled = true;
+        opt.style.color = '#94a3b8';
+      } else {
+        opt.innerText = s;
+      }
+      splitterIdSelect.appendChild(opt);
+    });
+
+    if (prevVal && !usedSplitters.has(prevVal)) {
+      splitterIdSelect.value = prevVal;
+    }
   }
 }
 
@@ -799,6 +819,13 @@ function onCenterChange(targetRt = null, targetOlt = null) {
   }
   rtRoomSelect.innerHTML = '';
   const rtRooms = getRtRoomsForCenter(c);
+
+  // Empty default placeholder
+  const rtDefOpt = document.createElement('option');
+  rtDefOpt.value = '';
+  rtDefOpt.innerText = '-- Select RT Room --';
+  rtRoomSelect.appendChild(rtDefOpt);
+
   rtRooms.forEach(rt => {
     const opt = document.createElement('option');
     opt.value = rt;
@@ -816,6 +843,13 @@ function onRTRoomChange(targetOlt = null) {
   const rt = rtRoomSelect.value;
   oltSelect.innerHTML = '';
   const olts = getOltsForRtRoom(c, rt);
+
+  // Empty default placeholder
+  const oltDefOpt = document.createElement('option');
+  oltDefOpt.value = '';
+  oltDefOpt.innerText = rt ? '-- Select Node Name --' : '-- Select RT Room First --';
+  oltSelect.appendChild(oltDefOpt);
+
   olts.forEach(o => {
     const opt = document.createElement('option');
     opt.value = o;
@@ -914,27 +948,36 @@ function onOLTTypeChange() {
   const c = centerSelect ? centerSelect.value : '';
   const rt = rtRoomSelect ? rtRoomSelect.value : '';
   const olt = oltSelect ? oltSelect.value : '';
-  const entry = findNodeEntry(c, rt, olt);
 
   portSelect.innerHTML = '';
-  let ports = null;
-  if (entry && Array.isArray(entry.ports) && entry.ports.length > 0) {
-    ports = entry.ports;
-  } else if (Array.isArray(entry) && entry.length > 0) {
-    ports = entry;
-  } else {
-    const oType = oltTypeSelect ? oltTypeSelect.value : '8P';
-    ports = (DEFAULT_PRELOAD.ports_by_type && DEFAULT_PRELOAD.ports_by_type[oType])
-      ? DEFAULT_PRELOAD.ports_by_type[oType]
-      : (oType === '16P' ? Array.from({length: 16}, (_, i) => `P${i + 1}`) : (oType === '32P' ? Array.from({length: 32}, (_, i) => `P${i + 1}`) : Array.from({length: 8}, (_, i) => `P${i + 1}`)));
-  }
 
-  ports.forEach(p => {
-    const opt = document.createElement('option');
-    opt.value = p;
-    opt.innerText = p;
-    portSelect.appendChild(opt);
-  });
+  // Empty default placeholder
+  const portDefOpt = document.createElement('option');
+  portDefOpt.value = '';
+  portDefOpt.innerText = olt ? '-- Select Port --' : '-- Select Node First --';
+  portSelect.appendChild(portDefOpt);
+
+  if (olt) {
+    const entry = findNodeEntry(c, rt, olt);
+    let ports = null;
+    if (entry && Array.isArray(entry.ports) && entry.ports.length > 0) {
+      ports = entry.ports;
+    } else if (Array.isArray(entry) && entry.length > 0) {
+      ports = entry;
+    } else {
+      const oType = oltTypeSelect ? oltTypeSelect.value : '8P';
+      ports = (DEFAULT_PRELOAD.ports_by_type && DEFAULT_PRELOAD.ports_by_type[oType])
+        ? DEFAULT_PRELOAD.ports_by_type[oType]
+        : (oType === '16P' ? Array.from({length: 16}, (_, i) => `P${i + 1}`) : (oType === '32P' ? Array.from({length: 32}, (_, i) => `P${i + 1}`) : Array.from({length: 8}, (_, i) => `P${i + 1}`)));
+    }
+
+    ports.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p;
+      opt.innerText = p;
+      portSelect.appendChild(opt);
+    });
+  }
 
   updateAvailableEnclosures();
 }
@@ -1366,6 +1409,29 @@ function saveRecord() {
     return;
   }
 
+  // Mandatory Dropdown Validation: All 6 cascading fields must be explicitly selected
+  const mandatoryDropdowns = [
+    { el: rtRoomSelect, label: 'RT Room' },
+    { el: oltSelect, label: 'Node Name' },
+    { el: portSelect, label: 'Port Number' },
+    { el: enclosureSelect, label: 'Enclosure #' },
+    { el: splitterRatioSelect, label: 'Splitter Ratio' },
+    { el: splitterIdSelect, label: 'Splitter ID' }
+  ];
+  for (const dd of mandatoryDropdowns) {
+    if (!dd.el || !dd.el.value) {
+      showToast(`⚠️ ${dd.label} is mandatory! Please select a value.`, false);
+      if (dd.el) {
+        dd.el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        dd.el.focus();
+        dd.el.style.borderColor = '#ef4444';
+        dd.el.style.boxShadow = '0 0 0 3px rgba(239,68,68,0.2)';
+        setTimeout(() => { dd.el.style.borderColor = ''; dd.el.style.boxShadow = ''; }, 2500);
+      }
+      return;
+    }
+  }
+
   const clientUuid = (typeof crypto !== 'undefined' && crypto.randomUUID) 
     ? crypto.randomUUID() 
     : ('rec_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9));
@@ -1479,6 +1545,14 @@ function saveRecord() {
     mapInstance.removeLayer(accuracyCircle);
     accuracyCircle = null;
   }
+
+  // Reset per-pole dropdown selections (Enclosure, Splitter Ratio, Splitter ID)
+  // RT Room, Node Name, and Port persist for same network segment continuity
+  enclosureSelect.value = '';
+  splitterRatioSelect.value = '';
+  splitterIdSelect.value = '';
+  enclosureIdPreview.innerText = '---';
+  updateSplitterColorOptions();
 
   // Refresh available enclosures & splitters for next entry
   updateAvailableEnclosures();
