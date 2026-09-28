@@ -23,10 +23,17 @@ wheels/
 .installed.cfg
 *.egg
 
-# Database & runtime files
+# Database & runtime files (Never overwrite production data on git pull)
+*.db
+*.sqlite
+*.sqlite3
 *.db-journal
 *.db-wal
 *.db-shm
+gpon_survey_data.db
+GPON_Master_Server_Export.xlsx
+users_config.json
+*.bak
 
 # OS generated files
 .DS_Store

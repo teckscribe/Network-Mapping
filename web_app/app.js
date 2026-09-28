@@ -16,11 +16,9 @@ if (!deviceId) {
 }
 
 let serverUrl = localStorage.getItem('gpon_server_url');
-if (!serverUrl) {
-  // Default to current host if served via HTTP/S, or default port 8000
-  serverUrl = (window.location.protocol.startsWith('http') && window.location.port !== '5500') 
-    ? window.location.origin 
-    : 'http://localhost:9001';
+if (!serverUrl || (window.location.protocol.startsWith('http') && window.location.port !== '5500')) {
+  // If served via web server (e.g. https://network-mapping.online), always use current origin
+  serverUrl = window.location.origin;
   localStorage.setItem('gpon_server_url', serverUrl);
 }
 
@@ -47,6 +45,8 @@ async function handleLogin(e) {
   if (e) e.preventDefault();
   const u = document.getElementById('login-username').value.trim();
   const p = document.getElementById('login-password').value.trim();
+  const rememberCheckbox = document.getElementById('login-remember-me');
+  const remember = rememberCheckbox ? rememberCheckbox.checked : true;
   
   if (!u || !p) {
     showToast('Please enter username and password', false);
@@ -67,6 +67,15 @@ async function handleLogin(e) {
 
     if (res.ok) {
       const data = await res.json();
+      if (remember) {
+        localStorage.setItem('gpon_remember_creds', 'true');
+        localStorage.setItem('gpon_remembered_username', u);
+        localStorage.setItem('gpon_remembered_password', p);
+      } else {
+        localStorage.removeItem('gpon_remember_creds');
+        localStorage.removeItem('gpon_remembered_username');
+        localStorage.removeItem('gpon_remembered_password');
+      }
       setCurrentUser(data.user);
       showToast(`Welcome, ${data.user.full_name}!`);
       return;
@@ -83,6 +92,11 @@ async function handleLogin(e) {
   };
 
   if (offlineUsers[u] && (p === '1234' || p === 'admin123')) {
+    if (remember) {
+      localStorage.setItem('gpon_remember_creds', 'true');
+      localStorage.setItem('gpon_remembered_username', u);
+      localStorage.setItem('gpon_remembered_password', p);
+    }
     setCurrentUser(offlineUsers[u]);
     showToast(`Offline Login: Welcome, ${offlineUsers[u].full_name}!`);
   } else {
@@ -1153,9 +1167,27 @@ window.addEventListener('offline', () => {
 
 // Init on DOM ready
 document.addEventListener('DOMContentLoaded', () => {
+  // Pre-fill / Restore credentials if remembered
+  const isRemembered = localStorage.getItem('gpon_remember_creds') === 'true';
+  const savedU = localStorage.getItem('gpon_remembered_username') || '';
+  const savedP = localStorage.getItem('gpon_remembered_password') || '';
+  const uInput = document.getElementById('login-username');
+  const pInput = document.getElementById('login-password');
+  const rCheckbox = document.getElementById('login-remember-me');
+  if (uInput && savedU) uInput.value = savedU;
+  if (pInput && savedP) pInput.value = savedP;
+  if (rCheckbox && localStorage.getItem('gpon_remember_creds') !== null) {
+    rCheckbox.checked = isRemembered;
+  }
+
   // Check Login State
   if (!currentUser) {
-    document.getElementById('login-overlay').style.display = 'flex';
+    if (isRemembered && savedU && savedP) {
+      // Auto-restore saved session seamlessly
+      handleLogin();
+    } else {
+      document.getElementById('login-overlay').style.display = 'flex';
+    }
   } else {
     document.getElementById('login-overlay').style.display = 'none';
     updateUserBar();

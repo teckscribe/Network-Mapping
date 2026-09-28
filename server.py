@@ -23,6 +23,74 @@ from typing import List, Optional
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WEB_APP_DIR = os.path.join(BASE_DIR, "web_app")
 DB_PATH = os.path.join(BASE_DIR, "gpon_survey_data.db")
+USERS_CONFIG_PATH = os.path.join(BASE_DIR, "users_config.json")
+
+def save_users_to_json(conn=None):
+    """Persists current SQLite users to users_config.json so git pulls never wipe user credentials."""
+    close_at_end = False
+    if conn is None:
+        conn = sqlite3.connect(DB_PATH)
+        close_at_end = True
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT username, password, full_name, assigned_center, assigned_region, role, created_at FROM users")
+        rows = cur.fetchall()
+        users_list = []
+        for r in rows:
+            users_list.append({
+                "username": r[0],
+                "password": r[1],
+                "full_name": r[2],
+                "assigned_center": r[3],
+                "assigned_region": r[4] or "Thrissur",
+                "role": r[5] or "field_agent",
+                "created_at": r[6]
+            })
+        with open(USERS_CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(users_list, f, indent=2)
+        print(f"[Config] Saved {len(users_list)} users to persistent {USERS_CONFIG_PATH}")
+    except Exception as e:
+        print(f"[Config Warning] Could not save users to JSON backup: {e}")
+    finally:
+        if close_at_end:
+            conn.close()
+
+def load_users_from_json(conn):
+    """Restores user credentials from users_config.json into SQLite."""
+    if not os.path.exists(USERS_CONFIG_PATH):
+        return False
+    try:
+        with open(USERS_CONFIG_PATH, "r", encoding="utf-8") as f:
+            users_list = json.load(f)
+        if not users_list or not isinstance(users_list, list):
+            return False
+        cur = conn.cursor()
+        now = datetime.datetime.now().isoformat()
+        for u in users_list:
+            cur.execute("""
+            INSERT INTO users (username, password, full_name, assigned_center, assigned_region, role, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(username) DO UPDATE SET
+                password=excluded.password,
+                full_name=excluded.full_name,
+                assigned_center=excluded.assigned_center,
+                assigned_region=excluded.assigned_region,
+                role=excluded.role
+            """, (
+                u["username"].strip(),
+                u["password"].strip(),
+                u["full_name"].strip(),
+                u["assigned_center"].strip(),
+                u.get("assigned_region", "Thrissur"),
+                u.get("role", "field_agent"),
+                u.get("created_at", now)
+            ))
+        conn.commit()
+        print(f"[Config] Restored and verified {len(users_list)} users from persistent {USERS_CONFIG_PATH}")
+        return True
+    except Exception as e:
+        print(f"[Config Warning] Could not restore users from JSON backup: {e}")
+        return False
 
 # Init SQLite Database
 def init_db():
@@ -88,7 +156,10 @@ def init_db():
     if "survey_date_time" not in cols:
         cur.execute("ALTER TABLE survey_records ADD COLUMN survey_date_time TEXT")
 
-    # Seed Default Users if none exist
+    # 1. Sync from persistent users_config.json if it exists
+    load_users_from_json(conn)
+
+    # 2. Seed Default Users if none exist
     cur.execute("SELECT COUNT(*) FROM users")
     if cur.fetchone()[0] == 0:
         now = datetime.datetime.now().isoformat()
@@ -101,9 +172,12 @@ def init_db():
         INSERT INTO users (username, password, full_name, assigned_center, assigned_region, role, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)
         """, default_users)
+        conn.commit()
         print("Default users initialized.")
 
     conn.commit()
+    # 3. Always ensure users_config.json is up-to-date with current database users
+    save_users_to_json(conn)
     conn.close()
 
 init_db()
@@ -219,6 +293,7 @@ def create_user(u: UserCreateModel):
         conn.close()
         raise HTTPException(status_code=400, detail=str(e))
     conn.close()
+    save_users_to_json()
     return {"status": "success", "message": f"User {u.username} saved successfully."}
 
 @app.delete("/api/users/{username}")
@@ -230,7 +305,29 @@ def delete_user(username: str):
     cur.execute("DELETE FROM users WHERE username = ?", (username,))
     conn.commit()
     conn.close()
+    save_users_to_json()
     return {"status": "success", "message": f"User {username} deleted."}
+
+@app.get("/api/config/users")
+def export_users_config():
+    save_users_to_json()
+    if os.path.exists(USERS_CONFIG_PATH):
+        return FileResponse(USERS_CONFIG_PATH, media_type="application/json", filename="users_config.json")
+    raise HTTPException(status_code=404, detail="Configuration not found")
+
+@app.post("/api/config/users")
+async def import_users_config(file: UploadFile = File(...)):
+    try:
+        contents = await file.read()
+        users_list = json.loads(contents.decode('utf-8'))
+        with open(USERS_CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(users_list, f, indent=2)
+        conn = sqlite3.connect(DB_PATH)
+        load_users_from_json(conn)
+        conn.close()
+        return {"status": "success", "message": f"Successfully imported {len(users_list)} users."}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to import users: {str(e)}")
 
 # ====================
 # NETWORK HIERARCHY API
@@ -703,7 +800,14 @@ def admin_dashboard():
 
       <!-- Tab 2: User Management -->
       <div id="tab-users" style="display:none; background:#ffffff; border-radius:10px; padding:16px; border:1px solid #cbd5e1; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
-        <h3 style="margin-top:0; color:#0284c7;">Add / Manage Field Surveyors</h3>
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
+          <h3 style="margin:0; color:#0284c7;">Add / Manage Field Surveyors</h3>
+          <div style="display:flex; gap:8px;">
+            <a href="/api/config/users" download="users_config.json" class="btn" style="background:#0284c7; color:white; font-size:0.8rem; text-decoration:none; padding:6px 12px; border-radius:6px; display:inline-flex; align-items:center; gap:4px;">📥 Backup Users JSON</a>
+            <button type="button" onclick="document.getElementById('import-users-file').click()" class="btn" style="background:#475569; color:white; font-size:0.8rem; padding:6px 12px; border-radius:6px; cursor:pointer;">📤 Restore Users JSON</button>
+            <input type="file" id="import-users-file" accept=".json" style="display:none;" onchange="importUsersConfig(event)">
+          </div>
+        </div>
         
         <form onsubmit="createUser(event)" class="form-row">
           <input type="text" id="new-user" placeholder="Username (e.g. anoop)" required>
@@ -1039,6 +1143,22 @@ def admin_dashboard():
           if (!confirm('Delete user ' + u + '?')) return;
           await fetch('/api/users/' + u, { method: 'DELETE' });
           fetchUsers();
+        }
+
+        async function importUsersConfig(e) {
+          const file = e.target.files[0];
+          if (!file) return;
+          const formData = new FormData();
+          formData.append('file', file);
+          try {
+            const res = await fetch('/api/config/users', { method: 'POST', body: formData });
+            const data = await res.json();
+            alert(data.message || 'Users restored successfully!');
+            fetchUsers();
+          } catch (err) {
+            alert('Error restoring users config: ' + err);
+          }
+          e.target.value = '';
         }
 
         fetchData();
