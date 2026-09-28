@@ -45,7 +45,6 @@ function updateUserBar() {
   const rcsmBanner = document.getElementById('rcsm-banner');
   const submitBtn = document.querySelector('.btn-add-row');
   const excelBtn = document.getElementById('btn-export-excel') || document.querySelector('.btn-gs-excel');
-  const csvBtn = document.getElementById('btn-export-csv') || document.querySelector('.gs-bottom-bar button:nth-child(2)');
 
   if (currentUser) {
     nameEl.innerText = currentUser.full_name || currentUser.username;
@@ -110,7 +109,6 @@ function updateUserBar() {
     // ACSO & RCSM & Super Admin can download data. Field Technician cannot.
     const isDownloadAllowed = (role !== 'field_technician');
     if (excelBtn) excelBtn.style.display = isDownloadAllowed ? 'inline-flex' : 'none';
-    if (csvBtn) csvBtn.style.display = isDownloadAllowed ? 'inline-flex' : 'none';
 
   } else {
     userBar.style.display = 'none';
@@ -1168,19 +1166,80 @@ function renderSheetTable() {
   });
 }
 
-// Export to Excel (.xlsx)
-function exportToExcel() {
+// Export to Excel (.xlsx) - Downloads central server survey records for the user's center
+async function exportToExcel() {
   if (currentUser && normalizeClientRole(currentUser.role) === 'field_technician') {
     showToast('Permission Denied: Field Technicians cannot download survey data.', false);
     return;
   }
 
-  if (records.length === 0) {
-    showToast('No records to export yet!', false);
+  // 1. Determine target center to export
+  let targetCenter = '';
+  if (centerSelect && centerSelect.value) {
+    targetCenter = centerSelect.value.trim();
+  } else if (currentUser && currentUser.assigned_center) {
+    targetCenter = currentUser.assigned_center.trim();
+  } else {
+    targetCenter = 'ALL';
+  }
+
+  // If user is assigned to multiple centers, provide option to download active center or all assigned centers
+  if (currentUser && currentUser.assigned_center && currentUser.assigned_center.includes(',')) {
+    const centersList = currentUser.assigned_center.split(',').map(s => s.trim()).filter(Boolean);
+    if (centersList.length > 1) {
+      const choice = confirm(`You have charge of multiple centers: ${centersList.join(', ')}.\n\n• Click OK to download all data for currently selected center "${targetCenter}".\n• Click Cancel to download combined data for ALL your assigned centers.`);
+      if (!choice) {
+        targetCenter = currentUser.assigned_center;
+      }
+    }
+  }
+
+  showToast(`Preparing Excel export for ${targetCenter}...`);
+
+  // 2. Online Mode: Stream live central survey data from Ubuntu Server SQLite database
+  if (isServerReachable) {
+    try {
+      const exportUrl = `${serverUrl}/api/export-center-excel?center=${encodeURIComponent(targetCenter)}`;
+      const res = await fetch(exportUrl);
+      if (res.ok) {
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        const today = new Date().toISOString().slice(0, 10);
+        const safeCenterName = targetCenter.replace(/[\s,]+/g, '_');
+        a.download = `${safeCenterName}_Survey_Data_${today}.xlsx`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+        showToast(`Excel downloaded for Center: ${targetCenter}!`);
+        return;
+      } else {
+        const errJson = await res.json().catch(() => ({}));
+        showToast(errJson.detail || 'Server export error, trying local records...', false);
+      }
+    } catch (err) {
+      console.warn('Server export fetch failed, falling back to local storage:', err);
+    }
+  }
+
+  // 3. Offline Mode Fallback: Export local records saved on this device
+  let localExportRows = records;
+  if (targetCenter && targetCenter.toUpperCase() !== 'ALL') {
+    const targetCentersList = targetCenter.split(',').map(s => s.trim().toLowerCase());
+    const filtered = records.filter(r => r.Center && targetCentersList.includes(r.Center.trim().toLowerCase()));
+    if (filtered.length > 0) {
+      localExportRows = filtered;
+    }
+  }
+
+  if (!localExportRows || localExportRows.length === 0) {
+    showToast(`No records found for center: ${targetCenter}`, false);
     return;
   }
 
-  // Column headers matching target template
+  // Column headers matching standard target template
   const headers = [
     'Region', 'Center', 'RT Room', 'GPON/FTTH/WDM', 'OLT/Node  Name', 
     'Port Number', 'KSEB Post Number', 'Land Mark', 'Enclosure Number', 
@@ -1194,22 +1253,22 @@ function exportToExcel() {
     headers
   ];
 
-  records.forEach(r => {
+  localExportRows.forEach(r => {
     rows.push([
       r["Region"] || "Thrissur",
-      r["Center"],
-      r["RT Room"],
-      r["GPON/FTTH/WDM"],
-      r["OLT/Node  Name"],
-      r["Port Number"],
-      r["KSEB Post Number"],
-      r["Land Mark"],
-      r["Enclosure Number"],
-      r["Enclosure ID"],
-      r["Lat /Long"],
-      r["Splitter ID"],
-      r["Splitter Ratio"],
-      r["No: Of Customer Connected"],
+      r["Center"] || "",
+      r["RT Room"] || "",
+      r["GPON/FTTH/WDM"] || "",
+      r["OLT/Node  Name"] || "",
+      r["Port Number"] || "",
+      r["KSEB Post Number"] || "",
+      r["Land Mark"] || "",
+      r["Enclosure Number"] || "",
+      r["Enclosure ID"] || "",
+      r["Lat /Long"] || "",
+      r["Splitter ID"] || "",
+      r["Splitter Ratio"] || "",
+      r["No: Of Customer Connected"] || 0,
       r["Splitter Lead Colour Code"] || r["splitter_lead_color"] || "",
       r["ADL Subscriber ID"] || r["adl_subscriber_id"] || "",
       r["ACS Subscriber ID"] || r["acs_subscriber_id"] || "",
@@ -1222,65 +1281,9 @@ function exportToExcel() {
   XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
 
   const today = new Date().toISOString().slice(0, 10);
-  XLSX.writeFile(wb, `GPON_Survey_Export_${today}.xlsx`);
-  showToast('Excel downloaded!');
-}
-
-// Export to CSV
-function exportToCSV() {
-  if (currentUser && normalizeClientRole(currentUser.role) === 'field_technician') {
-    showToast('Permission Denied: Field Technicians cannot download survey data.', false);
-    return;
-  }
-
-  if (records.length === 0) {
-    showToast('No records to export yet!', false);
-    return;
-  }
-
-  const headers = [
-    'Region', 'Center', 'RT Room', 'GPON/FTTH/WDM', 'OLT/Node  Name', 
-    'Port Number', 'KSEB Post Number', 'Land Mark', 'Enclosure Number', 
-    'Enclosure ID', 'Lat /Long', 'Splitter ID', 'Splitter Ratio', 
-    'No: Of Customer Connected', 'Splitter Lead Colour Code', 
-    'ADL Subscriber ID', 'ACS Subscriber ID', 'Date & Time'
-  ];
-
-  let csvContent = headers.join(',') + '\n';
-
-  records.forEach(r => {
-    const row = [
-      `"${r.Region || 'Thrissur'}"`,
-      `"${r.Center || ''}"`,
-      `"${r['RT Room'] || ''}"`,
-      `"${r['GPON/FTTH/WDM'] || ''}"`,
-      `"${r['OLT/Node  Name'] || ''}"`,
-      `"${r['Port Number'] || ''}"`,
-      `"${r['KSEB Post Number'] || ''}"`,
-      `"${r['Land Mark'] || ''}"`,
-      `"${r['Enclosure Number'] || ''}"`,
-      `"${r['Enclosure ID'] || ''}"`,
-      `"${r['Lat /Long'] || ''}"`,
-      `"${r['Splitter ID'] || ''}"`,
-      `"${r['Splitter Ratio'] || ''}"`,
-      r['No: Of Customer Connected'] || 0,
-      `"${r['Splitter Lead Colour Code'] || r['splitter_lead_color'] || ''}"`,
-      `"${r['ADL Subscriber ID'] || r['adl_subscriber_id'] || ''}"`,
-      `"${r['ACS Subscriber ID'] || r['acs_subscriber_id'] || ''}"`,
-      `"${r['Date & Time'] || r['survey_date_time'] || (r['timestamp'] ? r['timestamp'].slice(0, 19).replace('T', ' ') : '')}"`
-    ];
-    csvContent += row.join(',') + '\n';
-  });
-
-  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  const today = new Date().toISOString().slice(0, 10);
-  a.download = `GPON_Survey_Export_${today}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
-  showToast('CSV downloaded!');
+  const safeName = targetCenter.replace(/[\s,]+/g, '_');
+  XLSX.writeFile(wb, `${safeName}_Survey_Export_${today}.xlsx`);
+  showToast(`Offline Excel exported for ${targetCenter}!`);
 }
 
 // Records Modal Management

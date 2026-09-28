@@ -1201,11 +1201,20 @@ def export_center_excel(center: str, region: Optional[str] = None):
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
-    cur.execute("SELECT * FROM survey_records WHERE LOWER(TRIM(center)) = LOWER(TRIM(?)) ORDER BY rowid ASC", (cent_clean,))
+    
+    if cent_clean.upper() == "ALL":
+        cur.execute("SELECT * FROM survey_records ORDER BY rowid ASC")
+    elif "," in cent_clean:
+        cent_list = [c.strip().lower() for c in cent_clean.split(",") if c.strip()]
+        placeholders = ",".join(["?"] * len(cent_list))
+        cur.execute(f"SELECT * FROM survey_records WHERE LOWER(TRIM(center)) IN ({placeholders}) ORDER BY rowid ASC", tuple(cent_list))
+    else:
+        cur.execute("SELECT * FROM survey_records WHERE LOWER(TRIM(center)) = LOWER(TRIM(?)) ORDER BY rowid ASC", (cent_clean,))
+        
     rows = cur.fetchall()
     conn.close()
 
-    safe_cent = sanitize_folder_name(cent_clean, "General")
+    safe_cent = sanitize_folder_name(cent_clean.replace(",", "_"), "General")
     wb = build_excel_workbook(rows, title=safe_cent[:31])
     excel_bytes = workbook_to_bytes(wb)
     today = datetime.date.today().isoformat()
