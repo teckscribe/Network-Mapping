@@ -57,14 +57,6 @@
       </div>
 
       <div class="gs-card-body">
-        
-        <!-- Formula Bar fx (Live Enclosure ID Auto Calculation) -->
-        <div class="gs-formula-bar">
-          <span class="gs-fx">fx</span>
-          <span style="color:#5f6368; font-size:0.8rem;">Enclosure ID =</span>
-          <span class="gs-formula-val" id="enclosure-id-preview">---</span>
-        </div>
-
         <!-- Spreadsheet Cells Grid -->
         <div class="gs-grid">
           <!-- Hidden Region (Auto-defaulted against Center, not visible/editable for user) -->
@@ -173,6 +165,13 @@
               ⏱️ Auto-captured on save
             </div>
           </div>
+        </div>
+ 
+        <!-- Formula Bar fx (Live Enclosure ID Auto Calculation) -->
+        <div class="gs-formula-bar" style="margin-top: 14px; margin-bottom: 0;">
+          <span class="gs-fx">fx</span>
+          <span style="color:#5f6368; font-size:0.8rem;">Enclosure ID =</span>
+          <span class="gs-formula-val" id="enclosure-id-preview">---</span>
         </div>
 
         <button class="btn-add-row" onclick="saveRecord()">
