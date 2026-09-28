@@ -1,0 +1,6 @@
+Region,Center,RT Room,GPON/FTTH/WDM,OLT/Node  Name,Port Number,KSEB Post Number,Land Mark,Enclosure Number,Enclosure ID,Lat /Long,Splitter ID,Splitter Ratio,No: Of Customer Connected
+Thrissur,Thrissur North,Mulamkunnathukavu,GPON,THN156 OLT53 Mulamkunnathukavu,P1,MAT 148/9,,E1,THN156OLT53P1E1,"10.60665,76.21449",S1,1:8,0
+Thrissur,Thrissur North,Mulamkunnathukavu,GPON,THN156 OLT53 Mulamkunnathukavu,P1,MAT 148/10,,E2,THN156OLT53P1E2,"10.60712,76.21458",S1,1:4,2
+Thrissur,Thrissur North,Mulamkunnathukavu,GPON,THN156 OLT53 Mulamkunnathukavu,P1,MAT 148,NR RT ROOM (MULAMKUNNATHUKAVU),E3,THN156OLT53P1E3,"10.60744,76.21254",S1,1:8,0
+Thrissur,Thrissur North,Mulamkunnathukavu,GPON,THN156 OLT53 Mulamkunnathukavu,P4,MAT 167/5,,E4,THN156OLT53P4E4,"10.60383,76.21220",S1,1:4,1
+Thrissur,Thathamangalm,Kollengode,GPON,TMM/25/OLT-08-KOLLEMGODE,P2,KGD 45/1,OPP GRAMA PANCHAYAT,E1,TMM25OLT08P2E1,"10.59821,76.21055",S1,1:8,3

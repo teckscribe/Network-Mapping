@@ -1,0 +1,6 @@
+ID,Latitude,Longitude,Elevation,Time,Remarks,Region,Center,RT_Room,GPON_FTTH_WDM,OLT_Node_Name,Port_Number,KSEB_Post_Number,Land_Mark,Enclosure_Number,Splitter_ID,Splitter_Ratio,No_Of_Customer_Connected
+1,10.60665,76.21449,32.4,2026-09-28 11:30:15,,Thrissur,Thrissur North,Mulamkunnathukavu,GPON,THN156 OLT53 Mulamkunnathukavu,P1,MAT 148/9,,E1,S1,1:8,0
+2,10.60712,76.21458,33.1,2026-09-28 11:35:20,,Thrissur,Thrissur North,Mulamkunnathukavu,GPON,THN156 OLT53 Mulamkunnathukavu,P1,MAT 148/10,,E2,S1,1:4,2
+3,10.60744,76.21254,34.0,2026-09-28 11:41:02,,Thrissur,Thrissur North,Mulamkunnathukavu,GPON,THN156 OLT53 Mulamkunnathukavu,P1,MAT 148,NR RT ROOM (MULAMKUNNATHUKAVU),E3,S1,1:8,0
+4,10.60383,76.21220,31.8,2026-09-28 11:48:45,,Thrissur,Thrissur North,Mulamkunnathukavu,GPON,THN156 OLT53 Mulamkunnathukavu,P4,MAT 167/5,,E4,S1,1:4,1
+5,10.59821,76.21055,30.5,2026-09-28 11:55:10,,Thrissur,Thathamangalm,Kollengode,GPON,TMM/25/OLT-08-KOLLEMGODE,P2,KGD 45/1,OPP GRAMA PANCHAYAT,E1,S1,1:8,3

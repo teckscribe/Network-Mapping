@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>GPON Field Survey</title>
+  
+  <!-- PWA Manifest & Meta -->
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#0284c7">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="apple-touch-icon" href="icon-192.png">
+
+  <!-- Local Offline Vendor Styles -->
+  <link rel="stylesheet" href="vendor/leaflet.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- Toast Notification -->
+  <div id="toast" class="toast">Action Saved</div>
+
+  <!-- Header -->
+  <header>
+    <div class="brand">
+      <div class="brand-icon">📡</div>
+      <div>
+        <h1>GPON Field Survey</h1>
+        <div class="sub-title">Network & Enclosure Mapping</div>
+      </div>
+    </div>
+    <div class="header-badges">
+      <span class="badge" id="sync-status-badge" onclick="triggerManualSync()" style="cursor:pointer;" title="Tap to sync with server">
+        <span id="sync-dot" style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#94a3b8;"></span>
+        <span id="sync-text">Checking server...</span>
+      </span>
+      <span class="badge badge-count">Saved: <span id="records-count-badge">0</span></span>
+    </div>
+  </header>
+
+  <!-- User Profile & Center Bar -->
+  <div class="user-bar" id="user-bar">
+    <div class="user-info">
+      <span>👤 <strong id="logged-user-name">Field Surveyor</strong></span>
+      <span class="user-center-tag" id="logged-user-center">Thrissur North</span>
+    </div>
+    <button class="btn-logout" onclick="logout()">Logout</button>
+  </div>
+
+  <!-- 1. GPS Location Card -->
+  <div class="card">
+    <div class="card-title">
+      <span>📍 Field Coordinates</span>
+      <button class="map-toggle-btn" id="map-toggle-btn" onclick="toggleMap()">Adjust Pin on Map</button>
+    </div>
+    <div class="gps-box">
+      <button class="btn-gps" onclick="captureGPS()">
+        <span style="font-size: 1.2rem;">🎯</span> Tap to Capture GPS Location
+      </button>
+      <div class="gps-info">
+        <input type="text" id="manual-coords-input" placeholder="Latitude, Longitude (auto or manual)" style="background:transparent; border:none; color:#38bdf8; font-family:monospace; font-weight:bold; font-size:0.9rem; padding:2px;" onchange="onManualCoordsChange(this.value)">
+        <span class="gps-acc" id="gps-acc">Ready</span>
+      </div>
+      <div id="map-container"></div>
+    </div>
+  </div>
+
+  <!-- 2. Network Node Details (Preloaded Cascading Dropdowns) -->
+  <div class="card">
+    <div class="card-title">🌐 Node & OLT Configuration</div>
+    <div class="form-grid">
+      <div class="form-group">
+        <label for="center-select">Center</label>
+        <select id="center-select"></select>
+      </div>
+      <div class="form-group">
+        <label for="rtroom-select">RT Room</label>
+        <select id="rtroom-select"></select>
+      </div>
+      <div class="form-group col-full">
+        <label for="olt-select">OLT / Node Name</label>
+        <select id="olt-select"></select>
+      </div>
+      <div class="form-group">
+        <label for="tech-select">Technology</label>
+        <select id="tech-select"></select>
+      </div>
+      <div class="form-group">
+        <label for="port-select">Port Number</label>
+        <select id="port-select"></select>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3. Pole & Enclosure Details -->
+  <div class="card">
+    <div class="card-title">⚡ KSEB Pole & Enclosure Entry</div>
+    
+    <div class="form-grid">
+      <div class="form-group col-full">
+        <label for="post-input">KSEB Post Number *</label>
+        <input type="text" id="post-input" placeholder="e.g. MAT 148/9 or KGD 45/1" autocomplete="off" autocapitalize="characters">
+      </div>
+
+      <div class="form-group col-full">
+        <label for="landmark-input">Landmark</label>
+        <input type="text" id="landmark-input" placeholder="e.g. NR RT ROOM / OPP BAKERY" autocomplete="off">
+      </div>
+
+      <div class="form-group">
+        <label for="enclosure-select">Enclosure Number</label>
+        <select id="enclosure-select"></select>
+      </div>
+
+      <div class="form-group">
+        <label for="splitter-ratio-select">Splitter Ratio</label>
+        <select id="splitter-ratio-select"></select>
+      </div>
+
+      <div class="form-group">
+        <label for="splitter-id-select">Splitter ID</label>
+        <select id="splitter-id-select"></select>
+      </div>
+
+      <div class="form-group">
+        <label>Connected Customers</label>
+        <div class="counter-box">
+          <button class="counter-btn" type="button" onclick="adjustCustomer(-1)">−</button>
+          <input type="number" id="cust-count-input" value="0" min="0" style="text-align: center; font-weight: bold;">
+          <button class="counter-btn" type="button" onclick="adjustCustomer(1)">+</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Live Enclosure ID Auto Preview -->
+    <div class="id-preview-box">
+      <span class="id-label">Auto-Generated Enclosure ID:</span>
+      <span class="id-value" id="enclosure-id-preview">---</span>
+    </div>
+
+    <button class="btn-save" onclick="saveRecord()">
+      <span>💾</span> Save Pole & Next
+    </button>
+  </div>
+
+  <!-- Bottom Pinned Export Bar -->
+  <div class="bottom-bar">
+    <button class="btn-export btn-records" onclick="openRecordsModal()">
+      <span>📋</span> View (<span id="btn-count">0</span>)
+    </button>
+    <button class="btn-export btn-excel" onclick="exportToExcel()">
+      <span>📊</span> Export Excel
+    </button>
+    <button class="btn-export btn-csv" onclick="exportToCSV()">
+      <span>📄</span> Export CSV
+    </button>
+  </div>
+
+  <!-- Records Inspection Modal -->
+  <div id="records-modal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 style="font-size: 1.1rem; color: #38bdf8;">Saved Survey Points</h2>
+        <button class="close-btn" onclick="closeRecordsModal()">&times;</button>
+      </div>
+      <div id="records-list-container" class="records-list"></div>
+      <div style="display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap;">
+        <button class="btn-export btn-excel" style="flex: 1;" onclick="exportToExcel()">Download Local Excel (.xlsx)</button>
+        <button class="btn-export" style="background:#0284c7; color:white;" onclick="configureServerUrl()">⚙️ Server IP</button>
+        <button class="btn-export" style="background:#ef4444; color:white;" onclick="clearAllRecords()">Clear All</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Login Screen Modal / Overlay -->
+  <div id="login-overlay" class="login-overlay" style="display: none;">
+    <div class="login-card">
+      <div style="font-size: 2.5rem; text-align: center; margin-bottom: 8px;">📡</div>
+      <h2 style="text-align: center; margin: 0 0 6px; color: #fff; font-size: 1.3rem;">Field Surveyor Login</h2>
+      <p style="text-align: center; font-size: 0.8rem; color: #94a3b8; margin-bottom: 20px;">
+        Sign in to lock your assigned Center and OLTs.
+      </p>
+
+      <form onsubmit="handleLogin(event)">
+        <div class="form-group" style="margin-bottom: 12px;">
+          <label for="login-username">Username</label>
+          <input type="text" id="login-username" placeholder="e.g. thrissur_agent" required autocomplete="username">
+        </div>
+        <div class="form-group" style="margin-bottom: 16px;">
+          <label for="login-password">Password / PIN</label>
+          <input type="password" id="login-password" placeholder="Enter Password (default 1234)" required autocomplete="current-password">
+        </div>
+        <button type="submit" class="btn-save" style="margin-top: 0; padding: 14px;">
+          Sign In
+        </button>
+      </form>
+
+      <div style="margin-top: 20px; border-top: 1px solid #334155; padding-top: 14px;">
+        <div style="font-size: 0.75rem; color: #94a3b8; margin-bottom: 8px; text-align: center;">Fast 1-Tap Login:</div>
+        <div style="display: flex; gap: 8px;">
+          <button type="button" class="btn-demo" onclick="quickLogin('thrissur_agent', '1234')">Thrissur Agent</button>
+          <button type="button" class="btn-demo" onclick="quickLogin('tmm_agent', '1234')">Thathamangalam</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Local Offline Vendor Scripts -->
+  <script src="vendor/leaflet.js"></script>
+  <script src="vendor/xlsx.full.min.js"></script>
+  <script src="preload_data.js"></script>
+  <script src="app.js"></script>
+  <script>
+    // Keep badge count updated on bottom button
+    const origUpdate = updateRecordsBadge;
+    updateRecordsBadge = function() {
+      origUpdate();
+      document.getElementById('btn-count').innerText = records.length;
+    };
+  </script>
+</body>
+</html>
