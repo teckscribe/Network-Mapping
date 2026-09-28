@@ -190,10 +190,10 @@ def init_db():
     now = datetime.datetime.now().isoformat()
     defaults = [
         ("admin", "admin123", "Central Super Administrator", "ALL", "ALL", "super_admin", now),
-        ("rcsm_thrissur", "1234", "Thrissur RCSM Manager", "Thrissur North", "Thrissur", "rcsm", now),
-        ("acso_thrissur", "1234", "Thrissur ACSO Officer", "Thrissur North", "Thrissur", "acso", now),
-        ("thrissur_agent", "1234", "Thrissur Survey Technician", "Thrissur North", "Thrissur", "field_technician", now),
-        ("tmm_agent", "1234", "Thathamangalam Survey Technician", "Thathamangalm", "Palakkad", "field_technician", now)
+        ("rcsm_thrissur", "1234", "Thrissur RCSM Manager", "THRISSUR NORTH", "Thrissur", "rcsm", now),
+        ("acso_thrissur", "1234", "Thrissur ACSO Officer", "THRISSUR NORTH", "Thrissur", "acso", now),
+        ("thrissur_agent", "1234", "Thrissur Survey Technician", "THRISSUR NORTH", "Thrissur", "field_technician", now),
+        ("tmm_agent", "1234", "Thathamangalam Survey Technician", "THATHAMANGALAM", "Thrissur", "field_technician", now)
     ]
     for u in defaults:
         if u[0] not in existing_usernames:
@@ -205,6 +205,20 @@ def init_db():
     # Normalize existing legacy roles in SQLite table
     cur.execute("UPDATE users SET role = 'super_admin' WHERE role = 'admin'")
     cur.execute("UPDATE users SET role = 'field_technician' WHERE role = 'field_agent'")
+
+    # Normalize existing user centers against uploaded Node Master Excel
+    hier_data = load_hierarchy_data()
+    if hier_data:
+        center_lookup = {c.strip().upper(): c for c in hier_data.keys()}
+        center_lookup["THATHAMANGALM"] = "THATHAMANGALAM"
+        cur.execute("SELECT username, assigned_center FROM users")
+        for u_name, u_center in cur.fetchall():
+            if u_center and u_center != "ALL":
+                c_upper = u_center.strip().upper()
+                if c_upper in center_lookup:
+                    canonical = center_lookup[c_upper]
+                    if canonical != u_center:
+                        cur.execute("UPDATE users SET assigned_center = ? WHERE username = ?", (canonical, u_name))
     conn.commit()
 
     # 3. Always ensure users_config.json is up-to-date with current database users
@@ -573,12 +587,12 @@ def get_hierarchy():
     if hier:
         return {"hierarchy": hier}
     default_hierarchy = {
-        "Thrissur North": {
+        "THRISSUR NORTH": {
             "Mulamkunnathukavu": {
                 "THN156 OLT53 Mulamkunnathukavu": ["P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8"]
             }
         },
-        "Thathamangalm": {
+        "THATHAMANGALAM": {
             "Kollengode": {
                 "TMM/25/OLT-08-KOLLEMGODE": ["P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8"]
             }
@@ -897,10 +911,10 @@ def download_hierarchy_template():
         cell.alignment = Alignment(horizontal="center", vertical="center")
 
     sample_rows = [
-        ["Thrissur", "Thrissur North", "Mulamkunnathukavu", "GPON", "THN156 OLT53 Mulamkunnathukavu", "8P"],
-        ["Thrissur", "Thrissur North", "Mulamkunnathukavu", "GPON", "THN-156-OLT-53- Mulamkunnathukavu", "8P"],
-        ["Palakkad", "Thathamangalm", "Kollengode", "GPON", "TMM/25/OLT-08-KOLLEMGODE", "8P"],
-        ["Palakkad", "Palakkad South", "Alathur", "GPON", "PLK/12/OLT-03-ALATHUR", "16P"]
+        ["Thrissur", "THRISSUR NORTH", "Mulamkunnathukavu", "GPON", "THN156 OLT53 Mulamkunnathukavu", "8P"],
+        ["Thrissur", "THRISSUR NORTH", "Mulamkunnathukavu", "GPON", "THN-156-OLT-53- Mulamkunnathukavu", "8P"],
+        ["Palakkad", "THATHAMANGALAM", "Kollengode", "GPON", "TMM/25/OLT-08-KOLLEMGODE", "8P"],
+        ["Palakkad", "PALAKKAD SOUTH", "Alathur", "GPON", "PLK/12/OLT-03-ALATHUR", "16P"]
     ]
 
     for r_idx, row in enumerate(sample_rows, 2):
@@ -1588,13 +1602,15 @@ def admin_dashboard():
               <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:4px;">Full Name</label>
               <input type="text" id="new-name" placeholder="Full Name" required style="width:100%;">
             </div>
-            <div style="flex:1; min-width:130px;">
+            <div style="flex:1; min-width:140px;">
               <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:4px;">Region</label>
-              <input type="text" id="new-region" placeholder="e.g. Thrissur" value="Thrissur" required style="width:100%;">
+              <select id="new-region" onchange="onUserRegionChange()" required style="width:100%;">
+                <option value="ALL">ALL Regions</option>
+              </select>
             </div>
-            <div style="flex:1.2; min-width:160px;">
+            <div style="flex:1.2; min-width:180px;">
               <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:4px;">Assigned Center</label>
-              <select id="new-center" required style="width:100%;">
+              <select id="new-center" onchange="onUserCenterChange()" required style="width:100%;">
                 <option value="ALL">ALL (Admin / Supervisor)</option>
               </select>
             </div>
@@ -2010,84 +2026,183 @@ def admin_dashboard():
           }
         }
 
-        function updateFeedFilterDropdowns() {
-          const regSelect = document.getElementById('feed-filter-region');
-          const centerSelect = document.getElementById('feed-filter-center');
-
-          const curReg = regSelect.value;
-          const curCenter = centerSelect.value;
-
-          // Unique regions
-          const regions = new Set();
+        function getHierarchyMeta() {
+          const regionsSet = new Set();
           const centersByRegion = {};
+          const centerToRegion = {};
 
-          cachedRecords.forEach(r => {
-            const reg = r.region || 'Thrissur';
-            const c = r.center || 'Unknown';
-            regions.add(reg);
-            if (!centersByRegion[reg]) centersByRegion[reg] = new Set();
-            centersByRegion[reg].add(c);
-          });
-
-          // Also pull from hierarchy if available
-          Object.keys(cachedHierarchy).forEach(c => {
-            const rts = cachedHierarchy[c] || {};
+          Object.keys(cachedHierarchy).forEach(center => {
+            const rts = cachedHierarchy[center] || {};
+            let centerRegion = null;
             Object.keys(rts).forEach(rt => {
               const olts = rts[rt] || {};
-              Object.keys(olts).forEach(o => {
-                const node = olts[o];
-                const reg = (node && typeof node === 'object' && node.region) ? node.region : 'Thrissur';
-                regions.add(reg);
-                if (!centersByRegion[reg]) centersByRegion[reg] = new Set();
-                centersByRegion[reg].add(c);
+              Object.keys(olts).forEach(oltName => {
+                const entry = olts[oltName];
+                if (entry && typeof entry === 'object' && entry.region) {
+                  centerRegion = entry.region.trim();
+                }
               });
             });
+            if (!centerRegion) centerRegion = 'Thrissur';
+
+            regionsSet.add(centerRegion);
+            if (!centersByRegion[centerRegion]) {
+              centersByRegion[centerRegion] = new Set();
+            }
+            centersByRegion[centerRegion].add(center);
+            centerToRegion[center] = centerRegion;
           });
 
-          // Rebuild Region options
+          return {
+            regions: Array.from(regionsSet).sort(),
+            centersByRegion: centersByRegion,
+            centerToRegion: centerToRegion,
+            allCenters: Object.keys(cachedHierarchy).sort()
+          };
+        }
+
+        // Tab 1 Filters: Strictly ONLY regions and centers from uploaded Node Master Excel
+        function updateFeedFilterDropdowns() {
+          const meta = getHierarchyMeta();
+          const regSelect = document.getElementById('feed-filter-region');
+          const centerSelect = document.getElementById('feed-filter-center');
+          if (!regSelect || !centerSelect) return;
+
+          const curReg = regSelect.value || 'ALL';
+          const curCenter = centerSelect.value || 'ALL';
+
           regSelect.innerHTML = '<option value="ALL">All Regions</option>';
-          Array.from(regions).sort().forEach(reg => {
+          meta.regions.forEach(reg => {
             const opt = document.createElement('option');
             opt.value = reg;
             opt.innerText = reg;
-            if (reg === curReg) opt.selected = true;
+            if (reg.toLowerCase() === curReg.toLowerCase()) opt.selected = true;
             regSelect.appendChild(opt);
           });
+          if (curReg === 'ALL') regSelect.value = 'ALL';
 
-          // Rebuild Center options
-          updateCenterFilterOptions(centersByRegion, curReg, curCenter);
+          updateFeedCenterFilterOptions(curReg, curCenter);
         }
 
-        function updateCenterFilterOptions(centersByRegion, selectedReg, curCenter) {
+        function updateFeedCenterFilterOptions(selectedReg, curCenter) {
+          const meta = getHierarchyMeta();
           const centerSelect = document.getElementById('feed-filter-center');
+          if (!centerSelect) return;
+
+          const prev = curCenter || centerSelect.value || 'ALL';
           centerSelect.innerHTML = '<option value="ALL">All Centers</option>';
 
-          const centers = new Set();
+          let centerList = [];
           if (!selectedReg || selectedReg === 'ALL') {
-            Object.keys(centersByRegion).forEach(reg => {
-              centersByRegion[reg].forEach(c => centers.add(c));
-            });
-          } else if (centersByRegion[selectedReg]) {
-            centersByRegion[selectedReg].forEach(c => centers.add(c));
+            centerList = meta.allCenters;
+          } else if (meta.centersByRegion[selectedReg]) {
+            centerList = Array.from(meta.centersByRegion[selectedReg]).sort();
           }
 
-          Array.from(centers).sort().forEach(c => {
+          centerList.forEach(c => {
             const opt = document.createElement('option');
             opt.value = c;
             opt.innerText = c;
-            if (c === curCenter) opt.selected = true;
+            if (prev && c.trim().toLowerCase() === prev.trim().toLowerCase()) opt.selected = true;
             centerSelect.appendChild(opt);
           });
+
+          if (prev && (prev === 'ALL' || centerList.some(c => c.trim().toLowerCase() === prev.trim().toLowerCase()))) {
+            const matched = centerList.find(c => c.trim().toLowerCase() === prev.trim().toLowerCase());
+            centerSelect.value = matched || 'ALL';
+          } else {
+            centerSelect.value = 'ALL';
+          }
         }
 
         function onFeedRegionChanged() {
           const reg = document.getElementById('feed-filter-region').value;
-          document.getElementById('feed-filter-center').value = 'ALL';
+          updateFeedCenterFilterOptions(reg, 'ALL');
           fetchData();
         }
 
         function onFeedCenterChanged() {
           fetchData();
+        }
+
+        // Tab 2 User Access Management: Strictly ONLY regions and centers from uploaded Node Master Excel
+        function populateUserRegionAndCenterDropdowns(preferredRegion = null, preferredCenter = null) {
+          const meta = getHierarchyMeta();
+          const regSelect = document.getElementById('new-region');
+          const centerSelect = document.getElementById('new-center');
+          if (!regSelect || !centerSelect) return;
+
+          let curReg = preferredRegion !== null ? preferredRegion : regSelect.value;
+          let curCenter = preferredCenter !== null ? preferredCenter : centerSelect.value;
+
+          if (curCenter && curCenter !== 'ALL' && meta.centerToRegion[curCenter] && (!curReg || curReg === 'ALL')) {
+            curReg = meta.centerToRegion[curCenter];
+          }
+          if (!curReg) curReg = 'ALL';
+          if (!curCenter) curCenter = 'ALL';
+
+          regSelect.innerHTML = '<option value="ALL">ALL Regions</option>';
+          meta.regions.forEach(reg => {
+            const opt = document.createElement('option');
+            opt.value = reg;
+            opt.innerText = reg;
+            if (reg.toLowerCase() === curReg.toLowerCase()) opt.selected = true;
+            regSelect.appendChild(opt);
+          });
+          if (curReg === 'ALL') regSelect.value = 'ALL';
+
+          updateUserCenterOptions(curReg, curCenter);
+        }
+
+        function updateUserCenterOptions(selectedReg, targetCenter = null) {
+          const meta = getHierarchyMeta();
+          const centerSelect = document.getElementById('new-center');
+          if (!centerSelect) return;
+
+          const prev = targetCenter !== null ? targetCenter : centerSelect.value;
+          centerSelect.innerHTML = '<option value="ALL">ALL (Admin / Supervisor)</option>';
+
+          let centerList = [];
+          if (!selectedReg || selectedReg === 'ALL') {
+            centerList = meta.allCenters;
+          } else if (meta.centersByRegion[selectedReg]) {
+            centerList = Array.from(meta.centersByRegion[selectedReg]).sort();
+          }
+
+          centerList.forEach(c => {
+            const opt = document.createElement('option');
+            opt.value = c;
+            opt.innerText = c;
+            if (prev && c.trim().toLowerCase() === prev.trim().toLowerCase()) {
+              opt.selected = true;
+            }
+            centerSelect.appendChild(opt);
+          });
+
+          if (prev && (prev === 'ALL' || centerList.some(c => c.trim().toLowerCase() === prev.trim().toLowerCase()))) {
+            const matched = centerList.find(c => c.trim().toLowerCase() === prev.trim().toLowerCase());
+            centerSelect.value = matched || 'ALL';
+          } else {
+            centerSelect.value = 'ALL';
+          }
+        }
+
+        function onUserRegionChange() {
+          const selectedReg = document.getElementById('new-region').value;
+          updateUserCenterOptions(selectedReg, 'ALL');
+        }
+
+        function onUserCenterChange() {
+          const selectedCenter = document.getElementById('new-center').value;
+          const regSelect = document.getElementById('new-region');
+          if (selectedCenter && selectedCenter !== 'ALL') {
+            const meta = getHierarchyMeta();
+            const assignedRegion = meta.centerToRegion[selectedCenter];
+            if (assignedRegion) {
+              regSelect.value = assignedRegion;
+              updateUserCenterOptions(assignedRegion, selectedCenter);
+            }
+          }
         }
 
         function filterAndRenderFeed() {
@@ -2245,6 +2360,9 @@ def admin_dashboard():
         }
 
         function loadUserForEdit(username, encName, encCenter, encRegion, role) {
+          const c = decodeURIComponent(encCenter);
+          const reg = decodeURIComponent(encRegion);
+
           document.getElementById('user-form-title').innerText = `✏️ Edit User: ${username}`;
           document.getElementById('new-user').value = username;
           document.getElementById('new-user').setAttribute('readonly', 'true');
@@ -2253,8 +2371,9 @@ def admin_dashboard():
           document.getElementById('new-pass').placeholder = '(Keep existing password or enter new)';
           document.getElementById('new-pass').removeAttribute('required');
           document.getElementById('new-name').value = decodeURIComponent(encName);
-          document.getElementById('new-region').value = decodeURIComponent(encRegion);
-          document.getElementById('new-center').value = decodeURIComponent(encCenter);
+
+          populateUserRegionAndCenterDropdowns(reg, c);
+
           document.getElementById('new-role').value = role;
           document.getElementById('btn-save-user').innerText = '💾 Update User';
           document.getElementById('btn-cancel-edit-user').style.display = 'inline-flex';
@@ -2269,11 +2388,11 @@ def admin_dashboard():
           document.getElementById('new-pass').placeholder = 'PIN / Password';
           document.getElementById('new-pass').setAttribute('required', 'true');
           document.getElementById('new-name').value = '';
-          document.getElementById('new-region').value = 'Thrissur';
-          document.getElementById('new-center').value = 'ALL';
           document.getElementById('new-role').value = 'field_technician';
           document.getElementById('btn-save-user').innerText = '➕ Save User';
           document.getElementById('btn-cancel-edit-user').style.display = 'none';
+
+          populateUserRegionAndCenterDropdowns('ALL', 'ALL');
         }
 
         async function createUser(e) {
@@ -2391,23 +2510,11 @@ def admin_dashboard():
             document.getElementById('hier-total-olts').innerText = totalOLTs;
 
             renderHierarchyTable(fullHierarchyRows);
-            populateCenterSelectsFromHierarchy();
+            updateFeedFilterDropdowns();
+            populateUserRegionAndCenterDropdowns();
           } catch(e) {
             console.error(e);
           }
-        }
-
-        function populateCenterSelectsFromHierarchy() {
-          const userCenterSelect = document.getElementById('new-center');
-          const existingVals = Array.from(userCenterSelect.options).map(o => o.value);
-          Object.keys(cachedHierarchy).sort().forEach(c => {
-            if (!existingVals.includes(c)) {
-              const opt = document.createElement('option');
-              opt.value = c;
-              opt.innerText = c;
-              userCenterSelect.appendChild(opt);
-            }
-          });
         }
 
         function renderHierarchyTable(rows) {
@@ -2850,9 +2957,12 @@ def admin_dashboard():
           });
         }
 
-        function initAdminData() {
-          fetchHierarchy();
-          fetchData();
+        async function initAdminData() {
+          await fetchHierarchy();
+          await fetchData();
+          if (currentAdmin && currentAdmin.role === 'super_admin') {
+            fetchUsers();
+          }
         }
 
         // Initialize Page

@@ -155,10 +155,10 @@ async function handleLogin(e) {
 
   // 2. Offline fallback credentials for remote field areas
   const offlineUsers = {
-    'thrissur_agent': { username: 'thrissur_agent', full_name: 'Thrissur Survey Technician', assigned_center: 'Thrissur North', assigned_region: 'Thrissur', role: 'field_technician' },
-    'tmm_agent': { username: 'tmm_agent', full_name: 'Thathamangalam Survey Technician', assigned_center: 'Thathamangalm', assigned_region: 'Palakkad', role: 'field_technician' },
-    'acso_thrissur': { username: 'acso_thrissur', full_name: 'Thrissur ACSO Officer', assigned_center: 'Thrissur North', assigned_region: 'Thrissur', role: 'acso' },
-    'rcsm_thrissur': { username: 'rcsm_thrissur', full_name: 'Thrissur RCSM Manager', assigned_center: 'Thrissur North', assigned_region: 'Thrissur', role: 'rcsm' },
+    'thrissur_agent': { username: 'thrissur_agent', full_name: 'Thrissur Survey Technician', assigned_center: 'THRISSUR NORTH', assigned_region: 'Thrissur', role: 'field_technician' },
+    'tmm_agent': { username: 'tmm_agent', full_name: 'Thathamangalam Survey Technician', assigned_center: 'THATHAMANGALAM', assigned_region: 'Thrissur', role: 'field_technician' },
+    'acso_thrissur': { username: 'acso_thrissur', full_name: 'Thrissur ACSO Officer', assigned_center: 'THRISSUR NORTH', assigned_region: 'Thrissur', role: 'acso' },
+    'rcsm_thrissur': { username: 'rcsm_thrissur', full_name: 'Thrissur RCSM Manager', assigned_center: 'THRISSUR NORTH', assigned_region: 'Thrissur', role: 'rcsm' },
     'admin': { username: 'admin', full_name: 'Central Super Administrator', assigned_center: 'ALL', assigned_region: 'ALL', role: 'super_admin' }
   };
 
