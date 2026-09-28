@@ -992,7 +992,7 @@ def admin_dashboard():
       <div class="tabs">
         <button class="tab-btn active" onclick="switchTab('feed')">📋 Survey Feed</button>
         <button class="tab-btn" onclick="switchTab('users')">👥 Field Users & Center Assignment</button>
-        <button class="tab-btn" onclick="switchTab('hierarchy')">📡 Upload Network Hierarchy (Excel)</button>
+        <button class="tab-btn" onclick="switchTab('hierarchy')">📡 Upload Node Master Data</button>
       </div>
 
       <!-- Tab 1: Survey Feed -->
@@ -1068,7 +1068,7 @@ def admin_dashboard():
       <div id="tab-hierarchy" style="display:none; background:#ffffff; border-radius:10px; padding:16px; border:1px solid #cbd5e1; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
         <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px; margin-bottom:16px;">
           <div>
-            <h3 style="margin:0 0 6px 0; color:#0284c7;">Upload Network Hierarchy (Region, Center, RT Room, OLT Name)</h3>
+            <h3 style="margin:0 0 6px 0; color:#0284c7;">Upload Node Master Data (Region, Center, RT Room, OLT Name)</h3>
             <p style="margin:0; font-size:0.85rem; color:#64748b;">
               Upload your Excel file (<code>.xlsx</code>, <code>.xls</code>, <code>.csv</code>) containing <strong>Center</strong>, <strong>RT Room</strong>, <strong>OLT Name</strong> (or <strong>Device IP</strong>), and optional <strong>OLT Type</strong> (8P/16P/32P).
               All field surveyor devices will automatically download and cache this hierarchy upon connecting.
@@ -1079,7 +1079,6 @@ def admin_dashboard():
             <input type="file" id="hierarchy-upload-input" accept=".xlsx, .xls, .csv" style="display:none;" onchange="uploadHierarchyExcel(event)">
             <button class="btn btn-green" onclick="document.getElementById('hierarchy-upload-input').click()">📂 Browse & Upload Excel File</button>
             <button class="btn" style="background:#0284c7; color:white;" onclick="openAddOltModal()">➕ Add Single OLT</button>
-            <button class="btn btn-danger" onclick="clearAllHierarchy()">🗑️ Clear All Hierarchy</button>
           </div>
         </div>
 
