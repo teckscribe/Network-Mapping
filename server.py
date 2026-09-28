@@ -129,8 +129,11 @@ def load_users_from_json(conn):
 
 # Init SQLite Database
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10.0)
     cur = conn.cursor()
+    cur.execute("PRAGMA journal_mode = WAL;")
+    cur.execute("PRAGMA busy_timeout = 10000;")
+    cur.execute("PRAGMA synchronous = NORMAL;")
     
     # 1. Survey Records Table
     cur.execute("""
@@ -197,6 +200,9 @@ def init_db():
         cur.execute("ALTER TABLE survey_records ADD COLUMN acs_subscriber_id TEXT")
     if "survey_date_time" not in cols:
         cur.execute("ALTER TABLE survey_records ADD COLUMN survey_date_time TEXT")
+
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_records_center ON survey_records(center)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_records_enclosure ON survey_records(enclosure_id)")
 
     # 1. Sync from persistent users_config.json if it exists
     load_users_from_json(conn)
