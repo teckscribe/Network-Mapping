@@ -296,23 +296,79 @@ body {
 
 .btn-map-toggle {
   background: #ffffff;
-  color: var(--gs-blue);
-  border: 1px solid var(--gs-border);
+  color: #0284c7;
+  border: 1px solid #cbd5e1;
   border-radius: 4px;
-  padding: 8px 10px;
+  padding: 8px 12px;
   font-size: 0.8rem;
-  font-weight: 500;
+  font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+}
+
+.btn-map-toggle:hover {
+  background: #f8fafc;
+  border-color: #94a3b8;
 }
 
 #map-container {
-  height: 200px;
+  height: 350px;
   width: 100%;
-  border-radius: 4px;
-  margin-top: 10px;
-  display: none;
-  border: 1px solid var(--gs-border);
+  border-radius: 8px;
+  display: block;
+  border: 2px solid #cbd5e1;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+  position: relative;
+  overflow: hidden;
+}
+
+.map-floating-bar {
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(4px);
+  padding: 5px 14px;
+  border-radius: 20px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+  z-index: 1000;
+  pointer-events: none;
+  white-space: nowrap;
+  max-width: 90%;
+  text-align: center;
+}
+
+.btn-map-my-location {
+  position: absolute;
+  bottom: 42px;
+  right: 12px;
+  background: #ffffff;
+  color: #1a73e8;
+  border: 1px solid #cbd5e1;
+  border-radius: 50%;
+  width: 44px;
+  height: 44px;
+  font-size: 1.3rem;
+  box-shadow: 0 3px 8px rgba(0,0,0,0.3);
+  cursor: pointer;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.15s, background-color 0.15s;
+}
+
+.btn-map-my-location:active {
+  transform: scale(0.92);
+  background: #f1f5f9;
 }
 
 /* Customer Counter */

@@ -14,7 +14,7 @@
 
   <!-- Local Offline Vendor Styles -->
   <link rel="stylesheet" href="vendor/leaflet.css">
-  <link rel="stylesheet" href="style.css?v=29">
+  <link rel="stylesheet" href="style.css?v=30">
 </head>
 <body>
 
@@ -119,11 +119,19 @@
               <input type="text" id="manual-coords-input" class="gs-input" placeholder="10.60665, 76.21449" onchange="onManualCoordsChange(this.value)">
               <button class="btn-gps-sheet" type="button" onclick="captureGPS()">🎯 GPS</button>
             </div>
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px; margin-bottom: 4px;">
-              <span id="gps-acc" style="font-size: 0.75rem; color: #5f6368;">Tap GPS at pole</span>
-              <button class="btn-map-toggle" id="map-toggle-btn" type="button" onclick="toggleMap()">🗺️ Map Pin</button>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px; margin-bottom: 6px; flex-wrap: wrap; gap: 6px;">
+              <span id="gps-acc" style="font-size: 0.8rem; color: #5f6368; display: inline-flex; align-items: center; gap: 4px;">Tap 🎯 GPS at pole</span>
+              <button class="btn-map-toggle" id="map-toggle-btn" type="button" onclick="toggleMap()">🗺️ Google Satellite Map</button>
             </div>
-            <div id="map-container"></div>
+            <div id="map-wrapper" style="position: relative; display: none; margin-top: 8px;">
+              <div id="map-container" style="display: block; margin-top: 0;"></div>
+              <button type="button" class="btn-map-my-location" onclick="captureGPS(); if(mapInstance && currentLat) mapInstance.flyTo([currentLat, currentLon], 19);" title="Recenter to my GPS location">
+                🎯
+              </button>
+              <div class="map-floating-bar">
+                💡 Drag red pin or tap to mark exact pole
+              </div>
+            </div>
           </div>
 
           <div class="gs-cell-group">
@@ -333,6 +341,6 @@
   <script src="vendor/leaflet.js"></script>
   <script src="vendor/xlsx.full.min.js"></script>
   <script src="preload_data.js"></script>
-  <script src="app.js?v=29"></script>
+  <script src="app.js?v=30"></script>
 </body>
 </html>

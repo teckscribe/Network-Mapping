@@ -4,6 +4,10 @@ let currentLon = null;
 let currentAccuracy = null;
 let mapInstance = null;
 let mapMarker = null;
+let accuracyCircle = null;
+let gpsWatchId = null;
+let gpsWatchTimer = null;
+let bestAccuracy = Infinity;
 
 const STORAGE_KEY = 'gpon_survey_records_v1';
 let records = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
@@ -343,10 +347,9 @@ function onManualCoordsChange(val) {
     if (!isNaN(lat) && !isNaN(lon)) {
       currentLat = lat;
       currentLon = lon;
-      gpsAccText.innerText = 'Manual Entry';
+      gpsAccText.innerHTML = '<span style="color:#0284c7; font-weight:600;">Manual Coordinate Entry</span>';
       if (mapInstance) {
-        mapInstance.setView([currentLat, currentLon], 18);
-        if (mapMarker) mapMarker.setLatLng([currentLat, currentLon]);
+        updateMapPosition(currentLat, currentLon, null);
       }
       showToast('Coordinates updated');
     }
@@ -890,103 +893,278 @@ portSelect.addEventListener('change', updateAvailableEnclosures);
 enclosureSelect.addEventListener('change', () => { updateEnclosureId(); updateAvailableSplitters(); });
 splitterRatioSelect.addEventListener('change', updateSplitterColorOptions);
 
-// GPS Geolocation
+// High-Precision GNSS / GPS Geolocation Engine (Multi-Sample Satellite Convergence)
 function captureGPS() {
   if (!navigator.geolocation) {
-    showToast('GPS not supported on this browser', false);
+    showToast('GPS is not supported on this browser/device', false);
     return;
   }
   
-  manualCoordsInput.value = 'Locating...';
-  gpsAccText.innerText = 'Acquiring GPS fix';
+  // Clear any existing active GPS watcher or timeout
+  if (gpsWatchId !== null) {
+    navigator.geolocation.clearWatch(gpsWatchId);
+    gpsWatchId = null;
+  }
+  if (gpsWatchTimer !== null) {
+    clearTimeout(gpsWatchTimer);
+    gpsWatchTimer = null;
+  }
 
-  navigator.geolocation.getCurrentPosition(
-    (pos) => {
-      currentLat = pos.coords.latitude;
-      currentLon = pos.coords.longitude;
-      currentAccuracy = pos.coords.accuracy;
+  const gpsBtn = document.querySelector('.btn-gps-sheet');
+  if (gpsBtn) {
+    gpsBtn.innerHTML = '⏳ Locating...';
+    gpsBtn.disabled = true;
+  }
+  manualCoordsInput.placeholder = 'Acquiring GNSS Satellites...';
+  gpsAccText.innerHTML = '<span style="color:#0284c7; font-weight:600;">📡 Connecting to satellites...</span>';
 
-      manualCoordsInput.value = `${currentLat.toFixed(5)}, ${currentLon.toFixed(5)}`;
-      gpsAccText.innerText = `± ${Math.round(currentAccuracy)}m accuracy`;
+  bestAccuracy = Infinity;
+  let sampleCount = 0;
 
-      // Update Map if open
-      if (mapInstance) {
-        mapInstance.setView([currentLat, currentLon], 18);
-        if (mapMarker) {
-          mapMarker.setLatLng([currentLat, currentLon]);
-        } else {
-          mapMarker = L.marker([currentLat, currentLon], { draggable: true }).addTo(mapInstance);
-          mapMarker.on('dragend', function(e) {
-            const pt = e.target.getLatLng();
-            currentLat = pt.lat;
-            currentLon = pt.lng;
-            manualCoordsInput.value = `${currentLat.toFixed(5)}, ${currentLon.toFixed(5)}`;
-            gpsAccText.innerText = 'Adjusted via map';
-          });
-        }
+  const onLocationSuccess = (pos) => {
+    sampleCount++;
+    const lat = pos.coords.latitude;
+    const lon = pos.coords.longitude;
+    const acc = pos.coords.accuracy;
+
+    // Retain the fix with the tightest accuracy radius
+    if (acc < bestAccuracy || currentLat === null) {
+      bestAccuracy = acc;
+      currentLat = lat;
+      currentLon = lon;
+      currentAccuracy = acc;
+
+      // 6 decimal places = ~10 cm ground resolution (Google Maps standard)
+      manualCoordsInput.value = `${currentLat.toFixed(6)}, ${currentLon.toFixed(6)}`;
+
+      // Live Color-coded accuracy indicator
+      let accBadge = '';
+      if (acc <= 5) {
+        accBadge = `<span style="color:#10b981; font-weight:700;">🟢 ±${Math.round(acc)}m (High Satellite Precision)</span>`;
+      } else if (acc <= 12) {
+        accBadge = `<span style="color:#059669; font-weight:600;">🟢 ±${Math.round(acc)}m (Good GNSS Fix)</span>`;
+      } else if (acc <= 25) {
+        accBadge = `<span style="color:#d97706; font-weight:600;">🟡 ±${Math.round(acc)}m (Moderate - Adjust on Map)</span>`;
+      } else {
+        accBadge = `<span style="color:#dc2626; font-weight:600;">🔴 ±${Math.round(acc)}m (Cell Tower - Fine-tune on Map)</span>`;
       }
-      showToast('GPS Location Captured!');
-    },
-    (err) => {
-      manualCoordsInput.value = '';
-      manualCoordsInput.placeholder = 'GPS unavailable - enter manually or tap map';
-      gpsAccText.innerText = err.message;
-      showToast('GPS signal not found. You can tap the map or enter manually.', false);
-    },
-    {
-      enableHighAccuracy: true,
-      timeout: 12000,
-      maximumAge: 0
+      gpsAccText.innerHTML = accBadge;
+
+      // Update map marker and accuracy circle
+      updateMapPosition(currentLat, currentLon, currentAccuracy);
     }
-  );
+
+    // Stop early if excellent satellite accuracy (< 5m) is achieved or 5+ samples converged
+    if (acc <= 4.5 || sampleCount >= 6) {
+      finalizeGPS(gpsBtn, 'High precision satellite fix locked!');
+    }
+  };
+
+  const onLocationError = (err) => {
+    if (currentLat === null) {
+      manualCoordsInput.placeholder = 'GPS unavailable - enter manually or tap map';
+      gpsAccText.innerHTML = `<span style="color:#dc2626; font-weight:600;">⚠️ ${err.message || 'Signal lost'}</span>`;
+      showToast('GPS signal weak or unavailable. Tap map to select pole.', false);
+    }
+    finalizeGPS(gpsBtn);
+  };
+
+  try {
+    gpsWatchId = navigator.geolocation.watchPosition(
+      onLocationSuccess,
+      onLocationError,
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 0
+      }
+    );
+  } catch (e) {
+    navigator.geolocation.getCurrentPosition(onLocationSuccess, onLocationError, {
+      enableHighAccuracy: true,
+      timeout: 10000,
+      maximumAge: 0
+    });
+  }
+
+  // Settle time limit: After 6 seconds, lock the best fix obtained so far
+  gpsWatchTimer = setTimeout(() => {
+    finalizeGPS(gpsBtn, bestAccuracy <= 15 ? 'GPS locked at best available satellite accuracy' : null);
+  }, 6000);
 }
 
-// Map Toggle
+function finalizeGPS(btn, successMsg = null) {
+  if (gpsWatchId !== null) {
+    navigator.geolocation.clearWatch(gpsWatchId);
+    gpsWatchId = null;
+  }
+  if (gpsWatchTimer !== null) {
+    clearTimeout(gpsWatchTimer);
+    gpsWatchTimer = null;
+  }
+  if (btn) {
+    btn.innerHTML = '🎯 GPS';
+    btn.disabled = false;
+  }
+  if (successMsg) {
+    showToast(successMsg, true);
+  }
+}
+
+// Update Map Position, Marker, and Accuracy Halo
+function updateMapPosition(lat, lon, acc = null) {
+  if (!mapInstance) return;
+
+  if (mapMarker) {
+    mapMarker.setLatLng([lat, lon]);
+  } else {
+    mapMarker = L.marker([lat, lon], { draggable: true, autoPan: true }).addTo(mapInstance);
+    mapMarker.bindPopup("<b>📍 Pole Location</b><br>Drag to fine-tune exact post spot.").openPopup();
+    mapMarker.on('dragend', function(e) {
+      const pt = e.target.getLatLng();
+      currentLat = pt.lat;
+      currentLon = pt.lng;
+      manualCoordsInput.value = `${currentLat.toFixed(6)}, ${currentLon.toFixed(6)}`;
+      gpsAccText.innerHTML = '<span style="color:#0284c7; font-weight:600;">📍 Fine-tuned via Satellite Map</span>';
+      showToast('Pin position updated!');
+    });
+  }
+
+  if (acc) {
+    if (accuracyCircle) {
+      accuracyCircle.setLatLng([lat, lon]).setRadius(acc);
+    } else {
+      accuracyCircle = L.circle([lat, lon], {
+        radius: acc,
+        color: '#1a73e8',
+        fillColor: '#1a73e8',
+        fillOpacity: 0.16,
+        weight: 1.5
+      }).addTo(mapInstance);
+    }
+  }
+
+  mapInstance.setView([lat, lon], Math.max(mapInstance.getZoom(), 19));
+}
+
+// Initialize Leaflet Map with Google Satellite, Google Streets, Esri & OSM
+function initMap(lat, lon) {
+  if (mapInstance) return;
+
+  mapInstance = L.map('map-container', {
+    maxZoom: 21,
+    zoomControl: false
+  }).setView([lat, lon], 19);
+
+  // Zoom control in top-left
+  L.control.zoom({ position: 'topleft' }).addTo(mapInstance);
+
+  // 1. Google Satellite (Hybrid - Aerial Imagery + Road Overlay + Building Labels)
+  const googleHybrid = L.tileLayer('https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', {
+    subdomains: ['0', '1', '2', '3'],
+    maxZoom: 21,
+    maxNativeZoom: 20,
+    attribution: '© Google Maps'
+  });
+
+  // 2. Google Streets (Standard Google Road Map)
+  const googleStreets = L.tileLayer('https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', {
+    subdomains: ['0', '1', '2', '3'],
+    maxZoom: 21,
+    maxNativeZoom: 20,
+    attribution: '© Google Maps'
+  });
+
+  // 3. Esri World Imagery (Satellite)
+  const esriSatellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 19,
+    attribution: '© Esri World Imagery'
+  });
+
+  // 4. OpenStreetMap
+  const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '© OpenStreetMap'
+  });
+
+  // Default Layer: Google Hybrid Satellite
+  googleHybrid.addTo(mapInstance);
+
+  // Top-Right Layer Switcher
+  const baseLayers = {
+    "🛰️ Google Satellite": googleHybrid,
+    "🗺️ Google Streets": googleStreets,
+    "🌍 Esri Satellite": esriSatellite,
+    "📍 OpenStreetMap": osm
+  };
+  L.control.layers(baseLayers, null, { position: 'topright', collapsed: true }).addTo(mapInstance);
+
+  // Initial Marker and Accuracy Halo
+  if (currentAccuracy) {
+    accuracyCircle = L.circle([lat, lon], {
+      radius: currentAccuracy,
+      color: '#1a73e8',
+      fillColor: '#1a73e8',
+      fillOpacity: 0.16,
+      weight: 1.5
+    }).addTo(mapInstance);
+  }
+
+  mapMarker = L.marker([lat, lon], { draggable: true, autoPan: true }).addTo(mapInstance);
+  mapMarker.bindPopup("<b>📍 Pole Location</b><br>Drag to fine-tune exact post spot.").openPopup();
+
+  // Dragend event
+  mapMarker.on('dragend', function(e) {
+    const pt = e.target.getLatLng();
+    currentLat = pt.lat;
+    currentLon = pt.lng;
+    manualCoordsInput.value = `${currentLat.toFixed(6)}, ${currentLon.toFixed(6)}`;
+    gpsAccText.innerHTML = '<span style="color:#0284c7; font-weight:600;">📍 Fine-tuned via Satellite Map</span>';
+    showToast('Pin position updated!');
+  });
+
+  // Map tap / click event
+  mapInstance.on('click', function(e) {
+    currentLat = e.latlng.lat;
+    currentLon = e.latlng.lng;
+    mapMarker.setLatLng(e.latlng);
+    mapMarker.openPopup();
+    if (accuracyCircle) accuracyCircle.setLatLng(e.latlng);
+    manualCoordsInput.value = `${currentLat.toFixed(6)}, ${currentLon.toFixed(6)}`;
+    gpsAccText.innerHTML = '<span style="color:#0284c7; font-weight:600;">📍 Selected on Satellite Map</span>';
+  });
+}
+
+// Map Toggle (Open / Hide Google Satellite Map)
 function toggleMap() {
-  if (mapContainer.style.display === 'none' || !mapContainer.style.display) {
-    mapContainer.style.display = 'block';
-    mapToggleBtn.innerText = 'Hide Map';
+  const mapWrapper = document.getElementById('map-wrapper');
+  const targetEl = mapWrapper || mapContainer;
+  const isHidden = (targetEl.style.display === 'none' || !targetEl.style.display);
+
+  if (isHidden) {
+    targetEl.style.display = 'block';
+    mapToggleBtn.innerText = '✕ Close Map';
+    mapToggleBtn.style.color = '#ef4444';
     
     const lat = currentLat || 10.60665;
     const lon = currentLon || 76.21449;
 
     if (!mapInstance) {
-      mapInstance = L.map('map-container').setView([lat, lon], 17);
-      
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 19,
-        attribution: '© OpenStreetMap'
-      }).addTo(mapInstance);
+      initMap(lat, lon);
+    }
 
-      mapMarker = L.marker([lat, lon], { draggable: true }).addTo(mapInstance);
-      
-      mapMarker.on('dragend', function(e) {
-        const pt = e.target.getLatLng();
-        currentLat = pt.lat;
-        currentLon = pt.lng;
-        manualCoordsInput.value = `${currentLat.toFixed(5)}, ${currentLon.toFixed(5)}`;
-        gpsAccText.innerText = 'Adjusted via map';
-      });
-
-      mapInstance.on('click', function(e) {
-        currentLat = e.latlng.lat;
-        currentLon = e.latlng.lng;
-        mapMarker.setLatLng(e.latlng);
-        manualCoordsInput.value = `${currentLat.toFixed(5)}, ${currentLon.toFixed(5)}`;
-        gpsAccText.innerText = 'Selected on map';
-      });
-    } else {
-      setTimeout(() => {
+    setTimeout(() => {
+      if (mapInstance) {
         mapInstance.invalidateSize();
         if (currentLat && currentLon) {
-          mapInstance.setView([currentLat, currentLon], 18);
-          mapMarker.setLatLng([currentLat, currentLon]);
+          updateMapPosition(currentLat, currentLon, currentAccuracy);
         }
-      }, 100);
-    }
+      }
+    }, 150);
   } else {
-    mapContainer.style.display = 'none';
-    mapToggleBtn.innerText = 'Adjust Pin on Map';
+    targetEl.style.display = 'none';
+    mapToggleBtn.innerText = '🗺️ Google Satellite Map';
+    mapToggleBtn.style.color = '#0284c7';
   }
 }
 
@@ -1012,7 +1190,7 @@ function saveRecord() {
 
   let latLongStr = '';
   if (currentLat && currentLon) {
-    latLongStr = `${currentLat.toFixed(5)},${currentLon.toFixed(5)}`;
+    latLongStr = `${currentLat.toFixed(6)}, ${currentLon.toFixed(6)}`;
   } else if (manualCoordsInput.value && manualCoordsInput.value.includes(',')) {
     latLongStr = manualCoordsInput.value.trim();
   }
