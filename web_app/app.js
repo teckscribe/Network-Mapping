@@ -114,6 +114,7 @@ function logout() {
 }
 
 // DOM Elements
+const regionSelect = document.getElementById('region-select');
 const centerSelect = document.getElementById('center-select');
 const rtRoomSelect = document.getElementById('rtroom-select');
 const techSelect = document.getElementById('tech-select');
@@ -195,8 +196,20 @@ function updateEnclosureId() {
   enclosureIdPreview.innerText = eid || '---';
 }
 
-// Populate Dropdowns with Center Filtering for Current User
 function initDropdowns() {
+  // Region
+  if (regionSelect) {
+    regionSelect.innerHTML = '';
+    const regions = DEFAULT_PRELOAD.regions || ["Thrissur", "Palakkad", "Ernakulam", "Malappuram"];
+    regions.forEach(r => {
+      const opt = document.createElement('option');
+      opt.value = r;
+      opt.innerText = r;
+      regionSelect.appendChild(opt);
+    });
+    regionSelect.value = "Thrissur";
+  }
+
   // Center
   centerSelect.innerHTML = '';
   let centers = Object.keys(DEFAULT_PRELOAD.hierarchy);
@@ -663,7 +676,7 @@ function saveRecord() {
     sync_status: 'pending',
     id: Date.now(),
     "Date & Time": formattedDateTime,
-    Region: "Thrissur",
+    Region: regionSelect ? regionSelect.value : "Thrissur",
     Center: centerSelect.value,
     "RT Room": rtRoomSelect.value,
     "GPON/FTTH/WDM": techSelect.value,

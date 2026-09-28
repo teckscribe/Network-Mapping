@@ -3224,19 +3224,32 @@ try {
 // Helper to auto-calculate Enclosure ID from OLT, Port, and Enclosure
 function computeEnclosureId(oltName, port, enclosure) {
   if (!oltName) return "";
-  
-  // Extract alphanumeric up to OLT number (e.g. THN156 OLT53 -> THN156OLT53, TMM/25/OLT-08 -> TMM25OLT08)
-  const regex = /([A-Za-z]+[\s\/\-_]*\d+[\s\/\-_]*OLT[\s\/\-_]*\d+)/i;
-  const match = oltName.match(regex);
+  const s = oltName.trim();
   let oltCode = "";
-  if (match) {
-    oltCode = match[1].replace(/[\s\/\-_]/g, '').toUpperCase();
+
+  // Standard pattern: e.g. CKY/116/OLT 01/Potta-1, THN156 OLT53, TMM/25/OLT-08, OPM/84/OPM/OLT- 07
+  const m = s.match(/([A-Za-z]{2,5})[\/\-_ ]*(\d+)[\/\-_ ]*(?:[A-Za-z]{2,5}[\/\-_ ]*)?(?:8\s*PORT\s+)?OLT[\/\-_ ]*0*(\d+)/i);
+  if (m) {
+    const pref = m[1].toUpperCase();
+    const site = m[2];
+    const oltNum = m[3].padStart(2, '0');
+    oltCode = `${pref}${site}OLT${oltNum}`;
+  } else if (/OLT[- ]*HEADEND/i.test(s)) {
+    const m2 = s.match(/([A-Za-z]{2,5})[\/\-_ ]*(\d+)/i);
+    const mNum = s.match(/HEADEND\s*(\d+)/i);
+    const oltNum = mNum ? mNum[1].padStart(2, '0') : '01';
+    const pref = m2 ? m2[1].toUpperCase() : 'OLT';
+    const site = m2 ? m2[2] : '01';
+    oltCode = `${pref}${site}OLT${oltNum}`;
+  } else if (/AMALA[- ]*P1/i.test(s)) {
+    const m3 = s.match(/([A-Za-z]{2,5})[\/\-_ ]*(\d+)/i);
+    oltCode = m3 ? `${m3[1].toUpperCase()}${m3[2]}OLT01` : 'THN77OLT01';
   } else {
-    oltCode = oltName.replace(/[\s\/\-_]/g, '').toUpperCase().slice(0, 12);
+    oltCode = s.replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 12);
   }
-  
-  const portCode = (port || "").trim().toUpperCase();
-  const encCode = (enclosure || "").trim().toUpperCase();
-  
+
+  const portCode = (port || "P1").trim().toUpperCase();
+  const encCode = (enclosure || "E1").trim().toUpperCase();
+
   return `${oltCode}${portCode}${encCode}`;
 }
