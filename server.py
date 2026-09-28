@@ -1005,7 +1005,7 @@ def admin_dashboard():
                 <th>Date & Time</th>
                 <th>Enclosure ID</th>
                 <th>Center / RT Room</th>
-                <th>OLT & Port</th>
+                <th>Node & Port</th>
                 <th>KSEB Post #</th>
                 <th>Landmark</th>
                 <th>Lat / Long</th>
@@ -1068,9 +1068,9 @@ def admin_dashboard():
       <div id="tab-hierarchy" style="display:none; background:#ffffff; border-radius:10px; padding:16px; border:1px solid #cbd5e1; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
         <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px; margin-bottom:16px;">
           <div>
-            <h3 style="margin:0 0 6px 0; color:#0284c7;">Upload Node Master Data (Region, Center, RT Room, OLT Name)</h3>
+            <h3 style="margin:0 0 6px 0; color:#0284c7;">Upload Node Master Data (Region, Center, RT Room, Node Name)</h3>
             <p style="margin:0; font-size:0.85rem; color:#64748b;">
-              Upload your Excel file (<code>.xlsx</code>, <code>.xls</code>, <code>.csv</code>) containing <strong>Center</strong>, <strong>RT Room</strong>, <strong>OLT Name</strong> (or <strong>Device IP</strong>), and optional <strong>OLT Type</strong> (8P/16P/32P).
+              Upload your Excel file (<code>.xlsx</code>, <code>.xls</code>, <code>.csv</code>) containing <strong>Center</strong>, <strong>RT Room</strong>, <strong>Node Name</strong> (or <strong>Device IP</strong>), and optional <strong>Number of Ports</strong> (8 Port/16 Port/32 Port).
               All field surveyor devices will automatically download and cache this hierarchy upon connecting.
             </p>
           </div>
@@ -1078,7 +1078,7 @@ def admin_dashboard():
             <a href="/api/download-hierarchy-template" class="btn" style="background:#0f766e;">📥 Download Template (.xlsx)</a>
             <input type="file" id="hierarchy-upload-input" accept=".xlsx, .xls, .csv" style="display:none;" onchange="uploadHierarchyExcel(event)">
             <button class="btn btn-green" onclick="document.getElementById('hierarchy-upload-input').click()">📂 Browse & Upload Excel File</button>
-            <button class="btn" style="background:#0284c7; color:white;" onclick="openAddOltModal()">➕ Add Single OLT</button>
+            <button class="btn" style="background:#0284c7; color:white;" onclick="openAddOltModal()">➕ Add Single Node</button>
           </div>
         </div>
 
@@ -1095,12 +1095,12 @@ def admin_dashboard():
           </div>
           <div class="stat-card" style="padding:12px 16px;">
             <div class="stat-num" id="hier-total-olts" style="font-size:1.5rem;">0</div>
-            <div class="stat-label">Total OLT Nodes</div>
+            <div class="stat-label">Total Nodes</div>
           </div>
         </div>
 
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; gap:10px; flex-wrap:wrap;">
-          <input type="text" id="hierarchy-search" placeholder="🔍 Search Center, RT Room, or OLT..." oninput="filterHierarchyTable()" style="flex:1; min-width:240px; max-width:400px;">
+          <input type="text" id="hierarchy-search" placeholder="🔍 Search Center, RT Room, or Node..." oninput="filterHierarchyTable()" style="flex:1; min-width:240px; max-width:400px;">
           <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
             <span id="selection-count" style="font-size:0.8rem; color:#64748b; font-weight:600; display:none;">0 selected</span>
             <button id="btn-delete-selected" onclick="deleteSelectedOlts()" class="btn btn-danger" style="padding:8px 12px; display:none;">🗑️ Delete Selected</button>
@@ -1118,8 +1118,8 @@ def admin_dashboard():
                 <th>Center</th>
                 <th>RT Room</th>
                 <th>GPON/FTTH/WDM</th>
-                <th>OLT / Node Name</th>
-                <th>OLT Type</th>
+                <th>Node Name</th>
+                <th>Number of Ports</th>
                 <th>Actions</th>
               </tr>
             </thead>
@@ -1130,10 +1130,10 @@ def admin_dashboard():
         </div>
       </div>
 
-      <!-- Add / Edit OLT Modal -->
+      <!-- Add / Edit Node Modal -->
       <div id="olt-modal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); z-index:9999; justify-content:center; align-items:center; padding:16px;">
         <div style="background:white; border-radius:10px; padding:24px; max-width:520px; width:100%; box-shadow:0 10px 25px rgba(0,0,0,0.2);">
-          <h3 id="olt-modal-title" style="margin-top:0; color:#0284c7;">Add / Edit OLT Node</h3>
+          <h3 id="olt-modal-title" style="margin-top:0; color:#0284c7;">Add / Edit Node</h3>
           <form onsubmit="saveOltModal(event)">
             <input type="hidden" id="modal-old-center">
             <input type="hidden" id="modal-old-rtroom">
@@ -1154,16 +1154,17 @@ def admin_dashboard():
                 <input type="text" id="modal-rtroom" required style="width:100%; box-sizing:border-box;" placeholder="e.g. Potta">
               </div>
               <div>
-                <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">GPON / FTTH / WDM</label>
+                <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">GPON / FTTH / WDM / EDFA</label>
                 <select id="modal-tech" style="width:100%; box-sizing:border-box;">
                   <option value="GPON">GPON</option>
                   <option value="FTTH">FTTH</option>
                   <option value="WDM">WDM</option>
+                  <option value="EDFA">EDFA</option>
                 </select>
               </div>
             </div>
             <div style="margin-bottom:12px;">
-              <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">OLT / Node Name</label>
+              <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">Node Name</label>
               <input type="text" id="modal-olt" required style="width:100%; box-sizing:border-box;" placeholder="e.g. CKY/116/OLT 01/Potta-1">
             </div>
             <div style="margin-bottom:18px;">
@@ -1176,7 +1177,7 @@ def admin_dashboard():
             </div>
             <div style="display:flex; justify-content:flex-end; gap:8px;">
               <button type="button" class="btn" style="background:#94a3b8; color:white;" onclick="closeOltModal()">Cancel</button>
-              <button type="submit" class="btn btn-green">💾 Save OLT</button>
+              <button type="submit" class="btn btn-green">💾 Save Node</button>
             </div>
           </form>
         </div>
@@ -1356,7 +1357,7 @@ def admin_dashboard():
           updateSelectionUI();
 
           if (rows.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; padding:20px; color:#94a3b8;">No hierarchy records found. Upload an Excel file or click "+ Add Single OLT" above.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; padding:20px; color:#94a3b8;">No hierarchy records found. Upload an Excel file or click "+ Add Single Node" above.</td></tr>';
             return;
           }
           rows.forEach((r, idx) => {
@@ -1462,7 +1463,7 @@ def admin_dashboard():
           if (checked.length === 0) return;
           const confirmed = await showConfirmModal(
             '🗑️ Confirm Bulk Deletion',
-            `Are you sure you want to delete ${checked.length} selected OLT(s)? This action cannot be undone.`,
+            `Are you sure you want to delete ${checked.length} selected node(s)? This action cannot be undone.`,
             'Confirm Delete',
             '#dc2626'
           );
@@ -1488,7 +1489,7 @@ def admin_dashboard():
               alert(data.message || 'Deleted successfully');
               fetchHierarchy();
             } else {
-              alert('Error: ' + (data.detail || 'Could not delete selected OLTs'));
+              alert('Error: ' + (data.detail || 'Could not delete selected nodes'));
             }
           } catch(err) {
             alert('Network error: ' + err.message);
@@ -1496,7 +1497,7 @@ def admin_dashboard():
         }
 
         function openAddOltModal() {
-          document.getElementById('olt-modal-title').innerText = '➕ Add New OLT Node';
+          document.getElementById('olt-modal-title').innerText = '➕ Add New Node';
           document.getElementById('modal-old-center').value = '';
           document.getElementById('modal-old-rtroom').value = '';
           document.getElementById('modal-old-olt').value = '';
@@ -1517,7 +1518,7 @@ def admin_dashboard():
           const olt = decodeURIComponent(encOlt);
           const oType = decodeURIComponent(encType || '8 P');
 
-          document.getElementById('olt-modal-title').innerText = '✏️ Edit OLT Node';
+          document.getElementById('olt-modal-title').innerText = '✏️ Edit Node';
           document.getElementById('modal-old-center').value = c;
           document.getElementById('modal-old-rtroom').value = rt;
           document.getElementById('modal-old-olt').value = olt;
@@ -1537,10 +1538,10 @@ def admin_dashboard():
         async function saveOltModal(e) {
           e.preventDefault();
           const isEdit = !!document.getElementById('modal-old-olt').value.trim();
-          const confirmTitle = isEdit ? '✏️ Confirm Save Edit' : '➕ Confirm Add OLT';
+          const confirmTitle = isEdit ? '✏️ Confirm Save Edit' : '➕ Confirm Add Node';
           const confirmMsg = isEdit 
-            ? 'Are you sure you want to save the changes to this OLT node?' 
-            : 'Are you sure you want to add this new OLT node?';
+            ? 'Are you sure you want to save the changes to this node?' 
+            : 'Are you sure you want to add this new node?';
 
           const confirmed = await showConfirmModal(confirmTitle, confirmMsg, 'Confirm & Save', '#16a34a');
           if (!confirmed) return;
@@ -1570,7 +1571,7 @@ def admin_dashboard():
               closeOltModal();
               fetchHierarchy();
             } else {
-              alert('Error: ' + (data.detail || 'Could not save OLT'));
+              alert('Error: ' + (data.detail || 'Could not save node'));
             }
           } catch(err) {
             alert('Network error: ' + err.message);
@@ -1583,7 +1584,7 @@ def admin_dashboard():
           const olt = decodeURIComponent(encOlt);
           const confirmed = await showConfirmModal(
             '🗑️ Confirm Deletion',
-            `Are you sure you want to delete OLT "${olt}" from ${c} (${rt})? This action cannot be undone.`,
+            `Are you sure you want to delete node "${olt}" from ${c} (${rt})? This action cannot be undone.`,
             'Confirm Delete',
             '#dc2626'
           );
@@ -1599,7 +1600,7 @@ def admin_dashboard():
             if (res.ok) {
               fetchHierarchy();
             } else {
-              alert('Error: ' + (data.detail || 'Could not delete OLT'));
+              alert('Error: ' + (data.detail || 'Could not delete node'));
             }
           } catch(err) {
             alert('Network error: ' + err.message);

@@ -730,7 +730,7 @@ function saveRecord() {
     (r["Enclosure Number"] || r.enclosure_number) === enc
   );
   if (isDuplicateEnclosure) {
-    showToast(`❌ Enclosure ${enc} is already used in ${olt} (${port})! Duplicate enclosures on same OLT port not allowed.`, false);
+    showToast(`❌ Enclosure ${enc} is already used in ${olt} (${port})! Duplicate enclosures on same Node port not allowed.`, false);
     enclosureSelect.focus();
     return;
   }
