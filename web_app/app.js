@@ -794,7 +794,7 @@ function renderSheetTable() {
     tbody.innerHTML = `
       <tr>
         <td colspan="16" style="text-align: center; padding: 24px; color: #80868b;">
-          No survey points entered yet. Fill the row above and tap "Add Pole to Sheet".
+          No survey points entered yet. Fill the row above and tap "Submit".
         </td>
       </tr>
     `;
