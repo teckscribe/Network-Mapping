@@ -385,7 +385,7 @@ def admin_dashboard():
     <!DOCTYPE html>
     <html>
     <head>
-      <title>GPON Central Office Survey Dashboard</title>
+      <title>Network Mapping</title>
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f1f5f9; color: #0f172a; margin: 0; padding: 20px; }
@@ -415,8 +415,7 @@ def admin_dashboard():
     <body>
       <div class="header">
         <div>
-          <h1 style="margin:0; font-size:1.5rem; color:#0f172a;">📡 GPON Central Survey Management</h1>
-          <div style="color:#64748b; font-size:0.9rem;">Ubuntu 24/7 Server Ledger & Field Agent Portal</div>
+          <h1 style="margin:0; font-size:1.5rem; color:#0f172a;">📡 Network Mapping</h1>
         </div>
         <div style="display:flex; gap:10px;">
           <a href="/api/export-excel" class="btn btn-green">📊 Download Master Excel</a>
