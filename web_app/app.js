@@ -1089,8 +1089,15 @@ function saveRecord() {
     surveyor_name: currentUser ? (currentUser.full_name || currentUser.username) : ''
   };
 
-  records.push(entry);
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+  try {
+    records.push(entry);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+  } catch (err) {
+    console.error('Local storage write failed:', err);
+    showToast('Failed to save on device storage: ' + (err.message || 'Storage full'), false);
+    return;
+  }
+
   updateRecordsBadge();
   updateSyncUI();
   showToast('Record Submitted Successfully');
@@ -1126,6 +1133,12 @@ function showSubmitConfirmModal(entry) {
   const custCount = entry["No: Of Customer Connected"] || 0;
   const timeStr = entry["Date & Time"] || '';
 
+  const syncText = (entry.sync_status === 'synced')
+    ? '<span style="color:#10b981; font-weight:700;">☁️ Synced to Server ✓</span>'
+    : (isServerReachable 
+        ? '<span style="color:#0284c7; font-weight:600;">☁️ Syncing to Server...</span>' 
+        : '<span style="color:#f59e0b; font-weight:600;">💾 Saved on Phone (Pending Sync)</span>');
+
   detailsEl.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
       <span style="color:#64748b;">KSEB Post No:</span>
@@ -1146,6 +1159,10 @@ function showSubmitConfirmModal(entry) {
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
       <span style="color:#64748b;">Connected Customers:</span>
       <strong style="color:#10b981; font-size:0.95rem;">${custCount}</strong>
+    </div>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+      <span style="color:#64748b;">Storage & Sync:</span>
+      <span id="confirm-sync-status-badge">${syncText}</span>
     </div>
     <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; padding-top:6px; border-top:1px dashed #cbd5e1; font-size:0.75rem;">
       <span style="color:#64748b;">Survey Time:</span>
@@ -1595,6 +1612,10 @@ async function syncWithServer(silent = false) {
       });
       localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
       isServerReachable = true;
+      const modalSyncBadge = document.getElementById('confirm-sync-status-badge');
+      if (modalSyncBadge) {
+        modalSyncBadge.innerHTML = '<span style="color:#10b981; font-weight:700;">☁️ Synced to Server ✓</span>';
+      }
       if (!silent) showToast(`Synced ${syncedIds.size} records with Ubuntu server!`);
     } else {
       isServerReachable = false;
