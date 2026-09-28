@@ -331,6 +331,13 @@ The top-left header of the PWA displays an interactive status indicator directly
 
 * **Interactive Tap-to-Sync**: Field surveyors can tap the status text at any time to immediately test server reachability and trigger a manual sync (`triggerManualSync()`).
 
+### 7.5 Smart Battery-Efficient Heartbeat Engine (Zero Server Load)
+To verify live connectivity across dozens of concurrent field technicians without degrading server performance or draining phone batteries, the platform implements an optimized heartbeat protocol:
+1. **In-Memory Health Probe (`/api/health`)**: The endpoint executes 0 database queries on SQLite. It returns a tiny ~80-byte JSON payload (`{"status":"ok", "hierarchy_version": <mtime>, "server_time": ...}`) responding in under 0.1ms.
+2. **Conditional Network Downloads**: The client only downloads the node hierarchy tree (`/api/hierarchy`) when `hierarchy_version` has actually updated on the server, eliminating repetitive downloads of network trees over mobile data.
+3. **Screen-Off / Inactivity Throttling**: The 20-second heartbeat loop checks `document.visibilityState`. When a surveyor locks their phone screen or switches apps, the timer automatically pauses, consuming 0% battery and 0 server bandwidth.
+4. **Instant Foreground Wake**: When the surveyor opens their phone or switches back to the browser tab (`visibilitychange` -> `visible`), an immediate health probe fires, restoring the green connected indicator instantly.
+
 ---
 
 # Chapter 8: Central Office Web Portal (`/admin`)

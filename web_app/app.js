@@ -29,6 +29,7 @@ if (!serverUrl || (window.location.protocol.startsWith('http') && window.locatio
 let isSyncing = false;
 let isServerReachable = false;
 let serverConnectionChecked = false;
+let lastKnownHierarchyVersion = parseInt(localStorage.getItem('gpon_hierarchy_version') || '0', 10);
 
 // User Session & Authentication
 let currentUser = JSON.parse(localStorage.getItem('gpon_logged_in_user') || 'null');
@@ -1612,8 +1613,14 @@ async function checkServerConnection() {
     clearTimeout(timeoutId);
     if (res.ok) {
       isServerReachable = true;
-      fetchHierarchyFromServer();
-      refreshCurrentUserProfile();
+      const data = await res.json().catch(() => null);
+      if (data && data.hierarchy_version) {
+        if (data.hierarchy_version !== lastKnownHierarchyVersion) {
+          lastKnownHierarchyVersion = data.hierarchy_version;
+          localStorage.setItem('gpon_hierarchy_version', String(data.hierarchy_version));
+          fetchHierarchyFromServer();
+        }
+      }
     } else {
       isServerReachable = false;
     }
@@ -1818,6 +1825,7 @@ async function syncWithServer(silent = false) {
 
 function triggerManualSync() {
   checkServerConnection();
+  refreshCurrentUserProfile();
   syncWithServer(false);
 }
 
@@ -1899,13 +1907,16 @@ document.addEventListener('DOMContentLoaded', () => {
   checkServerConnection();
   captureGPS(); // Automatically attempt GPS lock on app launch
   
-  // Periodic background check for Node Master Data updates & record sync
+  // Smart Lightweight Heartbeat: Periodic background check (every 20 seconds, active tab only)
   setInterval(() => {
+    // If phone is locked or surveyor switched apps, pause heartbeat to save phone battery & data
+    if (document.visibilityState !== 'visible') return;
+
     checkServerConnection();
     if (isServerReachable && records.some(r => r.sync_status !== 'synced')) {
       syncWithServer(true);
     }
-  }, 10000); // Check every 10 seconds
+  }, 20000); // Check every 20 seconds
 
   // Live auto-refresh when surveyor returns to the app
   document.addEventListener('visibilitychange', () => {

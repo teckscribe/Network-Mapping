@@ -1073,12 +1073,12 @@ def download_hierarchy_template():
 
 @app.get("/api/health")
 def health_check():
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM survey_records")
-    total = cur.fetchone()[0]
-    conn.close()
-    return {"status": "ok", "total_server_records": total, "server_time": datetime.datetime.now().isoformat()}
+    hier_mtime = int(os.path.getmtime(HIERARCHY_FILE)) if os.path.exists(HIERARCHY_FILE) else 0
+    return {
+        "status": "ok",
+        "hierarchy_version": hier_mtime,
+        "server_time": datetime.datetime.now().isoformat()
+    }
 
 @app.post("/api/sync")
 def sync_records(payload: SyncPayload):
