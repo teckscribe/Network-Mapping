@@ -422,6 +422,27 @@ function onRTRoomChange() {
 }
 
 function onOLTChange() {
+  const c = centerSelect ? centerSelect.value : '';
+  const rt = rtRoomSelect ? rtRoomSelect.value : '';
+  const olt = oltSelect ? oltSelect.value : '';
+
+  if (c && rt && olt && DEFAULT_PRELOAD.hierarchy[c] && DEFAULT_PRELOAD.hierarchy[c][rt]) {
+    const entry = DEFAULT_PRELOAD.hierarchy[c][rt][olt];
+    if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+      if (entry.region && regionSelect) {
+        regionSelect.value = entry.region;
+      }
+      if (entry.tech && techSelect) {
+        techSelect.value = entry.tech;
+      }
+      if (entry.olt_type && oltTypeSelect) {
+        const cleanType = entry.olt_type.replace(/\s+/g, '');
+        if (cleanType.includes('16')) oltTypeSelect.value = '16P';
+        else if (cleanType.includes('32')) oltTypeSelect.value = '32P';
+        else oltTypeSelect.value = '8P';
+      }
+    }
+  }
   onOLTTypeChange();
 }
 
@@ -468,8 +489,10 @@ function handleExcelHierarchyUpload(e) {
             normRow[cleanKey] = String(row[k]).trim();
           });
 
+          const region = normRow['region'] || normRow['district'] || 'Thrissur';
           const center = normRow['center'] || normRow['regioncenter'] || normRow['centre'] || '';
           const rtRoom = normRow['rtroom'] || normRow['room'] || 'Main RT';
+          const tech = normRow['gponftthwdm'] || normRow['tech'] || normRow['technology'] || 'GPON';
           let olt = normRow['oltnodename'] || normRow['oltname'] || normRow['olt'] || '';
           if (!olt) {
             const ipVal = normRow['deviceip'] || normRow['ip'] || normRow['ipaddress'] || '';
@@ -478,16 +501,34 @@ function handleExcelHierarchyUpload(e) {
 
           if (center && olt && center.toLowerCase() !== 'center' && !olt.toLowerCase().includes('olt/node')) {
             importedCenters.add(center);
-            importedOlts++;
 
             if (!newHierarchy[center]) newHierarchy[center] = {};
             if (!newHierarchy[center][rtRoom]) newHierarchy[center][rtRoom] = {};
 
-            const oType = normRow['olttype'] || normRow['type'] || '8P';
+            const oType = normRow['olttype'] || normRow['type'] || '8 P';
             let portCount = 8;
             if (oType.includes('16')) portCount = 16;
             else if (oType.includes('32')) portCount = 32;
-            newHierarchy[center][rtRoom][olt] = Array.from({ length: portCount }, (_, i) => `P${i + 1}`);
+
+            // Deduplicate across each RT room case-insensitively
+            let targetKey = olt;
+            for (const existKey of Object.keys(newHierarchy[center][rtRoom])) {
+              if (existKey.toLowerCase().trim() === olt.toLowerCase().trim()) {
+                targetKey = existKey;
+                break;
+              }
+            }
+
+            if (targetKey === olt && !newHierarchy[center][rtRoom][targetKey]) {
+              importedOlts++;
+            }
+
+            newHierarchy[center][rtRoom][targetKey] = {
+              region,
+              tech,
+              olt_type: oType,
+              ports: Array.from({ length: portCount }, (_, i) => `P${i + 1}`)
+            };
           }
         });
       });

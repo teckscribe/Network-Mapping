@@ -236,9 +236,12 @@ class SyncPayload(BaseModel):
     records: List[SurveyRecordModel]
 
 class OLTEditModel(BaseModel):
+    region: Optional[str] = "Thrissur"
     center: str
     rt_room: str
+    tech: Optional[str] = "GPON"
     olt_name: str
+    olt_type: Optional[str] = "8 P"
     port_count: Optional[int] = 8
     old_center: Optional[str] = None
     old_rt_room: Optional[str] = None
@@ -438,25 +441,35 @@ async def upload_hierarchy_excel(file: UploadFile = File(...)):
                 return default
 
             for row in rows[header_row_idx + 1:]:
+                region = get_col(row, "region", "district", default="Thrissur")
                 center = get_col(row, "center", "centre", "regioncenter")
                 rt_room = get_col(row, "rtroom", "rt_room", "room", default="Main RT")
+                tech = get_col(row, "gponftthwdm", "tech", "technology", "gpon", "ftth", "wdm", default="GPON")
                 olt = get_col(row, "oltnodename", "oltname", "olt", "nodename")
                 if not olt:
                     ip_val = get_col(row, "deviceip", "ip", "ipaddress")
                     if ip_val:
                         olt = f"OLT ({ip_val})" if not ip_val.lower().startswith("olt") else ip_val
 
-                region = get_col(row, "region", "district", default="Thrissur")
+                olt_type = get_col(row, "olttype", "type", "ports", default="8 P")
+
                 # Clean & normalize strings
+                region = str(region).strip() if region else "Thrissur"
                 center = str(center).strip()
                 rt_room = str(rt_room).strip()
+                tech = str(tech).strip() if tech else "GPON"
                 olt = re.sub(r'\s+', ' ', str(olt).strip())
+                olt_type = str(olt_type).strip() if olt_type else "8 P"
 
                 if center and olt and center.lower() != "center" and not olt.lower().startswith("olt/node"):
                     if center not in new_hierarchy:
                         new_hierarchy[center] = {}
                     if rt_room not in new_hierarchy[center]:
                         new_hierarchy[center][rt_room] = {}
+
+                    port_count = 8
+                    if "16" in str(olt_type): port_count = 16
+                    elif "32" in str(olt_type): port_count = 32
 
                     # Strict Case-Insensitive Duplicate Check in RT Room
                     existing_match = None
@@ -465,18 +478,21 @@ async def upload_hierarchy_excel(file: UploadFile = File(...)):
                             existing_match = existing_k
                             break
 
-                    port_count = 8
-                    if "16" in str(olt_type): port_count = 16
-                    elif "32" in str(olt_type): port_count = 32
+                    olt_record = {
+                        "region": region,
+                        "tech": tech,
+                        "olt_type": olt_type if olt_type else f"{port_count} P",
+                        "ports": [f"P{i+1}" for i in range(port_count)]
+                    }
 
                     if existing_match:
-                        # Already exists in this RT room - update ports, do not create duplicate!
-                        new_hierarchy[center][rt_room][existing_match] = [f"P{i+1}" for i in range(port_count)]
+                        # Already exists in this RT room - update, do not create duplicate!
+                        new_hierarchy[center][rt_room][existing_match] = olt_record
                     else:
                         centers_found.add(center)
                         regions_found.add(region)
                         total_olts += 1
-                        new_hierarchy[center][rt_room][olt] = [f"P{i+1}" for i in range(port_count)]
+                        new_hierarchy[center][rt_room][olt] = olt_record
 
         if total_olts == 0:
             raise HTTPException(status_code=400, detail="No valid Center and OLT rows found in uploaded sheet.")
@@ -497,13 +513,13 @@ async def upload_hierarchy_excel(file: UploadFile = File(...)):
             for rt, olts in rts.items():
                 if rt not in existing_hierarchy[c]:
                     existing_hierarchy[c][rt] = {}
-                for olt_k, ports_v in olts.items():
+                for olt_k, olt_data in olts.items():
                     target_k = olt_k
                     for exist_k in list(existing_hierarchy[c][rt].keys()):
                         if exist_k.strip().lower() == olt_k.lower():
                             target_k = exist_k
                             break
-                    existing_hierarchy[c][rt][target_k] = ports_v
+                    existing_hierarchy[c][rt][target_k] = olt_data
 
         with open(hierarchy_file, "w", encoding="utf-8") as f:
             json.dump(existing_hierarchy, f, indent=2)
@@ -534,18 +550,27 @@ def save_or_edit_olt(payload: OLTEditModel):
     # If old keys provided, remove old location (for rename/move)
     if payload.old_center and payload.old_rt_room and payload.old_olt_name:
         try:
-            if payload.old_center in hierarchy and payload.old_rt_room in hierarchy[payload.old_center]:
-                hierarchy[payload.old_center][payload.old_rt_room].pop(payload.old_olt_name, None)
-                if not hierarchy[payload.old_center][payload.old_rt_room]:
-                    hierarchy[payload.old_center].pop(payload.old_rt_room, None)
-                if not hierarchy[payload.old_center]:
-                    hierarchy.pop(payload.old_center, None)
-        except Exception:
-            pass
+            old_c = payload.old_center.strip()
+            old_rt = payload.old_rt_room.strip()
+            old_olt = payload.old_olt_name.strip()
+            if old_c in hierarchy and old_rt in hierarchy[old_c]:
+                for exist_k in list(hierarchy[old_c][old_rt].keys()):
+                    if exist_k.strip().lower() == old_olt.lower():
+                        del hierarchy[old_c][old_rt][exist_k]
+                        break
+                if not hierarchy[old_c][old_rt]:
+                    del hierarchy[old_c][old_rt]
+                if not hierarchy[old_c]:
+                    del hierarchy[old_c]
+        except Exception as e:
+            print("Error clearing old OLT position:", e)
 
     c = payload.center.strip()
     rt = payload.rt_room.strip()
     olt = re.sub(r'\s+', ' ', payload.olt_name.strip())
+    reg = payload.region.strip() if payload.region else "Thrissur"
+    tech = payload.tech.strip() if payload.tech else "GPON"
+    o_type = payload.olt_type.strip() if payload.olt_type else "8 P"
 
     if not c or not rt or not olt:
         raise HTTPException(status_code=400, detail="Center, RT Room, and OLT Name are required.")
@@ -557,12 +582,17 @@ def save_or_edit_olt(payload: OLTEditModel):
     
     # Check if duplicate exists with different casing
     for existing_k in list(hierarchy[c][rt].keys()):
-        if existing_k.lower() == olt.lower() and existing_k != olt:
+        if existing_k.strip().lower() == olt.lower() and existing_k != olt:
             del hierarchy[c][rt][existing_k]
 
-    port_cnt = payload.port_count or 8
+    port_cnt = payload.port_count or (16 if "16" in o_type else (32 if "32" in o_type else 8))
     ports = [f"P{i+1}" for i in range(port_cnt)]
-    hierarchy[c][rt][olt] = ports
+    hierarchy[c][rt][olt] = {
+        "region": reg,
+        "tech": tech,
+        "olt_type": o_type,
+        "ports": ports
+    }
 
     with open(hierarchy_file, "w", encoding="utf-8") as f:
         json.dump(hierarchy, f, indent=2)
@@ -588,7 +618,7 @@ def delete_olt(payload: OLTDeleteModel):
     if c in hierarchy and rt in hierarchy[c]:
         deleted = False
         for k in list(hierarchy[c][rt].keys()):
-            if k.lower() == olt.lower():
+            if k.strip().lower() == olt.lower():
                 del hierarchy[c][rt][k]
                 deleted = True
                 break
@@ -1015,15 +1045,17 @@ def admin_dashboard():
             <thead>
               <tr style="position:sticky; top:0; z-index:2;">
                 <th>#</th>
+                <th>Region</th>
                 <th>Center</th>
                 <th>RT Room</th>
+                <th>GPON/FTTH/WDM</th>
                 <th>OLT / Node Name</th>
-                <th>Default Ports</th>
+                <th>OLT Type</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody id="hierarchy-table-body">
-              <tr><td colspan="6" style="text-align:center; padding:20px;">Loading network hierarchy...</td></tr>
+              <tr><td colspan="8" style="text-align:center; padding:20px;">Loading network hierarchy...</td></tr>
             </tbody>
           </table>
         </div>
@@ -1031,30 +1063,46 @@ def admin_dashboard():
 
       <!-- Add / Edit OLT Modal -->
       <div id="olt-modal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); z-index:9999; justify-content:center; align-items:center; padding:16px;">
-        <div style="background:white; border-radius:10px; padding:24px; max-width:480px; width:100%; box-shadow:0 10px 25px rgba(0,0,0,0.2);">
+        <div style="background:white; border-radius:10px; padding:24px; max-width:520px; width:100%; box-shadow:0 10px 25px rgba(0,0,0,0.2);">
           <h3 id="olt-modal-title" style="margin-top:0; color:#0284c7;">Add / Edit OLT Node</h3>
           <form onsubmit="saveOltModal(event)">
             <input type="hidden" id="modal-old-center">
             <input type="hidden" id="modal-old-rtroom">
             <input type="hidden" id="modal-old-olt">
-            <div style="margin-bottom:12px;">
-              <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">Center</label>
-              <input type="text" id="modal-center" required style="width:100%; box-sizing:border-box;" placeholder="e.g. CHALAKKUDY or THRISSUR NORTH">
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
+              <div>
+                <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">Region</label>
+                <input type="text" id="modal-region" required style="width:100%; box-sizing:border-box;" value="Thrissur" placeholder="e.g. Thrissur">
+              </div>
+              <div>
+                <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">Center</label>
+                <input type="text" id="modal-center" required style="width:100%; box-sizing:border-box;" placeholder="e.g. CHALAKKUDY">
+              </div>
             </div>
-            <div style="margin-bottom:12px;">
-              <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">RT Room</label>
-              <input type="text" id="modal-rtroom" required style="width:100%; box-sizing:border-box;" placeholder="e.g. Potta or Main RT">
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
+              <div>
+                <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">RT Room</label>
+                <input type="text" id="modal-rtroom" required style="width:100%; box-sizing:border-box;" placeholder="e.g. Potta">
+              </div>
+              <div>
+                <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">GPON / FTTH / WDM</label>
+                <select id="modal-tech" style="width:100%; box-sizing:border-box;">
+                  <option value="GPON">GPON</option>
+                  <option value="FTTH">FTTH</option>
+                  <option value="WDM">WDM</option>
+                </select>
+              </div>
             </div>
             <div style="margin-bottom:12px;">
               <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">OLT / Node Name</label>
               <input type="text" id="modal-olt" required style="width:100%; box-sizing:border-box;" placeholder="e.g. CKY/116/OLT 01/Potta-1">
             </div>
             <div style="margin-bottom:18px;">
-              <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">OLT Type / Ports</label>
+              <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">OLT Type</label>
               <select id="modal-ports" style="width:100%; box-sizing:border-box;">
-                <option value="8">8 Ports (P1 - P8)</option>
-                <option value="16">16 Ports (P1 - P16)</option>
-                <option value="32">32 Ports (P1 - P32)</option>
+                <option value="8 P">8 P (8 Ports: P1 - P8)</option>
+                <option value="16 P">16 P (16 Ports: P1 - P16)</option>
+                <option value="32 P">32 P (32 Ports: P1 - P32)</option>
               </select>
             </div>
             <div style="display:flex; justify-content:flex-end; gap:8px;">
@@ -1139,7 +1187,8 @@ def admin_dashboard():
             const data = await res.json();
             const centerSelect = document.getElementById('new-center');
             const existingVals = Array.from(centerSelect.options).map(o => o.value);
-            Object.keys(data).forEach(c => {
+            const hier = (data && data.hierarchy) ? data.hierarchy : data;
+            Object.keys(hier).forEach(c => {
               if (!existingVals.includes(c)) {
                 const opt = document.createElement('option');
                 opt.value = c;
@@ -1172,13 +1221,30 @@ def admin_dashboard():
                 if (!olts || typeof olts !== 'object') return;
                 Object.keys(olts).sort().forEach(oltName => {
                   totalOLTs++;
-                  const ports = olts[oltName] || [];
+                  const entry = olts[oltName];
+                  let region = 'Thrissur';
+                  let tech = 'GPON';
+                  let oltType = '8 P';
+                  let ports = [];
+
+                  if (Array.isArray(entry)) {
+                    ports = entry;
+                    oltType = ports.length > 0 ? (ports.length + ' P') : '8 P';
+                  } else if (entry && typeof entry === 'object') {
+                    region = entry.region || 'Thrissur';
+                    tech = entry.tech || entry.technology || 'GPON';
+                    oltType = entry.olt_type || entry.oltType || (entry.ports ? entry.ports.length + ' P' : '8 P');
+                    ports = entry.ports || (oltType.includes('16') ? Array.from({length:16}, (_, i) => 'P' + (i+1)) : Array.from({length:8}, (_, i) => 'P' + (i+1)));
+                  }
+
                   fullHierarchyRows.push({
+                    region,
                     center,
                     rtRoom,
+                    tech,
                     oltName,
-                    portsCount: ports.length,
-                    portsStr: ports.length > 0 ? `${ports[0]} - ${ports[ports.length - 1]} (${ports.length}P)` : '8P'
+                    oltType,
+                    portsCount: ports.length
                   });
                 });
               });
@@ -1199,19 +1265,21 @@ def admin_dashboard():
           const tbody = document.getElementById('hierarchy-table-body');
           tbody.innerHTML = '';
           if (rows.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:20px; color:#94a3b8;">No hierarchy records found. Upload an Excel file or click "+ Add Single OLT" above.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:20px; color:#94a3b8;">No hierarchy records found. Upload an Excel file or click "+ Add Single OLT" above.</td></tr>';
             return;
           }
           rows.forEach((r, idx) => {
             const tr = document.createElement('tr');
             tr.innerHTML = `
               <td style="color:#64748b; font-family:monospace; font-size:0.8rem;">${idx + 1}</td>
+              <td><span style="background:#f1f5f9; color:#334155; padding:2px 8px; border-radius:4px; font-weight:600; font-size:0.8rem;">${r.region}</span></td>
               <td><strong>${r.center}</strong></td>
               <td>${r.rtRoom}</td>
-              <td><strong style="color:#0284c7;">${r.oltName}</strong></td>
-              <td><span class="tag" style="background:#059669;">${r.portsStr}</span></td>
+              <td><span class="tag" style="background:#0284c7; color:white; font-size:0.75rem;">${r.tech}</span></td>
+              <td><strong style="color:#0f172a;">${r.oltName}</strong></td>
+              <td><span class="tag" style="background:#059669; color:white; font-size:0.75rem;">${r.oltType}</span></td>
               <td style="white-space:nowrap;">
-                <button class="btn" style="padding:4px 8px; font-size:0.75rem; background:#0284c7; color:white; margin-right:4px;" onclick="openEditOltModal('${encodeURIComponent(r.center)}', '${encodeURIComponent(r.rtRoom)}', '${encodeURIComponent(r.oltName)}', ${r.portsCount})">✏️ Edit</button>
+                <button class="btn" style="padding:4px 8px; font-size:0.75rem; background:#0284c7; color:white; margin-right:4px;" onclick="openEditOltModal('${encodeURIComponent(r.region)}', '${encodeURIComponent(r.center)}', '${encodeURIComponent(r.rtRoom)}', '${encodeURIComponent(r.tech)}', '${encodeURIComponent(r.oltName)}', '${encodeURIComponent(r.oltType)}')">✏️ Edit</button>
                 <button class="btn btn-danger" style="padding:4px 8px; font-size:0.75rem;" onclick="deleteOlt('${encodeURIComponent(r.center)}', '${encodeURIComponent(r.rtRoom)}', '${encodeURIComponent(r.oltName)}')">🗑️ Delete</button>
               </td>
             `;
@@ -1224,25 +1292,33 @@ def admin_dashboard():
           document.getElementById('modal-old-center').value = '';
           document.getElementById('modal-old-rtroom').value = '';
           document.getElementById('modal-old-olt').value = '';
+          document.getElementById('modal-region').value = 'Thrissur';
           document.getElementById('modal-center').value = '';
           document.getElementById('modal-rtroom').value = '';
+          document.getElementById('modal-tech').value = 'GPON';
           document.getElementById('modal-olt').value = '';
-          document.getElementById('modal-ports').value = '8';
+          document.getElementById('modal-ports').value = '8 P';
           document.getElementById('olt-modal').style.display = 'flex';
         }
 
-        function openEditOltModal(encC, encRt, encOlt, portsCount) {
+        function openEditOltModal(encReg, encC, encRt, encTech, encOlt, encType) {
+          const reg = decodeURIComponent(encReg || 'Thrissur');
           const c = decodeURIComponent(encC);
           const rt = decodeURIComponent(encRt);
+          const tech = decodeURIComponent(encTech || 'GPON');
           const olt = decodeURIComponent(encOlt);
+          const oType = decodeURIComponent(encType || '8 P');
+
           document.getElementById('olt-modal-title').innerText = '✏️ Edit OLT Node';
           document.getElementById('modal-old-center').value = c;
           document.getElementById('modal-old-rtroom').value = rt;
           document.getElementById('modal-old-olt').value = olt;
+          document.getElementById('modal-region').value = reg;
           document.getElementById('modal-center').value = c;
           document.getElementById('modal-rtroom').value = rt;
+          document.getElementById('modal-tech').value = tech;
           document.getElementById('modal-olt').value = olt;
-          document.getElementById('modal-ports').value = (portsCount === 16 || portsCount === 32) ? String(portsCount) : '8';
+          document.getElementById('modal-ports').value = oType.includes('16') ? '16 P' : (oType.includes('32') ? '32 P' : '8 P');
           document.getElementById('olt-modal').style.display = 'flex';
         }
 
@@ -1252,11 +1328,16 @@ def admin_dashboard():
 
         async function saveOltModal(e) {
           e.preventDefault();
+          const oltTypeVal = document.getElementById('modal-ports').value;
+          const portCnt = oltTypeVal.includes('16') ? 16 : (oltTypeVal.includes('32') ? 32 : 8);
           const payload = {
+            region: document.getElementById('modal-region').value.trim() || 'Thrissur',
             center: document.getElementById('modal-center').value.trim(),
             rt_room: document.getElementById('modal-rtroom').value.trim(),
+            tech: document.getElementById('modal-tech').value.trim() || 'GPON',
             olt_name: document.getElementById('modal-olt').value.trim(),
-            port_count: parseInt(document.getElementById('modal-ports').value, 10) || 8,
+            olt_type: oltTypeVal,
+            port_count: portCnt,
             old_center: document.getElementById('modal-old-center').value.trim() || null,
             old_rt_room: document.getElementById('modal-old-rtroom').value.trim() || null,
             old_olt_name: document.getElementById('modal-old-olt').value.trim() || null
@@ -1318,9 +1399,12 @@ def admin_dashboard():
             return;
           }
           const filtered = fullHierarchyRows.filter(r => 
-            r.center.toLowerCase().includes(q) || 
-            r.rtRoom.toLowerCase().includes(q) || 
-            r.oltName.toLowerCase().includes(q)
+            (r.region || '').toLowerCase().includes(q) ||
+            (r.center || '').toLowerCase().includes(q) || 
+            (r.rtRoom || '').toLowerCase().includes(q) || 
+            (r.tech || '').toLowerCase().includes(q) ||
+            (r.oltName || '').toLowerCase().includes(q) ||
+            (r.oltType || '').toLowerCase().includes(q)
           );
           renderHierarchyTable(filtered);
         }

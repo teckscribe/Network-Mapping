@@ -23,7 +23,7 @@ wheels/
 .installed.cfg
 *.egg
 
-# Database & runtime files (Never overwrite production data on git pull)
+# Database, Excel & runtime files (Never overwrite production data on git pull)
 *.db
 *.sqlite
 *.sqlite3
@@ -31,7 +31,9 @@ wheels/
 *.db-wal
 *.db-shm
 gpon_survey_data.db
-GPON_Master_Server_Export.xlsx
+*.xlsx
+*.xls
+*.csv
 users_config.json
 *.bak
 
