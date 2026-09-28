@@ -10,9 +10,11 @@ import socket
 import io
 import json
 import re
+import zipfile
+import shutil
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from fastapi import FastAPI, HTTPException, status, UploadFile, File
+from fastapi import FastAPI, HTTPException, status, UploadFile, File, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -24,6 +26,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WEB_APP_DIR = os.path.join(BASE_DIR, "web_app")
 DB_PATH = os.path.join(BASE_DIR, "gpon_survey_data.db")
 USERS_CONFIG_PATH = os.path.join(BASE_DIR, "users_config.json")
+NODE_MASTER_DIR = os.path.join(BASE_DIR, "Node Master")
+DATA_DIR = os.path.join(BASE_DIR, "data")
+HIERARCHY_FILE = os.path.join(NODE_MASTER_DIR, "custom_hierarchy.json")
 
 def save_users_to_json(conn=None):
     """Persists current SQLite users to users_config.json so git pulls never wipe user credentials."""
@@ -180,7 +185,263 @@ def init_db():
     save_users_to_json(conn)
     conn.close()
 
+def sanitize_folder_name(name: str, default: str = "Unknown") -> str:
+    """Sanitizes strings for safe folder and file names across Windows and Linux."""
+    if not name or not str(name).strip():
+        return default
+    cleaned = re.sub(r'[\\/*?:"<>|]', '_', str(name).strip())
+    cleaned = cleaned.strip('. ')
+    return cleaned if cleaned else default
+
+def load_hierarchy_data() -> dict:
+    """Loads network hierarchy from HIERARCHY_FILE (or fallback to legacy custom_hierarchy.json)."""
+    if os.path.exists(HIERARCHY_FILE):
+        try:
+            with open(HIERARCHY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"[Hierarchy Warning] Failed loading {HIERARCHY_FILE}: {e}")
+    legacy_file = os.path.join(BASE_DIR, "custom_hierarchy.json")
+    if os.path.exists(legacy_file):
+        try:
+            with open(legacy_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+def save_hierarchy_data(data: dict):
+    """Saves network hierarchy to HIERARCHY_FILE and mirrors to legacy path for backward compatibility."""
+    os.makedirs(NODE_MASTER_DIR, exist_ok=True)
+    with open(HIERARCHY_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    try:
+        legacy_file = os.path.join(BASE_DIR, "custom_hierarchy.json")
+        with open(legacy_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
+
+def get_region_for_center(center_name: str, hierarchy: dict = None) -> str:
+    """Finds the assigned Region for a given Center from the hierarchy dictionary."""
+    if not center_name:
+        return "Thrissur"
+    if hierarchy is None:
+        hierarchy = load_hierarchy_data()
+    c_lower = str(center_name).strip().lower()
+    for c, rts in hierarchy.items():
+        if c.strip().lower() == c_lower and isinstance(rts, dict):
+            for rt, olts in rts.items():
+                if isinstance(olts, dict):
+                    for olt_k, olt_data in olts.items():
+                        if isinstance(olt_data, dict) and olt_data.get("region"):
+                            return olt_data["region"].strip()
+    return "Thrissur"
+
+def build_excel_workbook(rows, title="Survey_Data") -> openpyxl.Workbook:
+    """Builds and styles an openpyxl Workbook for GPON survey records."""
+    headers = [
+        'Region', 'Center', 'RT Room', 'GPON/FTTH/WDM', 'OLT/Node Name',
+        'Port Number', 'KSEB Post Number', 'Land Mark', 'Enclosure Number',
+        'Enclosure ID', 'Lat /Long', 'Splitter ID', 'Splitter Ratio',
+        'No: Of Customer Connected', 'Splitter Out Colour Code',
+        'ADL Subscriber ID', 'ACS Subscriber ID', 'Date & Time', 'Surveyor Name'
+    ]
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = title[:31] if title else "Sheet1"
+
+    header_fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+    header_font = Font(name="Calibri", size=11, bold=True, color="000000")
+    thin_border = Border(
+        left=Side(style="thin", color="BFBFBF"),
+        right=Side(style="thin", color="BFBFBF"),
+        top=Side(style="thin", color="BFBFBF"),
+        bottom=Side(style="thin", color="BFBFBF")
+    )
+    center_align = Alignment(horizontal="center", vertical="center")
+    left_align = Alignment(horizontal="left", vertical="center")
+
+    for col_idx, h in enumerate(headers, 1):
+        cell = ws.cell(row=2, column=col_idx, value=h)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = thin_border
+
+    for row_idx, r in enumerate(rows, 3):
+        vals = [
+            r['region'] if r['region'] else 'Thrissur',
+            r['center'] or '',
+            r['rt_room'] or '',
+            r['technology'] or 'GPON',
+            r['olt_name'] or '',
+            r['port_number'] or '',
+            r['kseb_post_number'] or '',
+            r['landmark'] or '',
+            r['enclosure_number'] or '',
+            r['enclosure_id'] or '',
+            r['lat_long'] or '',
+            r['splitter_id'] or '',
+            r['splitter_ratio'] or '',
+            r['customers_connected'] or 0,
+            r['splitter_lead_color'] or '',
+            r['adl_subscriber_id'] or '',
+            r['acs_subscriber_id'] or '',
+            r['survey_date_time'] or (r['created_at'][:19].replace('T', ' ') if r['created_at'] else ''),
+            r['surveyor_name'] or r['surveyor_username'] or ''
+        ]
+        for col_idx, val in enumerate(vals, 1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=val)
+            cell.font = Font(name="Calibri", size=10)
+            cell.border = thin_border
+            if col_idx in [1, 2, 3, 4, 6, 9, 12, 13, 14, 15, 18]:
+                cell.alignment = center_align
+            else:
+                cell.alignment = left_align
+
+    for col in ws.columns:
+        max_len = 0
+        col_letter = col[1].column_letter
+        for cell in col:
+            if cell.value:
+                max_len = max(max_len, len(str(cell.value)))
+        ws.column_dimensions[col_letter].width = max(max_len + 3, 12)
+
+    return wb
+
+def update_center_excel(region: str, center: str) -> Optional[str]:
+    """Generates / updates the Excel spreadsheet for a specific Center inside data/<Region>/<Center>/"""
+    if not center or not str(center).strip():
+        return None
+    safe_center = str(center).strip()
+    
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT * FROM survey_records 
+        WHERE LOWER(TRIM(center)) = LOWER(TRIM(?))
+        ORDER BY rowid ASC
+    """, (safe_center,))
+    rows = cur.fetchall()
+    
+    determined_region = region
+    if rows and rows[0]['region']:
+        determined_region = rows[0]['region']
+    elif not determined_region or determined_region.lower() in ["", "none", "null"]:
+        determined_region = get_region_for_center(safe_center) or "Thrissur"
+        
+    conn.close()
+    
+    safe_reg = sanitize_folder_name(determined_region, "Thrissur")
+    safe_cent = sanitize_folder_name(safe_center, "General")
+    center_dir = os.path.join(DATA_DIR, safe_reg, safe_cent)
+    os.makedirs(center_dir, exist_ok=True)
+    
+    file_path = os.path.join(center_dir, f"{safe_cent}_Survey_Data.xlsx")
+    wb = build_excel_workbook(rows, title=safe_cent[:31])
+    wb.save(file_path)
+    return file_path
+
+def sync_all_center_excels(only_folders=False):
+    """
+    Ensures that for every (Region, Center) in custom_hierarchy.json AND in survey_records:
+    1. Folder data/<safe_region>/<safe_center>/ exists.
+    2. Excel spreadsheet data/<safe_region>/<safe_center>/<safe_center>_Survey_Data.xlsx is generated/updated.
+    """
+    os.makedirs(DATA_DIR, exist_ok=True)
+    
+    hierarchy = load_hierarchy_data()
+    center_to_region = {}
+    for center, rts in hierarchy.items():
+        if not isinstance(rts, dict):
+            continue
+        center_to_region[center.strip()] = get_region_for_center(center, hierarchy)
+    
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT DISTINCT region, center FROM survey_records")
+    db_pairs = cur.fetchall()
+    conn.close()
+    
+    for r_reg, r_cent in db_pairs:
+        if r_cent and str(r_cent).strip():
+            c_clean = str(r_cent).strip()
+            reg_clean = str(r_reg).strip() if (r_reg and str(r_reg).strip()) else center_to_region.get(c_clean, "Thrissur")
+            center_to_region[c_clean] = reg_clean
+
+    updated_files = []
+    for center, region in center_to_region.items():
+        try:
+            safe_reg = sanitize_folder_name(region, "Thrissur")
+            safe_cent = sanitize_folder_name(center, "General")
+            center_dir = os.path.join(DATA_DIR, safe_reg, safe_cent)
+            os.makedirs(center_dir, exist_ok=True)
+            
+            excel_path = os.path.join(center_dir, f"{safe_cent}_Survey_Data.xlsx")
+            if not only_folders or not os.path.exists(excel_path):
+                conn = sqlite3.connect(DB_PATH)
+                conn.row_factory = sqlite3.Row
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT * FROM survey_records 
+                    WHERE LOWER(TRIM(center)) = LOWER(TRIM(?))
+                    ORDER BY rowid ASC
+                """, (center,))
+                rows = cur.fetchall()
+                conn.close()
+                
+                wb = build_excel_workbook(rows, title=safe_cent[:31])
+                wb.save(excel_path)
+                updated_files.append(excel_path)
+        except Exception as e:
+            print(f"[Sync Warning] Could not sync Excel for center '{center}': {e}")
+            
+    return updated_files
+
+def ensure_directories_and_migrate():
+    """Initializes 'Node Master' and 'data' directories and migrates existing files."""
+    os.makedirs(NODE_MASTER_DIR, exist_ok=True)
+    os.makedirs(DATA_DIR, exist_ok=True)
+
+    # 1. Migrate custom_hierarchy.json into Node Master/
+    legacy_hier = os.path.join(BASE_DIR, "custom_hierarchy.json")
+    if os.path.exists(legacy_hier):
+        if not os.path.exists(HIERARCHY_FILE):
+            try:
+                shutil.copy2(legacy_hier, HIERARCHY_FILE)
+                print(f"[Init] Migrated {legacy_hier} -> {HIERARCHY_FILE}")
+            except Exception as e:
+                print(f"[Init Warning] Could not copy hierarchy file: {e}")
+        else:
+            if os.path.getsize(HIERARCHY_FILE) == 0 and os.path.getsize(legacy_hier) > 0:
+                try:
+                    shutil.copy2(legacy_hier, HIERARCHY_FILE)
+                except Exception:
+                    pass
+
+    # 2. Archive any existing Node Master spreadsheets from BASE_DIR to Node Master/ if not present
+    for fname in os.listdir(BASE_DIR):
+        if (fname.endswith(".xlsx") or fname.endswith(".xls")) and any(k in fname.lower() for k in ["hierarchy", "olt", "node", "mapping"]):
+            target_path = os.path.join(NODE_MASTER_DIR, fname)
+            src_path = os.path.join(BASE_DIR, fname)
+            if not os.path.exists(target_path) and os.path.isfile(src_path) and "export" not in fname.lower() and "survey_data" not in fname.lower():
+                try:
+                    shutil.copy2(src_path, target_path)
+                    print(f"[Init] Preserved master spreadsheet {fname} -> {target_path}")
+                except Exception as e:
+                    print(f"[Init Warning] Could not copy {fname}: {e}")
+
+    # 3. Synchronize / pre-create all Region and Center folders inside data/
+    try:
+        sync_all_center_excels(only_folders=False)
+    except Exception as e:
+        print(f"[Init Warning] Could not sync center excels: {e}")
+
 init_db()
+ensure_directories_and_migrate()
 
 app = FastAPI(title="GPON Field Survey Server")
 
@@ -352,14 +613,9 @@ async def import_users_config(file: UploadFile = File(...)):
 
 @app.get("/api/hierarchy")
 def get_hierarchy():
-    hierarchy_file = os.path.join(BASE_DIR, "custom_hierarchy.json")
-    if os.path.exists(hierarchy_file):
-        try:
-            import json
-            with open(hierarchy_file, "r", encoding="utf-8") as f:
-                return {"hierarchy": json.load(f)}
-        except Exception:
-            pass
+    hier = load_hierarchy_data()
+    if hier:
+        return {"hierarchy": hier}
     default_hierarchy = {
         "Thrissur North": {
             "Mulamkunnathukavu": {
@@ -376,18 +632,9 @@ def get_hierarchy():
 
 @app.post("/api/upload-hierarchy")
 def upload_hierarchy(payload: dict):
-    hierarchy_file = os.path.join(BASE_DIR, "custom_hierarchy.json")
     try:
         incoming = payload.get("hierarchy", payload)
-        
-        # Load existing hierarchy to merge (never blindly overwrite)
-        existing = {}
-        if os.path.exists(hierarchy_file):
-            try:
-                with open(hierarchy_file, "r", encoding="utf-8") as f:
-                    existing = json.load(f)
-            except Exception:
-                existing = {}
+        existing = load_hierarchy_data()
 
         # Merge incoming into existing: only ADD new centers/rt/olts, don't clobber rich metadata
         for center, rts in incoming.items():
@@ -401,7 +648,6 @@ def upload_hierarchy(payload: dict):
                 if rt not in existing[center]:
                     existing[center][rt] = {}
                 for olt_name, olt_data in olts.items():
-                    # Check for case-insensitive duplicate
                     matched_key = None
                     for exist_k in list(existing[center][rt].keys()):
                         if exist_k.strip().lower() == olt_name.strip().lower():
@@ -409,17 +655,15 @@ def upload_hierarchy(payload: dict):
                             break
                     target_key = matched_key if matched_key else olt_name
 
-                    # If incoming is a simple port array and we already have rich metadata, keep rich
                     if isinstance(olt_data, list) and target_key in existing[center][rt]:
                         existing_entry = existing[center][rt][target_key]
                         if isinstance(existing_entry, dict) and "ports" in existing_entry:
-                            # Already have rich data — don't downgrade, just skip
                             continue
                     
                     existing[center][rt][target_key] = olt_data
 
-        with open(hierarchy_file, "w", encoding="utf-8") as f:
-            json.dump(existing, f, indent=2)
+        save_hierarchy_data(existing)
+        sync_all_center_excels(only_folders=False)
         return {"status": "success", "message": "Server network hierarchy merged successfully."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -430,6 +674,23 @@ async def upload_hierarchy_excel(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Only Excel (.xlsx/.xls) or CSV files are supported.")
     
     contents = await file.read()
+    
+    # Save a physical archive copy into "Node Master" folder
+    os.makedirs(NODE_MASTER_DIR, exist_ok=True)
+    timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    clean_upload_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', file.filename)
+    saved_upload_path = os.path.join(NODE_MASTER_DIR, f"Node_Master_{timestamp_str}_{clean_upload_name}")
+    try:
+        with open(saved_upload_path, "wb") as f_out:
+            f_out.write(contents)
+        ext = os.path.splitext(file.filename)[1] or ".xlsx"
+        latest_path = os.path.join(NODE_MASTER_DIR, f"Node_Master_Latest{ext}")
+        with open(latest_path, "wb") as f_out:
+            f_out.write(contents)
+        print(f"[Node Master] Saved uploaded file to {saved_upload_path} and {latest_path}")
+    except Exception as e:
+        print(f"[Node Master Warning] Failed saving physical file: {e}")
+        
     new_hierarchy = {}
     total_olts = 0
     centers_found = set()
@@ -511,7 +772,6 @@ async def upload_hierarchy_excel(file: UploadFile = File(...)):
                     if "16" in str(olt_type): port_count = 16
                     elif "32" in str(olt_type): port_count = 32
 
-                    # Strict Case-Insensitive Duplicate Check in RT Room
                     existing_match = None
                     for existing_k in new_hierarchy[center][rt_room].keys():
                         if existing_k.strip().lower() == olt.lower():
@@ -526,7 +786,6 @@ async def upload_hierarchy_excel(file: UploadFile = File(...)):
                     }
 
                     if existing_match:
-                        # Already exists in this RT room - update, do not create duplicate!
                         new_hierarchy[center][rt_room][existing_match] = olt_record
                     else:
                         centers_found.add(center)
@@ -538,14 +797,7 @@ async def upload_hierarchy_excel(file: UploadFile = File(...)):
             raise HTTPException(status_code=400, detail="No valid Center and OLT rows found in uploaded sheet.")
 
         # Merge with existing custom hierarchy without duplicates
-        hierarchy_file = os.path.join(BASE_DIR, "custom_hierarchy.json")
-        existing_hierarchy = {}
-        if os.path.exists(hierarchy_file):
-            try:
-                with open(hierarchy_file, "r", encoding="utf-8") as f:
-                    existing_hierarchy = json.load(f)
-            except Exception:
-                pass
+        existing_hierarchy = load_hierarchy_data()
 
         for c, rts in new_hierarchy.items():
             if c not in existing_hierarchy:
@@ -561,12 +813,12 @@ async def upload_hierarchy_excel(file: UploadFile = File(...)):
                             break
                     existing_hierarchy[c][rt][target_k] = olt_data
 
-        with open(hierarchy_file, "w", encoding="utf-8") as f:
-            json.dump(existing_hierarchy, f, indent=2)
+        save_hierarchy_data(existing_hierarchy)
+        sync_all_center_excels(only_folders=False)
 
         return {
             "status": "success",
-            "message": f"Imported {total_olts} unique OLTs across {len(centers_found)} Centers successfully!",
+            "message": f"Imported {total_olts} unique Nodes across {len(centers_found)} Centers successfully! Saved to 'Node Master' folder.",
             "total_olts": total_olts,
             "centers": list(centers_found),
             "hierarchy": existing_hierarchy
@@ -578,14 +830,7 @@ async def upload_hierarchy_excel(file: UploadFile = File(...)):
 
 @app.post("/api/hierarchy/olt")
 def save_or_edit_olt(payload: OLTEditModel):
-    hierarchy_file = os.path.join(BASE_DIR, "custom_hierarchy.json")
-    hierarchy = {}
-    if os.path.exists(hierarchy_file):
-        try:
-            with open(hierarchy_file, "r", encoding="utf-8") as f:
-                hierarchy = json.load(f)
-        except Exception:
-            hierarchy = {}
+    hierarchy = load_hierarchy_data()
     
     # If old keys provided, remove old location (for rename/move)
     if payload.old_center and payload.old_rt_room and payload.old_olt_name:
@@ -613,7 +858,7 @@ def save_or_edit_olt(payload: OLTEditModel):
     o_type = payload.olt_type.strip() if payload.olt_type else "8 P"
 
     if not c or not rt or not olt:
-        raise HTTPException(status_code=400, detail="Center, RT Room, and OLT Name are required.")
+        raise HTTPException(status_code=400, detail="Center, RT Room, and Node Name are required.")
 
     if c not in hierarchy:
         hierarchy[c] = {}
@@ -634,23 +879,14 @@ def save_or_edit_olt(payload: OLTEditModel):
         "ports": ports
     }
 
-    with open(hierarchy_file, "w", encoding="utf-8") as f:
-        json.dump(hierarchy, f, indent=2)
+    save_hierarchy_data(hierarchy)
+    update_center_excel(reg, c)
 
-    return {"status": "success", "message": f"OLT '{olt}' saved successfully!", "hierarchy": hierarchy}
+    return {"status": "success", "message": f"Node '{olt}' saved successfully!", "hierarchy": hierarchy}
 
 @app.delete("/api/hierarchy/olt")
 def delete_olt(payload: OLTDeleteModel):
-    hierarchy_file = os.path.join(BASE_DIR, "custom_hierarchy.json")
-    if not os.path.exists(hierarchy_file):
-        raise HTTPException(status_code=404, detail="Hierarchy file not found.")
-    
-    try:
-        with open(hierarchy_file, "r", encoding="utf-8") as f:
-            hierarchy = json.load(f)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    
+    hierarchy = load_hierarchy_data()
     c = payload.center.strip()
     rt = payload.rt_room.strip()
     olt = payload.olt_name.strip()
@@ -669,25 +905,15 @@ def delete_olt(payload: OLTDeleteModel):
             del hierarchy[c]
 
         if deleted:
-            with open(hierarchy_file, "w", encoding="utf-8") as f:
-                json.dump(hierarchy, f, indent=2)
-            return {"status": "success", "message": f"Deleted OLT '{olt}' successfully."}
+            save_hierarchy_data(hierarchy)
+            return {"status": "success", "message": f"Deleted Node '{olt}' successfully."}
     
-    raise HTTPException(status_code=404, detail="OLT not found in hierarchy.")
+    raise HTTPException(status_code=404, detail="Node not found in hierarchy.")
 
 @app.post("/api/hierarchy/bulk-delete")
 def bulk_delete_olts(payload: dict):
-    """Delete multiple OLTs at once. Expects {"items": [{"center":..., "rt_room":..., "olt_name":...}, ...]}"""
-    hierarchy_file = os.path.join(BASE_DIR, "custom_hierarchy.json")
-    if not os.path.exists(hierarchy_file):
-        raise HTTPException(status_code=404, detail="Hierarchy file not found.")
-    
-    try:
-        with open(hierarchy_file, "r", encoding="utf-8") as f:
-            hierarchy = json.load(f)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    
+    """Delete multiple Nodes at once. Expects {"items": [{"center":..., "rt_room":..., "olt_name":...}, ...]}"""
+    hierarchy = load_hierarchy_data()
     items = payload.get("items", [])
     if not items:
         raise HTTPException(status_code=400, detail="No items provided for deletion.")
@@ -710,20 +936,12 @@ def bulk_delete_olts(payload: dict):
             if c in hierarchy and not hierarchy[c]:
                 del hierarchy[c]
     
-    with open(hierarchy_file, "w", encoding="utf-8") as f:
-        json.dump(hierarchy, f, indent=2)
-    
-    return {"status": "success", "message": f"Deleted {deleted_count} OLT(s) successfully.", "deleted": deleted_count}
+    save_hierarchy_data(hierarchy)
+    return {"status": "success", "message": f"Deleted {deleted_count} Node(s) successfully.", "deleted": deleted_count}
 
 @app.delete("/api/hierarchy/clear")
 def clear_hierarchy():
-    hierarchy_file = os.path.join(BASE_DIR, "custom_hierarchy.json")
-    if os.path.exists(hierarchy_file):
-        try:
-            with open(hierarchy_file, "w", encoding="utf-8") as f:
-                json.dump({}, f, indent=2)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+    save_hierarchy_data({})
     return {"status": "success", "message": "All hierarchy data cleared."}
 
 @app.get("/api/download-hierarchy-template")
@@ -839,6 +1057,20 @@ def sync_records(payload: SyncPayload):
     total_count = cur.fetchone()[0]
     conn.close()
 
+    # Update per-center Excel spreadsheets in data/<Region>/<Center>/ in real time
+    affected_centers = set()
+    for r in payload.records:
+        if r.center and str(r.center).strip():
+            cent = str(r.center).strip()
+            reg = r.region or get_region_for_center(cent) or "Thrissur"
+            affected_centers.add((reg, cent))
+
+    for reg, cent in affected_centers:
+        try:
+            update_center_excel(reg, cent)
+        except Exception as err:
+            print(f"[Sync Warning] Failed updating Excel for center '{cent}': {err}")
+
     return {
         "status": "success",
         "synced_count": len(synced_uuids),
@@ -865,75 +1097,7 @@ def export_server_excel():
     rows = cur.fetchall()
     conn.close()
 
-    headers = [
-        'Region', 'Center', 'RT Room', 'GPON/FTTH/WDM', ' OLT/Node  Name',
-        'Port Number', 'KSEB Post Number', 'Land Mark', 'Enclosure Number',
-        'Enclosure ID', 'Lat /Long', 'Splitter ID', 'Splitter Ratio',
-        'No: Of Customer Connected', 'Splitter Lead Colour Code',
-        'ADL Subscriber ID', 'ACS Subscriber ID', 'Date & Time', 'Surveyor Name'
-    ]
-
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Sheet1"
-
-    header_fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
-    header_font = Font(name="Calibri", size=11, bold=True, color="000000")
-    thin_border = Border(
-        left=Side(style="thin", color="BFBFBF"),
-        right=Side(style="thin", color="BFBFBF"),
-        top=Side(style="thin", color="BFBFBF"),
-        bottom=Side(style="thin", color="BFBFBF")
-    )
-    center_align = Alignment(horizontal="center", vertical="center")
-    left_align = Alignment(horizontal="left", vertical="center")
-
-    for col_idx, h in enumerate(headers, 1):
-        cell = ws.cell(row=2, column=col_idx, value=h)
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        cell.border = thin_border
-
-    for row_idx, r in enumerate(rows, 3):
-        vals = [
-            r['region'] or 'Thrissur',
-            r['center'] or '',
-            r['rt_room'] or '',
-            r['technology'] or 'GPON',
-            r['olt_name'] or '',
-            r['port_number'] or '',
-            r['kseb_post_number'] or '',
-            r['landmark'] or '',
-            r['enclosure_number'] or '',
-            r['enclosure_id'] or '',
-            r['lat_long'] or '',
-            r['splitter_id'] or '',
-            r['splitter_ratio'] or '',
-            r['customers_connected'] or 0,
-            r['splitter_lead_color'] or '',
-            r['adl_subscriber_id'] or '',
-            r['acs_subscriber_id'] or '',
-            r['survey_date_time'] or (r['created_at'][:19].replace('T', ' ') if r['created_at'] else ''),
-            r['surveyor_name'] or r['surveyor_username'] or ''
-        ]
-        for col_idx, val in enumerate(vals, 1):
-            cell = ws.cell(row=row_idx, column=col_idx, value=val)
-            cell.font = Font(name="Calibri", size=10)
-            cell.border = thin_border
-            if col_idx in [1, 2, 3, 4, 6, 9, 12, 13, 14, 15, 18]:
-                cell.alignment = center_align
-            else:
-                cell.alignment = left_align
-
-    for col in ws.columns:
-        max_len = 0
-        col_letter = col[1].column_letter
-        for cell in col:
-            if cell.value:
-                max_len = max(max_len, len(str(cell.value)))
-        ws.column_dimensions[col_letter].width = max(max_len + 3, 12)
-
+    wb = build_excel_workbook(rows, title="Master_Data")
     export_path = os.path.join(BASE_DIR, "GPON_Master_Server_Export.xlsx")
     wb.save(export_path)
 
@@ -943,6 +1107,121 @@ def export_server_excel():
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         filename=f"GPON_Master_Network_Mapping_{today}.xlsx"
     )
+
+@app.get("/api/export-center-excel")
+def export_center_excel(center: str, region: Optional[str] = None):
+    """Exports and downloads an individual Center's survey Excel file from data/<Region>/<Center>/"""
+    if not center or not center.strip():
+        raise HTTPException(status_code=400, detail="Center name is required.")
+    
+    reg = region or get_region_for_center(center.strip()) or "Thrissur"
+    file_path = update_center_excel(reg, center.strip())
+    if not file_path or not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail=f"No survey data file found for center '{center}'.")
+    
+    safe_cent = sanitize_folder_name(center.strip(), "General")
+    today = datetime.date.today().isoformat()
+    return FileResponse(
+        file_path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=f"{safe_cent}_Survey_Data_{today}.xlsx"
+    )
+
+@app.get("/api/export-data-zip")
+def export_data_zip():
+    """Generates and downloads a ZIP archive of all region/center Excel files inside data/"""
+    sync_all_center_excels()
+    
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        for root, dirs, files in os.walk(DATA_DIR):
+            for file in files:
+                abs_path = os.path.join(root, file)
+                rel_path = os.path.relpath(abs_path, BASE_DIR)
+                zip_file.write(abs_path, rel_path)
+                
+    zip_buffer.seek(0)
+    today = datetime.date.today().isoformat()
+    return Response(
+        content=zip_buffer.getvalue(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="GPON_Survey_Data_All_Centers_{today}.zip"'
+        }
+    )
+
+@app.get("/api/data-folders-summary")
+def get_data_folders_summary():
+    """Returns structured summary of region folders, center folders, record counts, and Excel files."""
+    hierarchy = load_hierarchy_data()
+    
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT region, center, COUNT(*) FROM survey_records GROUP BY region, center")
+    db_counts = {(r[0] or "Thrissur", (r[1] or "").strip()): r[2] for r in cur.fetchall()}
+    conn.close()
+    
+    regions_map = {}
+    for center, rts in hierarchy.items():
+        reg = get_region_for_center(center, hierarchy)
+        if reg not in regions_map:
+            regions_map[reg] = {}
+        regions_map[reg][center.strip()] = {
+            "center": center.strip(),
+            "region": reg,
+            "records_count": db_counts.get((reg, center.strip()), 0)
+        }
+        
+    for (reg, cent), count in db_counts.items():
+        if not cent: continue
+        if reg not in regions_map:
+            regions_map[reg] = {}
+        if cent not in regions_map[reg]:
+            regions_map[reg][cent] = {
+                "center": cent,
+                "region": reg,
+                "records_count": count
+            }
+            
+    result_regions = {}
+    total_centers = 0
+    total_records = sum(db_counts.values())
+    
+    for reg, centers in sorted(regions_map.items()):
+        safe_reg = sanitize_folder_name(reg, "Thrissur")
+        center_list = []
+        for cent_name, info in sorted(centers.items()):
+            safe_cent = sanitize_folder_name(cent_name, "General")
+            center_rel_path = f"data/{safe_reg}/{safe_cent}"
+            excel_name = f"{safe_cent}_Survey_Data.xlsx"
+            excel_abs_path = os.path.join(DATA_DIR, safe_reg, safe_cent, excel_name)
+            
+            center_list.append({
+                "center": cent_name,
+                "region": reg,
+                "folder": center_rel_path,
+                "excel_file": excel_name,
+                "excel_exists": os.path.exists(excel_abs_path),
+                "records_count": info["records_count"]
+            })
+            total_centers += 1
+        result_regions[reg] = center_list
+        
+    return {
+        "status": "success",
+        "data_dir": "data",
+        "node_master_dir": "Node Master",
+        "total_regions": len(result_regions),
+        "total_centers": total_centers,
+        "total_records": total_records,
+        "regions": result_regions
+    }
+
+@app.post("/api/resync-data-folders")
+def resync_data_folders():
+    """Manual re-synchronization of all center spreadsheets from SQLite."""
+    updated = sync_all_center_excels(only_folders=False)
+    return {"status": "success", "message": f"Synchronized {len(updated)} center Excel spreadsheets.", "updated_files": len(updated)}
 
 # Central Office Web Dashboard
 @app.get("/admin", response_class=HTMLResponse)
@@ -983,8 +1262,9 @@ def admin_dashboard():
         <div>
           <h1 style="margin:0; font-size:1.5rem; color:#0f172a;">📡 Network Mapping</h1>
         </div>
-        <div style="display:flex; gap:10px;">
+        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
           <a href="/api/export-excel" class="btn btn-green">📊 Download Master Excel</a>
+          <a href="/api/export-data-zip" class="btn" style="background:#2563eb; color:white; text-decoration:none;">🗂️ Download All Centers (ZIP)</a>
           <button onclick="fetchData()" class="btn">🔄 Refresh</button>
         </div>
       </div>
@@ -993,6 +1273,7 @@ def admin_dashboard():
         <button class="tab-btn active" onclick="switchTab('feed')">📋 Survey Feed</button>
         <button class="tab-btn" onclick="switchTab('users')">👥 Field Users & Center Assignment</button>
         <button class="tab-btn" onclick="switchTab('hierarchy')">📡 Upload Node Master Data</button>
+        <button class="tab-btn" onclick="switchTab('folders')">📁 Region & Center Folders</button>
       </div>
 
       <!-- Tab 1: Survey Feed -->
@@ -1130,6 +1411,42 @@ def admin_dashboard():
         </div>
       </div>
 
+      <!-- Tab 4: Region & Center Data Folders -->
+      <div id="tab-folders" style="display:none; background:#ffffff; border-radius:10px; padding:16px; border:1px solid #cbd5e1; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px; margin-bottom:16px;">
+          <div>
+            <h3 style="margin:0 0 6px 0; color:#0284c7;">📁 Field Survey Data Folders (data/ &lt;Region&gt;/ &lt;Center&gt;/)</h3>
+            <p style="margin:0; font-size:0.85rem; color:#64748b;">
+              Field survey data is stored by Region and Center in the server's <code>data/</code> folder.
+              Each center subfolder contains its live Excel spreadsheet (<code>&lt;Center&gt;_Survey_Data.xlsx</code>) updated in real time.
+            </p>
+          </div>
+          <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            <a href="/api/export-data-zip" class="btn" style="background:#2563eb; color:white; font-size:0.85rem; text-decoration:none;">🗂️ Download All Centers (ZIP)</a>
+            <button onclick="resyncFoldersAction()" class="btn" style="background:#0f766e; color:white; font-size:0.85rem;">🔄 Re-sync All Excels</button>
+          </div>
+        </div>
+
+        <div class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-bottom:16px;">
+          <div class="stat-card" style="padding:12px 16px;">
+            <div class="stat-num" id="folder-stat-regions" style="font-size:1.5rem; color:#2563eb;">0</div>
+            <div class="stat-label">Total Regions</div>
+          </div>
+          <div class="stat-card" style="padding:12px 16px;">
+            <div class="stat-num" id="folder-stat-centers" style="font-size:1.5rem; color:#0284c7;">0</div>
+            <div class="stat-label">Total Center Folders</div>
+          </div>
+          <div class="stat-card" style="padding:12px 16px;">
+            <div class="stat-num" id="folder-stat-records" style="font-size:1.5rem; color:#059669;">0</div>
+            <div class="stat-label">Total Survey Records</div>
+          </div>
+        </div>
+
+        <div id="folders-container">
+          <p style="text-align:center; padding:20px; color:#64748b;">Loading folder hierarchy...</p>
+        </div>
+      </div>
+
       <!-- Add / Edit Node Modal -->
       <div id="olt-modal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); z-index:9999; justify-content:center; align-items:center; padding:16px;">
         <div style="background:white; border-radius:10px; padding:24px; max-width:520px; width:100%; box-shadow:0 10px 25px rgba(0,0,0,0.2);">
@@ -1207,6 +1524,7 @@ def admin_dashboard():
           document.getElementById('tab-feed').style.display = 'none';
           document.getElementById('tab-users').style.display = 'none';
           document.getElementById('tab-hierarchy').style.display = 'none';
+          document.getElementById('tab-folders').style.display = 'none';
 
           if (t === 'feed') {
             document.querySelectorAll('.tab-btn')[0].classList.add('active');
@@ -1219,6 +1537,105 @@ def admin_dashboard():
             document.querySelectorAll('.tab-btn')[2].classList.add('active');
             document.getElementById('tab-hierarchy').style.display = 'block';
             fetchHierarchy();
+          } else if (t === 'folders') {
+            document.querySelectorAll('.tab-btn')[3].classList.add('active');
+            document.getElementById('tab-folders').style.display = 'block';
+            fetchFoldersSummary();
+          }
+        }
+
+        async function fetchFoldersSummary() {
+          try {
+            const res = await fetch('/api/data-folders-summary');
+            const data = await res.json();
+            
+            document.getElementById('folder-stat-regions').innerText = data.total_regions || 0;
+            document.getElementById('folder-stat-centers').innerText = data.total_centers || 0;
+            document.getElementById('folder-stat-records').innerText = data.total_records || 0;
+
+            const container = document.getElementById('folders-container');
+            container.innerHTML = '';
+
+            const regions = data.regions || {};
+            const regKeys = Object.keys(regions);
+
+            if (regKeys.length === 0) {
+              container.innerHTML = '<p style="text-align:center; padding:20px; color:#64748b;">No region or center data folders found.</p>';
+              return;
+            }
+
+            regKeys.forEach(regName => {
+              const centers = regions[regName] || [];
+              const regCard = document.createElement('div');
+              regCard.style.cssText = 'background:#f8fafc; border:1px solid #cbd5e1; border-radius:10px; padding:16px; margin-bottom:16px;';
+              
+              let tableRows = '';
+              centers.forEach((c, idx) => {
+                tableRows += `
+                  <tr>
+                    <td style="color:#64748b; font-family:monospace; font-size:0.8rem;">${idx + 1}</td>
+                    <td><strong style="color:#0f172a;">${c.center}</strong></td>
+                    <td style="font-family:monospace; font-size:0.8rem; color:#475569;">${c.folder}/</td>
+                    <td style="font-family:monospace; font-size:0.8rem; color:#0284c7;">${c.excel_file}</td>
+                    <td>
+                      <span class="tag" style="background:${c.records_count > 0 ? '#059669' : '#94a3b8'};">
+                        ${c.records_count} record${c.records_count === 1 ? '' : 's'}
+                      </span>
+                    </td>
+                    <td>
+                      <a href="/api/export-center-excel?center=${encodeURIComponent(c.center)}&region=${encodeURIComponent(c.region)}" 
+                         class="btn" 
+                         style="padding:5px 10px; font-size:0.75rem; background:#0284c7; text-decoration:none;">
+                        📥 Download Excel
+                      </a>
+                    </td>
+                  </tr>
+                `;
+              });
+
+              regCard.innerHTML = `
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+                  <h4 style="margin:0; font-size:1.05rem; color:#1e293b;">
+                    📍 Region: <span style="color:#2563eb;">${regName}</span> 
+                    <span style="font-size:0.8rem; font-weight:normal; color:#64748b; margin-left:8px;">(${centers.length} Centers)</span>
+                  </h4>
+                  <span style="font-family:monospace; font-size:0.8rem; background:#e2e8f0; padding:4px 8px; border-radius:6px; color:#334155;">
+                    data/${regName}/
+                  </span>
+                </div>
+                <div style="overflow-x:auto;">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th style="width:36px;">#</th>
+                        <th>Center</th>
+                        <th>Server Folder Path</th>
+                        <th>Excel Spreadsheet</th>
+                        <th>Captured Records</th>
+                        <th>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${tableRows}
+                    </tbody>
+                  </table>
+                </div>
+              `;
+              container.appendChild(regCard);
+            });
+          } catch(err) {
+            console.error('Failed fetching folders summary:', err);
+          }
+        }
+
+        async function resyncFoldersAction() {
+          try {
+            const res = await fetch('/api/resync-data-folders', { method: 'POST' });
+            const data = await res.json();
+            alert(data.message || 'All center Excels synchronized successfully!');
+            fetchFoldersSummary();
+          } catch(err) {
+            alert('Failed to resync: ' + err.message);
           }
         }
 

@@ -35,6 +35,9 @@ gpon_survey_data.db
 *.xls
 *.csv
 users_config.json
+custom_hierarchy.json
+Node Master/
+data/
 *.bak
 
 # OS generated files
