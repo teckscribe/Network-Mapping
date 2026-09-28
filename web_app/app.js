@@ -1240,7 +1240,10 @@ function configureServerUrl() {
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('./sw.js')
-      .then(reg => console.log('SW registered successfully:', reg.scope))
+      .then(reg => {
+        console.log('SW registered successfully:', reg.scope);
+        reg.update();
+      })
       .catch(err => console.log('SW registration failed:', err));
   });
 }
@@ -1258,6 +1261,12 @@ window.addEventListener('offline', () => {
 
 // Init on DOM ready
 document.addEventListener('DOMContentLoaded', () => {
+  // Ensure Submit button label is strictly set to 'Submit'
+  const submitBtnEl = document.querySelector('.btn-add-row');
+  if (submitBtnEl) {
+    submitBtnEl.innerHTML = '<span>➕</span> Submit';
+  }
+
   // Pre-fill / Restore credentials if remembered
   const isRemembered = localStorage.getItem('gpon_remember_creds') === 'true';
   const savedU = localStorage.getItem('gpon_remembered_username') || '';
