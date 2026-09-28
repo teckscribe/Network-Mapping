@@ -51,10 +51,6 @@
 
     <!-- Active Row Entry Form (Spreadsheet Input Row) -->
     <div class="gs-card">
-      <div class="gs-card-header" style="justify-content: flex-end; padding: 6px 14px;">
-        <button class="btn-map-toggle" id="map-toggle-btn" onclick="toggleMap()">🗺️ Map Pin</button>
-      </div>
-
       <div class="gs-card-body">
         <!-- Spreadsheet Cells Grid -->
         <div class="gs-grid">
@@ -115,7 +111,10 @@
               <input type="text" id="manual-coords-input" class="gs-input" placeholder="10.60665, 76.21449" onchange="onManualCoordsChange(this.value)">
               <button class="btn-gps-sheet" type="button" onclick="captureGPS()">🎯 GPS</button>
             </div>
-            <span id="gps-acc" style="font-size:0.75rem; color:#5f6368; margin-top:2px;">Tap GPS at pole</span>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px; margin-bottom: 4px;">
+              <span id="gps-acc" style="font-size: 0.75rem; color: #5f6368;">Tap GPS at pole</span>
+              <button class="btn-map-toggle" id="map-toggle-btn" type="button" onclick="toggleMap()">🗺️ Map Pin</button>
+            </div>
             <div id="map-container"></div>
           </div>
 
