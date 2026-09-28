@@ -194,23 +194,18 @@ def init_db():
     # 1. Sync from persistent users_config.json if it exists
     load_users_from_json(conn)
 
-    # 2. Seed / Update 4 Type Access Users if missing
-    cur.execute("SELECT username FROM users")
-    existing_usernames = {row[0] for row in cur.fetchall()}
-    now = datetime.datetime.now().isoformat()
-    defaults = [
-        ("admin", "admin123", "Central Super Administrator", "admin@gpon.local", "ALL", "ALL", "super_admin", now),
-        ("rcsm_thrissur", "1234", "Thrissur RCSM Manager", "rcsm.thrissur@gpon.local", "THRISSUR NORTH", "Thrissur", "rcsm", now),
-        ("acso_thrissur", "1234", "Thrissur ACSO Officer", "acso.thrissur@gpon.local", "THRISSUR NORTH", "Thrissur", "acso", now),
-        ("thrissur_agent", "1234", "Thrissur Survey Technician", "agent.thrissur@gpon.local", "THRISSUR NORTH", "Thrissur", "field_technician", now),
-        ("tmm_agent", "1234", "Thathamangalam Survey Technician", "agent.tmm@gpon.local", "THATHAMANGALAM", "Thrissur", "field_technician", now)
-    ]
-    for u in defaults:
-        if u[0] not in existing_usernames:
-            cur.execute("""
-            INSERT INTO users (username, password, full_name, email, assigned_center, assigned_region, role, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, u)
+    # 2. Purge sample demo users if present
+    sample_users = ('rcsm_thrissur', 'acso_thrissur', 'thrissur_agent', 'tmm_agent')
+    cur.execute(f"DELETE FROM users WHERE username IN ({','.join(['?']*len(sample_users))})", sample_users)
+
+    # 3. Seed Root Super Admin User if missing
+    cur.execute("SELECT username FROM users WHERE username = 'admin'")
+    if not cur.fetchone():
+        now = datetime.datetime.now().isoformat()
+        cur.execute("""
+        INSERT INTO users (username, password, full_name, email, assigned_center, assigned_region, role, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, ("admin", "admin123", "Central Super Administrator", "admin@gpon.local", "ALL", "ALL", "super_admin", now))
 
     # Normalize existing legacy roles in SQLite table
     cur.execute("UPDATE users SET role = 'super_admin' WHERE role = 'admin'")
@@ -1513,7 +1508,7 @@ def admin_dashboard():
           <form onsubmit="handleAdminLogin(event)">
             <div style="margin-bottom:12px;">
               <label style="display:block; font-size:0.78rem; font-weight:700; color:#475569; margin-bottom:4px;">Username</label>
-              <input type="text" id="admin-login-user" required style="width:100%; padding:9px 12px;" placeholder="e.g. admin or rcsm_thrissur">
+              <input type="text" id="admin-login-user" required style="width:100%; padding:9px 12px;" placeholder="e.g. admin or username">
             </div>
             <div style="margin-bottom:16px;">
               <label style="display:block; font-size:0.78rem; font-weight:700; color:#475569; margin-bottom:4px;">Password / PIN</label>

@@ -162,14 +162,10 @@ async function handleLogin(e) {
 
   // 2. Offline fallback credentials for remote field areas
   const offlineUsers = {
-    'thrissur_agent': { username: 'thrissur_agent', full_name: 'Thrissur Survey Technician', assigned_center: 'THRISSUR NORTH', assigned_region: 'Thrissur', role: 'field_technician' },
-    'tmm_agent': { username: 'tmm_agent', full_name: 'Thathamangalam Survey Technician', assigned_center: 'THATHAMANGALAM', assigned_region: 'Thrissur', role: 'field_technician' },
-    'acso_thrissur': { username: 'acso_thrissur', full_name: 'Thrissur ACSO Officer', assigned_center: 'THRISSUR NORTH, CHALAKKUDY', assigned_centers: ['THRISSUR NORTH', 'CHALAKKUDY'], assigned_region: 'Thrissur', assigned_regions: ['Thrissur'], role: 'acso' },
-    'rcsm_thrissur': { username: 'rcsm_thrissur', full_name: 'Thrissur RCSM Manager', assigned_center: 'THRISSUR NORTH', assigned_region: 'Thrissur', role: 'rcsm' },
-    'admin': { username: 'admin', full_name: 'Central Super Administrator', assigned_center: 'ALL', assigned_region: 'ALL', role: 'super_admin' }
+    'admin': { username: 'admin', full_name: 'Central Super Administrator', email: 'admin@gpon.local', assigned_center: 'ALL', assigned_region: 'ALL', role: 'super_admin' }
   };
 
-  if (offlineUsers[u] && (p === '1234' || p === 'admin123')) {
+  if (offlineUsers[u] && p === 'admin123') {
     if (remember) {
       localStorage.setItem('gpon_remember_creds', 'true');
       localStorage.setItem('gpon_remembered_username', u);
