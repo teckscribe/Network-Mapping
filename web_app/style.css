@@ -346,9 +346,27 @@ body {
    ======================================= */
 .gs-sheet-table-wrapper {
   overflow-x: auto;
-  max-height: 480px;
+  overflow-y: auto;
+  max-height: 400px;
   border: 1px solid var(--gs-border);
   background: #ffffff;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Up/Down and Left/Right Scrollbars */
+.gs-sheet-table-wrapper::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.gs-sheet-table-wrapper::-webkit-scrollbar-track {
+  background: #f1f3f4;
+}
+.gs-sheet-table-wrapper::-webkit-scrollbar-thumb {
+  background: #c4c7c5;
+  border-radius: 4px;
+}
+.gs-sheet-table-wrapper::-webkit-scrollbar-thumb:hover {
+  background: #9aa0a6;
 }
 
 .gs-sheet-table {
