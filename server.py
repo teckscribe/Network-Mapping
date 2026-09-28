@@ -1168,11 +1168,11 @@ def admin_dashboard():
               <input type="text" id="modal-olt" required style="width:100%; box-sizing:border-box;" placeholder="e.g. CKY/116/OLT 01/Potta-1">
             </div>
             <div style="margin-bottom:18px;">
-              <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">OLT Type</label>
+              <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">Number of Ports</label>
               <select id="modal-ports" style="width:100%; box-sizing:border-box;">
-                <option value="8 P">8 P (8 Ports: P1 - P8)</option>
-                <option value="16 P">16 P (16 Ports: P1 - P16)</option>
-                <option value="32 P">32 P (32 Ports: P1 - P32)</option>
+                <option value="8 P">8 Port</option>
+                <option value="16 P">16 Port</option>
+                <option value="32 P">32 Port</option>
               </select>
             </div>
             <div style="display:flex; justify-content:flex-end; gap:8px;">
