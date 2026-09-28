@@ -389,11 +389,13 @@ graph TD
 
 ### 10.1 Linux Server Setup (Ubuntu 22.04 / 24.04 LTS)
 
+* **Production Root Directory**: `/home/psms/Network-Mapping`
+
 #### 1. Clone & Setup Environment
 ```bash
-cd /opt
-sudo git clone https://github.com/teckscribe/Network-Mapping.git gpon-mapping
-cd gpon-mapping
+cd /home/psms
+git clone https://github.com/teckscribe/Network-Mapping.git
+cd /home/psms/Network-Mapping
 python3 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip
@@ -410,9 +412,9 @@ After=network.target
 
 [Service]
 Type=simple
-User=root
-WorkingDirectory=/opt/gpon-mapping
-ExecStart=/opt/gpon-mapping/venv/bin/uvicorn server:app --host 0.0.0.0 --port 9001 --workers 2
+User=psms
+WorkingDirectory=/home/psms/Network-Mapping
+ExecStart=/home/psms/Network-Mapping/venv/bin/uvicorn server:app --host 0.0.0.0 --port 9001 --workers 2
 Restart=always
 RestartSec=3
 Environment="PYTHONUNBUFFERED=1"
@@ -432,7 +434,7 @@ sudo systemctl status gpon-server
 ### 10.2 Maintenance & Zero-Downtime Updates
 Whenever changes are pushed to GitHub:
 ```bash
-cd /opt/gpon-mapping
+cd /home/psms/Network-Mapping
 git pull origin main
 sudo systemctl restart gpon-server
 ```
