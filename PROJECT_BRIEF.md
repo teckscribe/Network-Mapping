@@ -269,16 +269,31 @@ The system enforces 4 non-overlapping operational roles:
   * **Global Users (`ALL` / Super Admin)**: Unrestricted access to all network centers across the hierarchy.
   * **User Ribbon**: Displays `Charge of N Centers` badge when multiple centers are assigned.
 
-### 6.4 Registered Email Address & Self-Service Password Recovery
-* **Operational Need**: Field technicians and ACSOs operating in remote terrain need the capability to reset or change their password/PIN without administrative bottlenecks.
-* **Email Verification Architecture**:
-  * Every user profile supports an optional `email` address (persisted in SQLite `users.email` and `users_config.json`).
-  * Dedicated endpoint: `POST /api/change-password` accepts `username`, `email`, and `new_password`.
-  * **Strict Verification**: The server verifies that the username exists and the provided email address matches the registered record on file before updating credentials.
-  * **Zero-Interruption Persistence**: Once updated, changes are committed to SQLite and synchronized to `users_config.json` immediately.
-  * **Client Interface**:
-    * **Field App**: The login overlay features a link *"🔑 Forgot / Change PIN or Password?"* and the top ribbon provides a *"🔑 Change PIN"* shortcut opening `#reset-password-overlay`.
-    * **Admin Portal**: Users table includes an **Email Address** column and the user pop-up modal allows setting/updating email addresses.
+### 6.4 Registered Email Address & Automated OTP Password Recovery
+* **Operational Need**: Field technicians and ACSOs operating in remote terrain need the capability to reset or change their password/PIN securely without administrative bottlenecks.
+* **Two-Step Email OTP Architecture**:
+  * **Step 1 (OTP Generation & Dispatch)**:
+    * Endpoint: `POST /api/request-password-reset-otp` accepting `username_or_email`.
+    * System locates user in SQLite, generates a random 6-digit numeric OTP (`f"{random.randint(100000, 999999)}"`), caches it in-memory with a 10-minute expiry (`OTP_EXPIRY_SECONDS = 600`), and dispatches an HTML email via SMTP.
+    * Privacy masking: The client receives a masked email address (e.g. `j***n@bsnl.co.in`) for confirmation.
+  * **Step 2 (OTP Verification & Credential Update)**:
+    * Endpoint: `POST /api/verify-password-reset-otp` accepting `username`, `otp`, and `new_password`.
+    * Verifies code, expiry, and enforces a brute-force circuit breaker (maximum 5 failed attempts before OTP invalidation).
+    * Upon successful validation, commits the new password to SQLite `users` and serializes to `users_config.json`.
+* **SMTP Server Configuration (`.env`)**:
+  * The server automatically parses `/home/psms/Network-Mapping/.env` with standard environment variables:
+    ```bash
+    SMTP_HOST=smtp.gmail.com
+    SMTP_PORT=587
+    SMTP_USER=your_email@gmail.com
+    SMTP_PASSWORD=your_app_password
+    SMTP_FROM=your_email@gmail.com
+    SMTP_TLS=true
+    ```
+  * **Zero-Crash Fallback**: If SMTP credentials are not yet configured, the system logs the 6-digit OTP directly to the systemd server console (`journalctl -u gpon-server`) so testing and administrative verification are completely seamless.
+* **Client Interface**:
+  * **Field App (`web_app/`)**: The login overlay features *"🔑 Forgot / Change PIN or Password?"* and the top ribbon provides a *"🔑 Change PIN"* shortcut opening a modern 2-step OTP modal with a 60-second resend cooldown timer.
+  * **Admin Portal (`/admin`)**: Users table includes an **Email Address** column and the user modal captures registered emails during account provisioning.
 
 ---
 

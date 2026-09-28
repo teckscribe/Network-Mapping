@@ -6,6 +6,11 @@ FastAPI + SQLite backend with Offline-First Sync, User Authentication, Center Fi
 import os
 import sqlite3
 import datetime
+import time
+import random
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 import socket
 import io
 import json
@@ -30,6 +35,36 @@ USERS_CONFIG_PATH = os.path.join(BASE_DIR, "users_config.json")
 NODE_MASTER_DIR = os.path.join(BASE_DIR, "Node Master")
 DATA_DIR = os.path.join(BASE_DIR, "data")
 HIERARCHY_FILE = os.path.join(NODE_MASTER_DIR, "custom_hierarchy.json")
+
+# ==========================================
+# SMTP EMAIL CONFIGURATION (.env supported)
+# ==========================================
+ENV_FILE = os.path.join(BASE_DIR, ".env")
+if os.path.exists(ENV_FILE):
+    try:
+        with open(ENV_FILE, "r", encoding="utf-8") as ef:
+            for line in ef:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    k = k.strip()
+                    v = v.strip().strip('"').strip("'")
+                    if k and k not in os.environ:
+                        os.environ[k] = v
+    except Exception as e:
+        print(f"[SMTP Config] Warning reading .env: {e}")
+
+SMTP_HOST = os.getenv("SMTP_HOST", "")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER", "")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+SMTP_FROM = os.getenv("SMTP_FROM", os.getenv("SMTP_USER", "noreply@gpon.local"))
+SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", "GPON Network Mapping")
+SMTP_TLS = os.getenv("SMTP_TLS", "true").lower() in ("true", "1", "yes")
+
+# In-Memory OTP Store: { username: { "otp": "123456", "expires_at": float, "attempts": int, "email": "...", "full_name": "..." } }
+PASSWORD_RESET_OTPS = {}
+OTP_EXPIRY_SECONDS = 600  # 10 minutes
 
 VALID_ROLES = {
     "super_admin": "Super Admin",
@@ -448,6 +483,14 @@ class ChangePasswordRequest(BaseModel):
     email: str
     new_password: str
 
+class RequestResetOtpPayload(BaseModel):
+    username_or_email: str
+
+class VerifyResetOtpPayload(BaseModel):
+    username: str
+    otp: str
+    new_password: str
+
 class SurveyRecordModel(BaseModel):
     client_uuid: str
     region: Optional[str] = "Thrissur"
@@ -640,6 +683,196 @@ def create_user(u: UserCreateModel):
     conn.close()
     save_users_to_json()
     return {"status": "success", "message": f"User {u.username} ({VALID_ROLES.get(role_clean, role_clean)}) saved successfully with charge of: {center_str}."}
+
+def send_otp_email(to_email: str, recipient_name: str, otp_code: str) -> bool:
+    """Sends OTP verification email via configured SMTP server or logs to console if unconfigured."""
+    if not SMTP_HOST or not SMTP_USER:
+        print(f"\n=======================================================")
+        print(f"[OTP DISPATCH (SIMULATION / LOG MODE)]")
+        print(f"Recipient: {recipient_name} <{to_email}>")
+        print(f"OTP Code:  {otp_code} (Valid for 10 minutes)")
+        print(f"Notice: SMTP_HOST/SMTP_USER not set in .env. Logged for testing.")
+        print(f"=======================================================\n")
+        return True
+
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = f"GPON Network Mapping - Password Reset OTP: {otp_code}"
+        msg["From"] = f"{SMTP_FROM_NAME} <{SMTP_FROM}>"
+        msg["To"] = to_email
+
+        text_content = f"""Hello {recipient_name},
+
+You requested to reset your password / PIN for the GPON Network Mapping & Survey Platform.
+
+Your One-Time Password (OTP) is: {otp_code}
+
+This verification code is valid for 10 minutes.
+If you did not request a password reset, please ignore this email.
+
+Best regards,
+GPON Network Mapping Team
+"""
+
+        html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #f8fafc; margin: 0; padding: 24px; color: #1e293b; }}
+    .container {{ max-width: 500px; margin: 0 auto; background: #ffffff; border-radius: 12px; border: 1px solid #e2e8f0; padding: 28px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); }}
+    .logo {{ display: inline-block; background: #0284c7; color: #ffffff; border-radius: 8px; width: 36px; height: 36px; text-align: center; line-height: 36px; font-weight: bold; font-size: 18px; margin-bottom: 12px; }}
+    .title {{ font-size: 18px; font-weight: 700; color: #0f172a; margin: 0 0 16px; }}
+    .otp-box {{ background: #f0fdf4; border: 2px dashed #10b981; border-radius: 8px; padding: 18px; text-align: center; margin: 20px 0; }}
+    .otp-code {{ font-family: 'Courier New', Courier, monospace; font-size: 32px; font-weight: 800; letter-spacing: 8px; color: #047857; margin: 0; }}
+    .footer {{ font-size: 11px; color: #94a3b8; margin-top: 24px; border-top: 1px solid #f1f5f9; padding-top: 14px; text-align: center; }}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="logo">田</div>
+    <h2 class="title">GPON Network Mapping</h2>
+    <p>Hello <strong>{recipient_name}</strong>,</p>
+    <p>A request was received to reset the password / PIN for your surveyor account.</p>
+    <div class="otp-box">
+      <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #059669; font-weight: 700; margin-bottom: 6px;">Your 6-Digit Verification OTP</div>
+      <div class="otp-code">{otp_code}</div>
+      <div style="font-size: 12px; color: #64748b; margin-top: 6px;">Valid for 10 minutes</div>
+    </div>
+    <p style="font-size: 13px; color: #64748b;">If you did not request this OTP, you can safely ignore this email. Your current password remains unchanged.</p>
+    <div class="footer">
+      GPON Fiber Network Mapping & Survey Platform &bull; Automated Security Service
+    </div>
+  </div>
+</body>
+</html>"""
+
+        msg.attach(MIMEText(text_content, "plain"))
+        msg.attach(MIMEText(html_content, "html"))
+
+        if SMTP_PORT == 465:
+            server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=10)
+        else:
+            server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10)
+            if SMTP_TLS:
+                server.starttls()
+
+        if SMTP_USER and SMTP_PASSWORD:
+            server.login(SMTP_USER, SMTP_PASSWORD)
+
+        server.send_message(msg)
+        server.quit()
+        print(f"[SMTP Success] Password reset OTP sent to {to_email}")
+        return True
+    except Exception as e:
+        print(f"[SMTP Error] Failed sending OTP email to {to_email}: {e}")
+        return False
+
+@app.post("/api/request-password-reset-otp")
+def request_password_reset_otp(req: RequestResetOtpPayload):
+    identifier = req.username_or_email.strip()
+    if not identifier:
+        raise HTTPException(status_code=400, detail="Please enter your username or registered email address.")
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT * FROM users 
+        WHERE LOWER(TRIM(username)) = LOWER(TRIM(?)) 
+           OR LOWER(TRIM(email)) = LOWER(TRIM(?))
+    """, (identifier, identifier))
+    user = cur.fetchone()
+    conn.close()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="No user account found matching that username or email address.")
+
+    user_email = (user["email"] or "").strip().lower()
+    if not user_email or "@" not in user_email:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Account '{user['username']}' does not have a registered email address on file. Please contact your Super Administrator."
+        )
+
+    # Generate 6-digit OTP
+    otp_code = f"{random.randint(100000, 999999)}"
+    now = time.time()
+
+    PASSWORD_RESET_OTPS[user["username"].lower()] = {
+        "otp": otp_code,
+        "expires_at": now + OTP_EXPIRY_SECONDS,
+        "attempts": 0,
+        "email": user_email,
+        "full_name": user["full_name"] or user["username"]
+    }
+
+    # Dispatch email
+    sent = send_otp_email(user_email, user["full_name"] or user["username"], otp_code)
+
+    # Mask email for privacy (e.g. j***n@gmail.com)
+    parts = user_email.split("@")
+    if len(parts[0]) <= 2:
+        masked_user = parts[0][0] + "*"
+    else:
+        masked_user = parts[0][0] + ("*" * (len(parts[0]) - 2)) + parts[0][-1]
+    masked_email = f"{masked_user}@{parts[1]}"
+
+    return {
+        "status": "success",
+        "username": user["username"],
+        "masked_email": masked_email,
+        "expires_in_minutes": 10,
+        "smtp_configured": bool(SMTP_HOST and SMTP_USER),
+        "message": f"A 6-digit verification code has been sent to your registered email ({masked_email}). Please check your inbox."
+    }
+
+@app.post("/api/verify-password-reset-otp")
+def verify_password_reset_otp(req: VerifyResetOtpPayload):
+    uname = req.username.strip().lower()
+    otp_in = req.otp.strip()
+    new_pwd = req.new_password.strip()
+
+    if not uname or not otp_in or not new_pwd:
+        raise HTTPException(status_code=400, detail="Username, 6-digit OTP, and new password are required.")
+
+    if len(new_pwd) < 4:
+        raise HTTPException(status_code=400, detail="Password / PIN must be at least 4 characters long.")
+
+    otp_record = PASSWORD_RESET_OTPS.get(uname)
+    if not otp_record:
+        raise HTTPException(status_code=400, detail="No active password reset request found. Please request a new OTP.")
+
+    if time.time() > otp_record["expires_at"]:
+        del PASSWORD_RESET_OTPS[uname]
+        raise HTTPException(status_code=400, detail="The OTP has expired (valid for 10 minutes). Please request a new OTP.")
+
+    if otp_record["attempts"] >= 5:
+        del PASSWORD_RESET_OTPS[uname]
+        raise HTTPException(status_code=400, detail="Too many invalid OTP attempts. For security, this OTP was invalidated. Please request a new OTP.")
+
+    if otp_record["otp"] != otp_in:
+        otp_record["attempts"] += 1
+        remaining = 5 - otp_record["attempts"]
+        raise HTTPException(status_code=400, detail=f"Incorrect OTP code. Please check your email and try again ({remaining} attempts remaining).")
+
+    # OTP is valid! Update password in SQLite
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET password = ? WHERE LOWER(TRIM(username)) = ?", (new_pwd, uname))
+    conn.commit()
+    conn.close()
+
+    # Clear OTP
+    del PASSWORD_RESET_OTPS[uname]
+
+    # Save to JSON config so git deployments preserve it
+    save_users_to_json()
+
+    return {
+        "status": "success",
+        "message": "Password updated successfully! You can now log in with your new password / PIN."
+    }
 
 @app.post("/api/change-password")
 def change_password(req: ChangePasswordRequest):

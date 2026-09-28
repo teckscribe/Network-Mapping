@@ -205,46 +205,189 @@ function logout() {
   }
 }
 
+let resetResendTimer = null;
+let resetResendCountdown = 0;
+
+function goToResetStep(step) {
+  const s1 = document.getElementById('reset-step-1');
+  const s2 = document.getElementById('reset-step-2');
+  const err1 = document.getElementById('reset-step1-error');
+  const err2 = document.getElementById('reset-step2-error');
+  const succ2 = document.getElementById('reset-step2-success');
+
+  if (err1) err1.style.display = 'none';
+  if (err2) err2.style.display = 'none';
+  if (succ2) succ2.style.display = 'none';
+
+  if (step === 1) {
+    if (s1) s1.style.display = 'block';
+    if (s2) s2.style.display = 'none';
+    const idField = document.getElementById('reset-identifier');
+    if (idField) setTimeout(() => idField.focus(), 100);
+  } else {
+    if (s1) s1.style.display = 'none';
+    if (s2) s2.style.display = 'block';
+    const otpField = document.getElementById('reset-otp-code');
+    if (otpField) {
+      otpField.value = '';
+      setTimeout(() => otpField.focus(), 100);
+    }
+  }
+}
+
 function openResetPasswordModal(username, email) {
   const overlay = document.getElementById('reset-password-overlay');
   if (!overlay) return;
-  const uField = document.getElementById('reset-username');
-  const eField = document.getElementById('reset-email');
+  const idField = document.getElementById('reset-identifier');
   const p1 = document.getElementById('reset-new-password');
   const p2 = document.getElementById('reset-confirm-password');
-  const errDiv = document.getElementById('reset-pwd-error');
-  const succDiv = document.getElementById('reset-pwd-success');
 
-  if (uField) uField.value = username || (currentUser ? currentUser.username : (document.getElementById('login-username').value || ''));
-  if (eField) eField.value = email || (currentUser ? (currentUser.email || '') : '');
+  if (idField) {
+    idField.value = username || email || (currentUser ? currentUser.username : (document.getElementById('login-username').value || ''));
+  }
   if (p1) p1.value = '';
   if (p2) p2.value = '';
-  if (errDiv) errDiv.style.display = 'none';
-  if (succDiv) succDiv.style.display = 'none';
 
+  goToResetStep(1);
   overlay.style.display = 'flex';
 }
 
 function closeResetPasswordModal() {
   const overlay = document.getElementById('reset-password-overlay');
   if (overlay) overlay.style.display = 'none';
+  if (resetResendTimer) {
+    clearInterval(resetResendTimer);
+    resetResendTimer = null;
+  }
 }
 
-async function handlePasswordReset(e) {
+function startResendCooldown() {
+  const btn = document.getElementById('btn-resend-reset-otp');
+  if (!btn) return;
+  if (resetResendTimer) clearInterval(resetResendTimer);
+  resetResendCountdown = 60;
+  btn.disabled = true;
+  btn.style.opacity = '0.6';
+  btn.innerText = `⏳ Resend in ${resetResendCountdown}s`;
+
+  resetResendTimer = setInterval(() => {
+    resetResendCountdown -= 1;
+    if (resetResendCountdown <= 0) {
+      clearInterval(resetResendTimer);
+      resetResendTimer = null;
+      btn.disabled = false;
+      btn.style.opacity = '1';
+      btn.innerText = '🔄 Resend Code';
+    } else {
+      btn.innerText = `⏳ Resend in ${resetResendCountdown}s`;
+    }
+  }, 1000);
+}
+
+async function handleRequestResetOtp(e) {
   if (e) e.preventDefault();
-  const u = document.getElementById('reset-username').value.trim();
-  const mail = document.getElementById('reset-email').value.trim();
+  const idField = document.getElementById('reset-identifier');
+  const btn = document.getElementById('btn-send-reset-otp');
+  const errDiv = document.getElementById('reset-step1-error');
+  if (errDiv) errDiv.style.display = 'none';
+
+  const val = idField ? idField.value.trim() : '';
+  if (!val) {
+    if (errDiv) {
+      errDiv.innerText = 'Please enter your username or registered email address.';
+      errDiv.style.display = 'block';
+    }
+    return;
+  }
+
+  if (btn) {
+    btn.disabled = true;
+    btn.innerText = '⏳ Sending OTP...';
+  }
+
+  try {
+    const res = await fetch(`${serverUrl}/api/request-password-reset-otp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username_or_email: val })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      document.getElementById('reset-verified-username').value = data.username;
+      const maskedEl = document.getElementById('reset-masked-email');
+      if (maskedEl) maskedEl.innerText = data.masked_email;
+      goToResetStep(2);
+      startResendCooldown();
+    } else {
+      if (errDiv) {
+        errDiv.innerText = data.detail || 'Could not send verification OTP.';
+        errDiv.style.display = 'block';
+      }
+    }
+  } catch (err) {
+    if (errDiv) {
+      errDiv.innerText = 'Cannot reach the server. Please check your network connection.';
+      errDiv.style.display = 'block';
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerText = '📩 Send Verification OTP';
+    }
+  }
+}
+
+async function resendResetOtp() {
+  const uname = document.getElementById('reset-verified-username').value.trim();
+  if (!uname) {
+    goToResetStep(1);
+    return;
+  }
+  const btn = document.getElementById('btn-resend-reset-otp');
+  if (btn && btn.disabled) return;
+
+  try {
+    const res = await fetch(`${serverUrl}/api/request-password-reset-otp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username_or_email: uname })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast('New 6-digit OTP sent to your registered email!', true);
+      startResendCooldown();
+    } else {
+      showToast(data.detail || 'Failed to resend code.', false);
+    }
+  } catch (e) {
+    showToast('Cannot connect to server to resend code.', false);
+  }
+}
+
+async function handleVerifyResetOtp(e) {
+  if (e) e.preventDefault();
+  const uname = document.getElementById('reset-verified-username').value.trim();
+  const otp = document.getElementById('reset-otp-code').value.trim();
   const p1 = document.getElementById('reset-new-password').value.trim();
   const p2 = document.getElementById('reset-confirm-password').value.trim();
-  const errDiv = document.getElementById('reset-pwd-error');
-  const succDiv = document.getElementById('reset-pwd-success');
+  const btn = document.getElementById('btn-verify-reset-otp');
+  const errDiv = document.getElementById('reset-step2-error');
+  const succDiv = document.getElementById('reset-step2-success');
 
   if (errDiv) errDiv.style.display = 'none';
   if (succDiv) succDiv.style.display = 'none';
 
-  if (!u || !mail || !p1) {
+  if (!otp || otp.length !== 6) {
     if (errDiv) {
-      errDiv.innerText = 'Username, registered email, and new password are required.';
+      errDiv.innerText = 'Please enter the complete 6-digit verification OTP.';
+      errDiv.style.display = 'block';
+    }
+    return;
+  }
+
+  if (!p1 || p1.length < 4) {
+    if (errDiv) {
+      errDiv.innerText = 'New password must be at least 4 characters long.';
       errDiv.style.display = 'block';
     }
     return;
@@ -252,19 +395,24 @@ async function handlePasswordReset(e) {
 
   if (p1 !== p2) {
     if (errDiv) {
-      errDiv.innerText = 'New passwords do not match. Please re-enter.';
+      errDiv.innerText = 'Passwords do not match. Please re-enter.';
       errDiv.style.display = 'block';
     }
     return;
   }
 
+  if (btn) {
+    btn.disabled = true;
+    btn.innerText = '⏳ Verifying...';
+  }
+
   try {
-    const res = await fetch('/api/change-password', {
+    const res = await fetch(`${serverUrl}/api/verify-password-reset-otp`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        username: u,
-        email: mail,
+        username: uname,
+        otp: otp,
         new_password: p1
       })
     });
@@ -278,20 +426,25 @@ async function handlePasswordReset(e) {
         closeResetPasswordModal();
         const loginU = document.getElementById('login-username');
         const loginP = document.getElementById('login-password');
-        if (loginU) loginU.value = u;
+        if (loginU) loginU.value = uname;
         if (loginP) loginP.value = p1;
-        showToast('Password updated! Please log in.', true);
+        showToast('Password updated! You can now log in.', true);
       }, 1500);
     } else {
       if (errDiv) {
-        errDiv.innerText = data.detail || 'Could not update password.';
+        errDiv.innerText = data.detail || 'Could not verify OTP.';
         errDiv.style.display = 'block';
       }
     }
-  } catch(err) {
+  } catch (err) {
     if (errDiv) {
-      errDiv.innerText = 'Network error: ' + err.message;
+      errDiv.innerText = 'Cannot reach the server. Please check your connection.';
       errDiv.style.display = 'block';
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerText = '✓ Verify OTP & Set Password';
     }
   }
 }
