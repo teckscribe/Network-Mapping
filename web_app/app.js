@@ -205,6 +205,97 @@ function logout() {
   }
 }
 
+function openResetPasswordModal(username, email) {
+  const overlay = document.getElementById('reset-password-overlay');
+  if (!overlay) return;
+  const uField = document.getElementById('reset-username');
+  const eField = document.getElementById('reset-email');
+  const p1 = document.getElementById('reset-new-password');
+  const p2 = document.getElementById('reset-confirm-password');
+  const errDiv = document.getElementById('reset-pwd-error');
+  const succDiv = document.getElementById('reset-pwd-success');
+
+  if (uField) uField.value = username || (currentUser ? currentUser.username : (document.getElementById('login-username').value || ''));
+  if (eField) eField.value = email || (currentUser ? (currentUser.email || '') : '');
+  if (p1) p1.value = '';
+  if (p2) p2.value = '';
+  if (errDiv) errDiv.style.display = 'none';
+  if (succDiv) succDiv.style.display = 'none';
+
+  overlay.style.display = 'flex';
+}
+
+function closeResetPasswordModal() {
+  const overlay = document.getElementById('reset-password-overlay');
+  if (overlay) overlay.style.display = 'none';
+}
+
+async function handlePasswordReset(e) {
+  if (e) e.preventDefault();
+  const u = document.getElementById('reset-username').value.trim();
+  const mail = document.getElementById('reset-email').value.trim();
+  const p1 = document.getElementById('reset-new-password').value.trim();
+  const p2 = document.getElementById('reset-confirm-password').value.trim();
+  const errDiv = document.getElementById('reset-pwd-error');
+  const succDiv = document.getElementById('reset-pwd-success');
+
+  if (errDiv) errDiv.style.display = 'none';
+  if (succDiv) succDiv.style.display = 'none';
+
+  if (!u || !mail || !p1) {
+    if (errDiv) {
+      errDiv.innerText = 'Username, registered email, and new password are required.';
+      errDiv.style.display = 'block';
+    }
+    return;
+  }
+
+  if (p1 !== p2) {
+    if (errDiv) {
+      errDiv.innerText = 'New passwords do not match. Please re-enter.';
+      errDiv.style.display = 'block';
+    }
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/change-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: u,
+        email: mail,
+        new_password: p1
+      })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      if (succDiv) {
+        succDiv.innerText = data.message || 'Password updated successfully!';
+        succDiv.style.display = 'block';
+      }
+      setTimeout(() => {
+        closeResetPasswordModal();
+        const loginU = document.getElementById('login-username');
+        const loginP = document.getElementById('login-password');
+        if (loginU) loginU.value = u;
+        if (loginP) loginP.value = p1;
+        showToast('Password updated! Please log in.', true);
+      }, 1500);
+    } else {
+      if (errDiv) {
+        errDiv.innerText = data.detail || 'Could not update password.';
+        errDiv.style.display = 'block';
+      }
+    }
+  } catch(err) {
+    if (errDiv) {
+      errDiv.innerText = 'Network error: ' + err.message;
+      errDiv.style.display = 'block';
+    }
+  }
+}
+
 // DOM Elements
 const regionSelect = document.getElementById('region-select');
 const centerSelect = document.getElementById('center-select');

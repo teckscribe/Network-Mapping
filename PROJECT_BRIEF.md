@@ -269,6 +269,17 @@ The system enforces 4 non-overlapping operational roles:
   * **Global Users (`ALL` / Super Admin)**: Unrestricted access to all network centers across the hierarchy.
   * **User Ribbon**: Displays `Charge of N Centers` badge when multiple centers are assigned.
 
+### 6.4 Registered Email Address & Self-Service Password Recovery
+* **Operational Need**: Field technicians and ACSOs operating in remote terrain need the capability to reset or change their password/PIN without administrative bottlenecks.
+* **Email Verification Architecture**:
+  * Every user profile supports an optional `email` address (persisted in SQLite `users.email` and `users_config.json`).
+  * Dedicated endpoint: `POST /api/change-password` accepts `username`, `email`, and `new_password`.
+  * **Strict Verification**: The server verifies that the username exists and the provided email address matches the registered record on file before updating credentials.
+  * **Zero-Interruption Persistence**: Once updated, changes are committed to SQLite and synchronized to `users_config.json` immediately.
+  * **Client Interface**:
+    * **Field App**: The login overlay features a link *"🔑 Forgot / Change PIN or Password?"* and the top ribbon provides a *"🔑 Change PIN"* shortcut opening `#reset-password-overlay`.
+    * **Admin Portal**: Users table includes an **Email Address** column and the user pop-up modal allows setting/updating email addresses.
+
 ---
 
 # Chapter 7: Field Mobile Web Application (Client-Side Architecture)
@@ -328,9 +339,9 @@ graph TD
     Tab1 --> T1_2["Live Counters (Records, Customers, Enclosures)"]
     Tab1 --> T1_3["Download Center Excel"]
 
-    Tab2 --> T2_1["Add / Edit User Form"]
-    Tab2 --> T2_2["Dynamic Region & Center Selectors"]
-    Tab2 --> T2_3["Role (User Rights) Selector"]
+    Tab2 --> T2_1["Add User Button & Pop-Up Modal Window"]
+    Tab2 --> T2_2["Email Address Column & Account Management"]
+    Tab2 --> T2_3["Dynamic Multi-Region & Multi-Center Selectors"]
     Tab2 --> T2_4["Backup & Restore users_config.json"]
 
     Tab3 --> T3_1["Upload Master Excel (.xlsx)"]
@@ -351,6 +362,7 @@ graph TD
 | Endpoint | Method | Security / Role | Purpose |
 | :--- | :--- | :--- | :--- |
 | `/api/login` | `POST` | Public | Authenticates credentials; returns normalized user profile and role. |
+| `/api/change-password` | `POST` | Public (Email verified) | Updates password/PIN after validating registered email address. |
 | `/api/users` | `GET` | Super Admin | Returns list of all active users, assigned regions, centers, and roles. |
 | `/api/users` | `POST` | Super Admin | Upserts a user with defined credentials, center, and role; updates JSON backup. |
 | `/api/users/{username}` | `DELETE` | Super Admin | Permanently deletes a user account; persists deletion to JSON backup. |

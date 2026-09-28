@@ -44,6 +44,7 @@
     </div>
     <div style="display:flex; align-items:center; gap:10px;">
       <a id="admin-nav-link" href="/admin" class="btn-link" style="display:none; color:#0284c7; font-weight:700; text-decoration:none;">📊 Dashboard</a>
+      <button class="btn-link" onclick="openResetPasswordModal()" style="font-size:0.8rem; color:#475569; display:inline-flex; align-items:center; gap:4px;">🔑 Change PIN</button>
       <button class="btn-link" onclick="logout()">Sign Out</button>
     </div>
   </div>
@@ -265,6 +266,50 @@
         </div>
         <button type="submit" class="btn-add-row" style="margin-top: 0; padding: 12px;">
           Sign In
+        </button>
+        <div style="text-align: center; margin-top: 14px;">
+          <a href="javascript:void(0)" onclick="openResetPasswordModal()" style="font-size: 0.83rem; color: #0284c7; text-decoration: none; font-weight: 600;">
+            🔑 Forgot / Change PIN or Password?
+          </a>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Change / Reset Password Modal Overlay -->
+  <div id="reset-password-overlay" class="login-overlay" style="display: none; z-index: 99999;">
+    <div class="login-card" style="max-width: 380px;">
+      <div style="font-size: 1.8rem; text-align: center; margin-bottom: 6px; color: #0284c7;">🔐</div>
+      <h2 style="text-align: center; margin: 0 0 4px; font-size: 1.2rem; font-weight: 600;">Change / Reset Password</h2>
+      <p style="text-align: center; font-size: 0.8rem; color: #5f6368; margin-bottom: 18px;">
+        Enter your username and registered email address to set a new password / PIN.
+      </p>
+
+      <form onsubmit="handlePasswordReset(event)">
+        <div class="gs-cell-group" style="margin-bottom: 12px;">
+          <label class="gs-cell-label" for="reset-username">Username</label>
+          <input type="text" id="reset-username" class="gs-input" placeholder="e.g. anoop" required autocomplete="username">
+        </div>
+        <div class="gs-cell-group" style="margin-bottom: 12px;">
+          <label class="gs-cell-label" for="reset-email">Registered Email Address</label>
+          <input type="email" id="reset-email" class="gs-input" placeholder="e.g. user@domain.com" required autocomplete="email">
+        </div>
+        <div class="gs-cell-group" style="margin-bottom: 12px;">
+          <label class="gs-cell-label" for="reset-new-password">New Password / PIN</label>
+          <input type="password" id="reset-new-password" class="gs-input" placeholder="Enter new password / PIN" required autocomplete="new-password">
+        </div>
+        <div class="gs-cell-group" style="margin-bottom: 16px;">
+          <label class="gs-cell-label" for="reset-confirm-password">Confirm New Password</label>
+          <input type="password" id="reset-confirm-password" class="gs-input" placeholder="Re-enter new password" required autocomplete="new-password">
+        </div>
+        <div id="reset-pwd-error" style="display: none; background: #fee2e2; color: #991b1b; padding: 8px 12px; border-radius: 6px; font-size: 0.8rem; margin-bottom: 14px;"></div>
+        <div id="reset-pwd-success" style="display: none; background: #dcfce7; color: #166534; padding: 8px 12px; border-radius: 6px; font-size: 0.8rem; margin-bottom: 14px;"></div>
+
+        <button type="submit" class="btn-add-row" style="margin-top: 0; padding: 11px; background: #0284c7;">
+          Update Password
+        </button>
+        <button type="button" onclick="closeResetPasswordModal()" style="width: 100%; margin-top: 8px; padding: 10px; background: none; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 0.85rem; color: #475569; cursor: pointer;">
+          Cancel
         </button>
       </form>
     </div>

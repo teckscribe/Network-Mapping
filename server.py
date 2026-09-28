@@ -58,7 +58,7 @@ def save_users_to_json(conn=None):
         close_at_end = True
     try:
         cur = conn.cursor()
-        cur.execute("SELECT username, password, full_name, assigned_center, assigned_region, role, created_at FROM users")
+        cur.execute("SELECT username, password, full_name, assigned_center, assigned_region, role, created_at, email FROM users")
         rows = cur.fetchall()
         users_list = []
         for r in rows:
@@ -69,7 +69,8 @@ def save_users_to_json(conn=None):
                 "assigned_center": r[3],
                 "assigned_region": r[4] or "Thrissur",
                 "role": normalize_role(r[5]),
-                "created_at": r[6]
+                "created_at": r[6],
+                "email": (r[7] or "").strip() if len(r) > 7 and r[7] else ""
             })
         with open(USERS_CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(users_list, f, indent=2)
@@ -93,11 +94,12 @@ def load_users_from_json(conn):
         now = datetime.datetime.now().isoformat()
         for u in users_list:
             cur.execute("""
-            INSERT INTO users (username, password, full_name, assigned_center, assigned_region, role, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO users (username, password, full_name, email, assigned_center, assigned_region, role, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(username) DO UPDATE SET
                 password=excluded.password,
                 full_name=excluded.full_name,
+                email=excluded.email,
                 assigned_center=excluded.assigned_center,
                 assigned_region=excluded.assigned_region,
                 role=excluded.role
@@ -105,6 +107,7 @@ def load_users_from_json(conn):
                 u["username"].strip(),
                 u["password"].strip(),
                 u["full_name"].strip(),
+                u.get("email", "").strip(),
                 u["assigned_center"].strip(),
                 u.get("assigned_region", "Thrissur"),
                 normalize_role(u.get("role", "field_technician")),
@@ -158,6 +161,7 @@ def init_db():
         username TEXT PRIMARY KEY,
         password TEXT NOT NULL,
         full_name TEXT NOT NULL,
+        email TEXT DEFAULT '',
         assigned_center TEXT NOT NULL,
         assigned_region TEXT DEFAULT 'Thrissur',
         role TEXT DEFAULT 'field_technician',
@@ -166,6 +170,12 @@ def init_db():
     """)
 
     # Check and add columns if upgrading existing db
+    cur.execute("PRAGMA table_info(users)")
+    user_cols = [c[1] for c in cur.fetchall()]
+    if "email" not in user_cols:
+        cur.execute("ALTER TABLE users ADD COLUMN email TEXT DEFAULT ''")
+    cur.execute("UPDATE users SET email = '' WHERE email IS NULL")
+
     cur.execute("PRAGMA table_info(survey_records)")
     cols = [c[1] for c in cur.fetchall()]
     if "surveyor_username" not in cols:
@@ -189,17 +199,17 @@ def init_db():
     existing_usernames = {row[0] for row in cur.fetchall()}
     now = datetime.datetime.now().isoformat()
     defaults = [
-        ("admin", "admin123", "Central Super Administrator", "ALL", "ALL", "super_admin", now),
-        ("rcsm_thrissur", "1234", "Thrissur RCSM Manager", "THRISSUR NORTH", "Thrissur", "rcsm", now),
-        ("acso_thrissur", "1234", "Thrissur ACSO Officer", "THRISSUR NORTH", "Thrissur", "acso", now),
-        ("thrissur_agent", "1234", "Thrissur Survey Technician", "THRISSUR NORTH", "Thrissur", "field_technician", now),
-        ("tmm_agent", "1234", "Thathamangalam Survey Technician", "THATHAMANGALAM", "Thrissur", "field_technician", now)
+        ("admin", "admin123", "Central Super Administrator", "admin@gpon.local", "ALL", "ALL", "super_admin", now),
+        ("rcsm_thrissur", "1234", "Thrissur RCSM Manager", "rcsm.thrissur@gpon.local", "THRISSUR NORTH", "Thrissur", "rcsm", now),
+        ("acso_thrissur", "1234", "Thrissur ACSO Officer", "acso.thrissur@gpon.local", "THRISSUR NORTH", "Thrissur", "acso", now),
+        ("thrissur_agent", "1234", "Thrissur Survey Technician", "agent.thrissur@gpon.local", "THRISSUR NORTH", "Thrissur", "field_technician", now),
+        ("tmm_agent", "1234", "Thathamangalam Survey Technician", "agent.tmm@gpon.local", "THATHAMANGALAM", "Thrissur", "field_technician", now)
     ]
     for u in defaults:
         if u[0] not in existing_usernames:
             cur.execute("""
-            INSERT INTO users (username, password, full_name, assigned_center, assigned_region, role, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO users (username, password, full_name, email, assigned_center, assigned_region, role, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, u)
 
     # Normalize existing legacy roles in SQLite table
@@ -418,11 +428,17 @@ class LoginRequest(BaseModel):
 
 class UserCreateModel(BaseModel):
     username: str
-    password: str
+    password: Optional[str] = ""
     full_name: str
+    email: Optional[str] = ""
     assigned_center: Union[str, List[str]]
     assigned_region: Optional[Union[str, List[str]]] = "Thrissur"
     role: Optional[str] = "field_technician"
+
+class ChangePasswordRequest(BaseModel):
+    username: str
+    email: str
+    new_password: str
 
 class SurveyRecordModel(BaseModel):
     client_uuid: str
@@ -492,11 +508,13 @@ def login(req: LoginRequest):
     regions_list = [r.strip() for r in raw_region.split(",") if r.strip()]
 
     user_role = normalize_role(user["role"])
+    user_email = (user["email"] or "").strip() if "email" in user.keys() and user["email"] else ""
     return {
         "status": "success",
         "user": {
             "username": user["username"],
             "full_name": user["full_name"],
+            "email": user_email,
             "assigned_center": raw_center,
             "assigned_centers": centers_list,
             "assigned_region": raw_region,
@@ -511,11 +529,12 @@ def get_users():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
-    cur.execute("SELECT username, full_name, assigned_center, assigned_region, role, created_at FROM users")
+    cur.execute("SELECT username, full_name, email, assigned_center, assigned_region, role, created_at FROM users")
     users = [
         {
             "username": u["username"],
             "full_name": u["full_name"],
+            "email": u["email"] or "",
             "assigned_center": u["assigned_center"],
             "assigned_centers": [c.strip() for c in (u["assigned_center"] or "").split(",") if c.strip()],
             "assigned_region": u["assigned_region"],
@@ -534,12 +553,13 @@ def create_user(u: UserCreateModel):
     cur = conn.cursor()
     now = datetime.datetime.now().isoformat()
     role_clean = normalize_role(u.role)
+    email_clean = (u.email or "").strip().lower()
 
     # Normalize assigned_center (support list or comma string)
     if isinstance(u.assigned_center, list):
         center_str = ", ".join([c.strip() for c in u.assigned_center if c.strip()])
     else:
-        center_str = u.assigned_center.strip()
+        center_str = (u.assigned_center or "").strip()
     if not center_str:
         center_str = "ALL"
 
@@ -551,17 +571,26 @@ def create_user(u: UserCreateModel):
     if not region_str:
         region_str = "Thrissur"
 
+    # Check if user exists and password is provided
+    cur.execute("SELECT password FROM users WHERE username = ?", (u.username.strip(),))
+    existing_row = cur.fetchone()
+    if existing_row and not (u.password or "").strip():
+        password_to_store = existing_row[0]
+    else:
+        password_to_store = (u.password or "").strip() or "1234"
+
     try:
         cur.execute("""
-        INSERT INTO users (username, password, full_name, assigned_center, assigned_region, role, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO users (username, password, full_name, email, assigned_center, assigned_region, role, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(username) DO UPDATE SET
             password=excluded.password,
             full_name=excluded.full_name,
+            email=excluded.email,
             assigned_center=excluded.assigned_center,
             assigned_region=excluded.assigned_region,
             role=excluded.role
-        """, (u.username.strip(), u.password.strip(), u.full_name.strip(), center_str, region_str, role_clean, now))
+        """, (u.username.strip(), password_to_store, u.full_name.strip(), email_clean, center_str, region_str, role_clean, now))
         conn.commit()
     except Exception as e:
         conn.close()
@@ -569,6 +598,41 @@ def create_user(u: UserCreateModel):
     conn.close()
     save_users_to_json()
     return {"status": "success", "message": f"User {u.username} ({VALID_ROLES.get(role_clean, role_clean)}) saved successfully with charge of: {center_str}."}
+
+@app.post("/api/change-password")
+def change_password(req: ChangePasswordRequest):
+    uname = req.username.strip()
+    email_in = req.email.strip().lower()
+    new_pwd = req.new_password.strip()
+
+    if not uname or not email_in or not new_pwd:
+        raise HTTPException(status_code=400, detail="Username, registered email address, and new password are required.")
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))", (uname,))
+    user = cur.fetchone()
+
+    if not user:
+        conn.close()
+        raise HTTPException(status_code=404, detail=f"User account '{uname}' not found.")
+
+    user_email = (user["email"] or "").strip().lower()
+    if not user_email:
+        conn.close()
+        raise HTTPException(status_code=400, detail="This account does not have a registered email address on file. Please contact your Super Administrator to register your email.")
+
+    if user_email != email_in:
+        conn.close()
+        raise HTTPException(status_code=400, detail="The entered email address does not match the registered email for this account.")
+
+    cur.execute("UPDATE users SET password = ? WHERE username = ?", (new_pwd, user["username"]))
+    conn.commit()
+    conn.close()
+
+    save_users_to_json()
+    return {"status": "success", "message": "Password updated successfully! You can now log in with your new password / PIN."}
 
 @app.delete("/api/users/{username}")
 def delete_user(username: str):
@@ -1595,7 +1659,7 @@ def admin_dashboard():
 
       <!-- Tab 2: User Access Management (Super Admin Only) -->
       <div id="tab-users" style="display:none; background:#ffffff; border-radius:10px; padding:16px; border:1px solid #cbd5e1; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
-        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:14px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:16px;">
           <div>
             <h3 style="margin:0 0 4px 0; color:#0284c7;">Add / Manage User Access (4 Access Tiers)</h3>
             <p style="margin:0; font-size:0.82rem; color:#64748b;">
@@ -1605,79 +1669,11 @@ def admin_dashboard():
               4. <strong>Field Tech</strong>: Field entry only
             </p>
           </div>
-          <div style="display:flex; gap:8px;">
-            <a href="/api/config/users" download="users_config.json" class="btn" style="background:#0284c7; font-size:0.8rem; padding:6px 12px;">📥 Backup JSON</a>
-            <button type="button" onclick="document.getElementById('import-users-file').click()" class="btn btn-outline" style="font-size:0.8rem; padding:6px 12px;">📤 Restore JSON</button>
+          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <button type="button" onclick="openAddUserModal()" class="btn btn-green" style="font-size:0.85rem; padding:8px 16px; font-weight:700; box-shadow:0 1px 3px rgba(0,0,0,0.1);">➕ Add User</button>
+            <a href="/api/config/users" download="users_config.json" class="btn" style="background:#0284c7; font-size:0.8rem; padding:7px 12px;">📥 Backup JSON</a>
+            <button type="button" onclick="document.getElementById('import-users-file').click()" class="btn btn-outline" style="font-size:0.8rem; padding:7px 12px;">📤 Restore JSON</button>
             <input type="file" id="import-users-file" accept=".json" style="display:none;" onchange="importUsersConfig(event)">
-          </div>
-        </div>
-        
-        <!-- Add / Edit User Form -->
-        <div style="background:#f8fafc; padding:16px; border-radius:8px; border:1px solid #e2e8f0; margin-bottom:18px;">
-          <h4 id="user-form-title" style="margin:0 0 12px 0; color:#1e293b; font-size:0.95rem;">➕ Add New User</h4>
-          <form onsubmit="createUser(event)" class="form-row" style="margin-bottom:0; align-items:flex-end;">
-            <div style="flex:1; min-width:140px;">
-              <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:4px;">Username</label>
-              <input type="text" id="new-user" placeholder="e.g. anoop" required style="width:100%;">
-            </div>
-            <div style="flex:1; min-width:130px;">
-              <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:4px;">Password / PIN</label>
-              <input type="text" id="new-pass" placeholder="PIN / Password" required style="width:100%;">
-            </div>
-            <div style="flex:1.2; min-width:160px;">
-              <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:4px;">Full Name</label>
-              <input type="text" id="new-name" placeholder="Full Name" required style="width:100%;">
-            </div>
-            <!-- Multi-Region Selector -->
-            <div style="position:relative; flex:1; min-width:150px;">
-              <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:4px;">
-                Assigned Region(s)
-              </label>
-              <button type="button" id="btn-region-picker" onclick="toggleMultiDropdown('region-dropdown-panel')" style="width:100%; text-align:left; background:white; border:1.5px solid #cbd5e1; padding:8px 12px; border-radius:6px; font-size:0.83rem; display:flex; justify-content:space-between; align-items:center; cursor:pointer;">
-                <span id="region-picker-label" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">ALL Regions</span>
-                <span style="font-size:0.75rem; color:#64748b;">▼</span>
-              </button>
-              <div id="region-dropdown-panel" style="display:none; position:absolute; top:100%; left:0; right:0; z-index:1000; background:white; border:1.5px solid #0284c7; border-radius:8px; padding:10px; margin-top:4px; box-shadow:0 10px 25px -5px rgba(0,0,0,0.15); max-height:220px; overflow-y:auto;">
-                <div id="region-checkbox-list"></div>
-              </div>
-            </div>
-
-            <!-- Multi-Center Selector (Charge of Multiple Centers) -->
-            <div style="position:relative; flex:1.4; min-width:210px;">
-              <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:4px;">
-                Assigned Center(s) <span style="font-size:0.7rem; color:#0284c7; font-weight:normal;">(Select 1 or more)</span>
-              </label>
-              <button type="button" id="btn-center-picker" onclick="toggleMultiDropdown('center-dropdown-panel')" style="width:100%; text-align:left; background:white; border:1.5px solid #cbd5e1; padding:8px 12px; border-radius:6px; font-size:0.83rem; display:flex; justify-content:space-between; align-items:center; cursor:pointer;">
-                <span id="center-picker-label" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">ALL (All Network)</span>
-                <span style="font-size:0.75rem; color:#64748b;">▼</span>
-              </button>
-              <div id="center-dropdown-panel" style="display:none; position:absolute; top:100%; left:0; right:0; min-width:280px; z-index:1000; background:white; border:1.5px solid #0284c7; border-radius:8px; padding:10px; margin-top:4px; box-shadow:0 10px 25px -5px rgba(0,0,0,0.15); max-height:280px; overflow-y:auto;">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; padding-bottom:6px; border-bottom:1px solid #e2e8f0;">
-                  <input type="text" id="center-search-input" placeholder="🔍 Search centers..." oninput="filterCenterChecklist(this.value)" style="flex:1; padding:4px 8px; font-size:0.78rem; border:1px solid #cbd5e1; border-radius:4px; outline:none;">
-                  <button type="button" onclick="selectAllCenters(true)" style="background:none; border:none; color:#0284c7; font-size:0.75rem; font-weight:700; cursor:pointer; margin-left:8px;">All</button>
-                  <button type="button" onclick="selectAllCenters(false)" style="background:none; border:none; color:#64748b; font-size:0.75rem; font-weight:700; cursor:pointer; margin-left:4px;">None</button>
-                </div>
-                <div id="center-checkbox-list"></div>
-              </div>
-            </div>
-            <div style="flex:1.5; min-width:200px;">
-              <label style="display:block; font-size:0.75rem; font-weight:700; color:#0369a1; margin-bottom:4px;">👤 Role (Defines User Rights)</label>
-              <select id="new-role" required style="width:100%; font-weight:600; border:1.5px solid #0284c7;">
-                <option value="field_technician">👷 Field Technician (Data Entry Only)</option>
-                <option value="acso">📝 ACSO (Data Entry & Downloads)</option>
-                <option value="rcsm">📊 RCSM (Center Dashboard & Downloads)</option>
-                <option value="super_admin">👑 Super Admin (Full Control)</option>
-              </select>
-            </div>
-            <div style="display:flex; gap:6px;">
-              <button type="submit" id="btn-save-user" class="btn btn-green">➕ Save User</button>
-              <button type="button" id="btn-cancel-edit-user" onclick="resetUserForm()" class="btn btn-outline" style="display:none;">Cancel</button>
-            </div>
-          </form>
-          <!-- Active Centers Selected Tags Ribbon -->
-          <div style="margin-top:10px; padding-top:8px; border-top:1px dashed #cbd5e1; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-            <span style="font-size:0.75rem; font-weight:700; color:#64748b;">Selected Center Coverage:</span>
-            <div id="selected-centers-tags-bar" style="display:flex; flex-wrap:wrap; gap:6px;"></div>
           </div>
         </div>
 
@@ -1688,6 +1684,7 @@ def admin_dashboard():
               <tr>
                 <th>Username</th>
                 <th>Full Name</th>
+                <th>Email Address</th>
                 <th>Region</th>
                 <th>Assigned Center</th>
                 <th>Role (User Rights)</th>
@@ -1696,9 +1693,106 @@ def admin_dashboard():
               </tr>
             </thead>
             <tbody id="users-table-body">
-              <tr><td colspan="7" style="text-align:center; padding:20px; color:#64748b;">Loading users...</td></tr>
+              <tr><td colspan="8" style="text-align:center; padding:20px; color:#64748b;">Loading users...</td></tr>
             </tbody>
           </table>
+        </div>
+      </div>
+
+      <!-- Add / Edit User Pop-Up Modal Window -->
+      <div id="user-modal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(15,23,42,0.6); backdrop-filter:blur(3px); z-index:9999; justify-content:center; align-items:center; padding:16px;">
+        <div style="background:white; border-radius:12px; padding:24px; max-width:650px; width:100%; max-height:92vh; overflow-y:auto; box-shadow:0 20px 25px -5px rgba(0,0,0,0.25), 0 8px 10px -6px rgba(0,0,0,0.1);">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; border-bottom:1px solid #e2e8f0; padding-bottom:12px;">
+            <h3 id="user-modal-title" style="margin:0; font-size:1.15rem; color:#0f172a; font-weight:700;">➕ Add New User</h3>
+            <button type="button" onclick="closeUserModal()" style="background:none; border:none; font-size:1.5rem; line-height:1; color:#94a3b8; cursor:pointer; padding:4px 8px; border-radius:6px;">&times;</button>
+          </div>
+
+          <form onsubmit="saveUserFromModal(event)">
+            <!-- Row 1: Username & Password -->
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-bottom:14px;">
+              <div>
+                <label style="display:block; font-size:0.78rem; font-weight:700; color:#334155; margin-bottom:4px;">Username <span style="color:#ef4444;">*</span></label>
+                <input type="text" id="modal-new-user" placeholder="e.g. anoop" required style="width:100%; border:1.5px solid #cbd5e1; border-radius:6px; padding:8px 10px; font-size:0.85rem;">
+              </div>
+              <div>
+                <label style="display:block; font-size:0.78rem; font-weight:700; color:#334155; margin-bottom:4px;">Password / PIN <span id="modal-pass-required" style="color:#ef4444;">*</span></label>
+                <input type="text" id="modal-new-pass" placeholder="PIN / Password" required style="width:100%; border:1.5px solid #cbd5e1; border-radius:6px; padding:8px 10px; font-size:0.85rem;">
+              </div>
+            </div>
+
+            <!-- Row 2: Full Name & Email Address -->
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-bottom:14px;">
+              <div>
+                <label style="display:block; font-size:0.78rem; font-weight:700; color:#334155; margin-bottom:4px;">Full Name <span style="color:#ef4444;">*</span></label>
+                <input type="text" id="modal-new-name" placeholder="Full Name" required style="width:100%; border:1.5px solid #cbd5e1; border-radius:6px; padding:8px 10px; font-size:0.85rem;">
+              </div>
+              <div>
+                <label style="display:block; font-size:0.78rem; font-weight:700; color:#334155; margin-bottom:4px;">
+                  Email Address <span style="font-size:0.7rem; color:#0284c7; font-weight:normal;">(For user password reset / change)</span>
+                </label>
+                <input type="email" id="modal-new-email" placeholder="e.g. anoop@bsnl.co.in" style="width:100%; border:1.5px solid #cbd5e1; border-radius:6px; padding:8px 10px; font-size:0.85rem;">
+              </div>
+            </div>
+
+            <!-- Row 3: Role (Defines User Rights) -->
+            <div style="margin-bottom:14px;">
+              <label style="display:block; font-size:0.78rem; font-weight:700; color:#0369a1; margin-bottom:4px;">👤 Role (Defines Operational User Rights) <span style="color:#ef4444;">*</span></label>
+              <select id="modal-new-role" required style="width:100%; font-weight:600; border:1.5px solid #0284c7; border-radius:6px; padding:8px 10px; font-size:0.85rem;">
+                <option value="field_technician">👷 Field Technician (Data Entry Only)</option>
+                <option value="acso">📝 ACSO (Data Entry & Downloads)</option>
+                <option value="rcsm">📊 RCSM (Center Dashboard & Downloads)</option>
+                <option value="super_admin">👑 Super Admin (Full Control)</option>
+              </select>
+            </div>
+
+            <!-- Row 4: Assigned Region(s) & Assigned Center(s) -->
+            <div style="display:grid; grid-template-columns:1fr 1.3fr; gap:14px; margin-bottom:14px;">
+              <!-- Multi-Region Selector -->
+              <div style="position:relative;">
+                <label style="display:block; font-size:0.78rem; font-weight:700; color:#334155; margin-bottom:4px;">
+                  Assigned Region(s)
+                </label>
+                <button type="button" id="btn-region-picker" onclick="toggleMultiDropdown('region-dropdown-panel')" style="width:100%; text-align:left; background:white; border:1.5px solid #cbd5e1; padding:8px 12px; border-radius:6px; font-size:0.83rem; display:flex; justify-content:space-between; align-items:center; cursor:pointer;">
+                  <span id="region-picker-label" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">ALL Regions</span>
+                  <span style="font-size:0.75rem; color:#64748b;">▼</span>
+                </button>
+                <div id="region-dropdown-panel" style="display:none; position:absolute; top:100%; left:0; right:0; z-index:1000; background:white; border:1.5px solid #0284c7; border-radius:8px; padding:10px; margin-top:4px; box-shadow:0 10px 25px -5px rgba(0,0,0,0.15); max-height:220px; overflow-y:auto;">
+                  <div id="region-checkbox-list"></div>
+                </div>
+              </div>
+
+              <!-- Multi-Center Selector -->
+              <div style="position:relative;">
+                <label style="display:block; font-size:0.78rem; font-weight:700; color:#334155; margin-bottom:4px;">
+                  Assigned Center(s) <span style="font-size:0.7rem; color:#0284c7; font-weight:normal;">(Select 1 or more)</span>
+                </label>
+                <button type="button" id="btn-center-picker" onclick="toggleMultiDropdown('center-dropdown-panel')" style="width:100%; text-align:left; background:white; border:1.5px solid #cbd5e1; padding:8px 12px; border-radius:6px; font-size:0.83rem; display:flex; justify-content:space-between; align-items:center; cursor:pointer;">
+                  <span id="center-picker-label" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">ALL (All Network)</span>
+                  <span style="font-size:0.75rem; color:#64748b;">▼</span>
+                </button>
+                <div id="center-dropdown-panel" style="display:none; position:absolute; top:100%; left:0; right:0; min-width:280px; z-index:1000; background:white; border:1.5px solid #0284c7; border-radius:8px; padding:10px; margin-top:4px; box-shadow:0 10px 25px -5px rgba(0,0,0,0.15); max-height:280px; overflow-y:auto;">
+                  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; padding-bottom:6px; border-bottom:1px solid #e2e8f0;">
+                    <input type="text" id="center-search-input" placeholder="🔍 Search centers..." oninput="filterCenterChecklist(this.value)" style="flex:1; padding:4px 8px; font-size:0.78rem; border:1px solid #cbd5e1; border-radius:4px; outline:none;">
+                    <button type="button" onclick="selectAllCenters(true)" style="background:none; border:none; color:#0284c7; font-size:0.75rem; font-weight:700; cursor:pointer; margin-left:8px;">All</button>
+                    <button type="button" onclick="selectAllCenters(false)" style="background:none; border:none; color:#64748b; font-size:0.75rem; font-weight:700; cursor:pointer; margin-left:4px;">None</button>
+                  </div>
+                  <div id="center-checkbox-list"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Active Selected Center Tags -->
+            <div style="margin-bottom:16px; padding:8px 10px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px;">
+              <div style="font-size:0.72rem; font-weight:700; color:#64748b; margin-bottom:6px;">Selected Center Coverage:</div>
+              <div id="selected-centers-tags-bar" style="display:flex; flex-wrap:wrap; gap:6px;"></div>
+            </div>
+
+            <!-- Modal Action Buttons -->
+            <div style="display:flex; justify-content:flex-end; gap:10px; border-top:1px solid #e2e8f0; padding-top:14px;">
+              <button type="button" onclick="closeUserModal()" class="btn btn-outline" style="padding:8px 16px;">Cancel</button>
+              <button type="submit" id="btn-modal-save-user" class="btn btn-green" style="padding:8px 20px; font-weight:700;">💾 Save User</button>
+            </div>
+          </form>
         </div>
       </div>
 
@@ -2587,10 +2681,12 @@ def admin_dashboard():
               const tr = document.createElement('tr');
               const roleClean = normalizeAdminRole(u.role);
               const badgeHtml = roleBadges[roleClean] || `<span class="tag">${u.role}</span>`;
+              const emailDisplay = u.email ? `<span style="font-family:monospace; font-size:0.8rem; color:#0369a1;">${u.email}</span>` : '<span style="color:#94a3b8; font-style:italic; font-size:0.78rem;">No Email</span>';
               
               tr.innerHTML = `
                 <td><strong>${u.username}</strong></td>
                 <td>${u.full_name}</td>
+                <td>${emailDisplay}</td>
                 <td><span style="background:#f1f5f9; padding:2px 8px; border-radius:4px; font-weight:600; font-size:0.8rem;">${u.assigned_region || 'Thrissur'}</span></td>
                 <td>
                   ${(() => {
@@ -2610,7 +2706,7 @@ def admin_dashboard():
                 <td>${badgeHtml}</td>
                 <td style="color:#64748b; font-size:0.8rem; font-family:monospace;">${(u.created_at || '').slice(0, 19).replace('T', ' ')}</td>
                 <td style="text-align:center; white-space:nowrap;">
-                  <button class="btn btn-outline" style="padding:3px 8px; font-size:0.75rem; margin-right:4px;" onclick="loadUserForEdit('${u.username}', '${encodeURIComponent(u.full_name)}', '${encodeURIComponent(u.assigned_center)}', '${encodeURIComponent(u.assigned_region || 'Thrissur')}', '${roleClean}')">✏️ Edit</button>
+                  <button class="btn btn-outline" style="padding:3px 8px; font-size:0.75rem; margin-right:4px;" onclick="openEditUserModal('${u.username}', '${encodeURIComponent(u.full_name)}', '${encodeURIComponent(u.email || '')}', '${encodeURIComponent(u.assigned_center)}', '${encodeURIComponent(u.assigned_region || 'Thrissur')}', '${roleClean}')">✏️ Edit</button>
                   ${u.username !== 'admin' ? `<button class="btn btn-danger" style="padding:3px 8px; font-size:0.75rem;" onclick="deleteUser('${u.username}')">🗑️</button>` : '<span style="color:#94a3b8; font-size:0.75rem;">Root</span>'}
                 </td>
               `;
@@ -2621,43 +2717,58 @@ def admin_dashboard():
           }
         }
 
-        function loadUserForEdit(username, encName, encCenter, encRegion, role) {
+        function openAddUserModal() {
+          document.getElementById('user-modal-title').innerHTML = '➕ Add New User';
+          document.getElementById('modal-new-user').value = '';
+          document.getElementById('modal-new-user').removeAttribute('readonly');
+          document.getElementById('modal-new-user').style.background = '#ffffff';
+          document.getElementById('modal-new-pass').value = '';
+          document.getElementById('modal-new-pass').placeholder = 'PIN / Password';
+          document.getElementById('modal-new-pass').setAttribute('required', 'true');
+          const passReq = document.getElementById('modal-pass-required');
+          if (passReq) passReq.style.display = 'inline';
+          document.getElementById('modal-new-name').value = '';
+          document.getElementById('modal-new-email').value = '';
+          document.getElementById('modal-new-role').value = 'field_technician';
+          document.getElementById('btn-modal-save-user').innerHTML = '💾 Save User';
+
+          populateUserRegionAndCenterDropdowns('ALL', 'ALL');
+          document.getElementById('user-modal').style.display = 'flex';
+        }
+
+        function openEditUserModal(username, encName, encEmail, encCenter, encRegion, role) {
           const c = decodeURIComponent(encCenter);
           const reg = decodeURIComponent(encRegion);
+          const email = decodeURIComponent(encEmail || '');
 
-          document.getElementById('user-form-title').innerText = `✏️ Edit User: ${username}`;
-          document.getElementById('new-user').value = username;
-          document.getElementById('new-user').setAttribute('readonly', 'true');
-          document.getElementById('new-user').style.background = '#f1f5f9';
-          document.getElementById('new-pass').value = '';
-          document.getElementById('new-pass').placeholder = '(Keep existing password or enter new)';
-          document.getElementById('new-pass').removeAttribute('required');
-          document.getElementById('new-name').value = decodeURIComponent(encName);
+          document.getElementById('user-modal-title').innerHTML = `✏️ Edit User: ${username}`;
+          document.getElementById('modal-new-user').value = username;
+          document.getElementById('modal-new-user').setAttribute('readonly', 'true');
+          document.getElementById('modal-new-user').style.background = '#f1f5f9';
+          document.getElementById('modal-new-pass').value = '';
+          document.getElementById('modal-new-pass').placeholder = '(Leave empty to keep existing password)';
+          document.getElementById('modal-new-pass').removeAttribute('required');
+          const passReq = document.getElementById('modal-pass-required');
+          if (passReq) passReq.style.display = 'none';
+          document.getElementById('modal-new-name').value = decodeURIComponent(encName);
+          document.getElementById('modal-new-email').value = email;
 
           populateUserRegionAndCenterDropdowns(reg, c);
 
-          document.getElementById('new-role').value = role;
-          document.getElementById('btn-save-user').innerText = '💾 Update User';
-          document.getElementById('btn-cancel-edit-user').style.display = 'inline-flex';
+          document.getElementById('modal-new-role').value = role;
+          document.getElementById('btn-modal-save-user').innerHTML = '💾 Update User';
+          document.getElementById('user-modal').style.display = 'flex';
         }
 
-        function resetUserForm() {
-          document.getElementById('user-form-title').innerText = '➕ Add New User';
-          document.getElementById('new-user').value = '';
-          document.getElementById('new-user').removeAttribute('readonly');
-          document.getElementById('new-user').style.background = '#ffffff';
-          document.getElementById('new-pass').value = '';
-          document.getElementById('new-pass').placeholder = 'PIN / Password';
-          document.getElementById('new-pass').setAttribute('required', 'true');
-          document.getElementById('new-name').value = '';
-          document.getElementById('new-role').value = 'field_technician';
-          document.getElementById('btn-save-user').innerText = '➕ Save User';
-          document.getElementById('btn-cancel-edit-user').style.display = 'none';
-
-          populateUserRegionAndCenterDropdowns('ALL', 'ALL');
+        function closeUserModal() {
+          document.getElementById('user-modal').style.display = 'none';
+          const rp = document.getElementById('region-dropdown-panel');
+          if (rp) rp.style.display = 'none';
+          const cp = document.getElementById('center-dropdown-panel');
+          if (cp) cp.style.display = 'none';
         }
 
-        async function createUser(e) {
+        async function saveUserFromModal(e) {
           e.preventDefault();
           
           const regionsArr = Array.from(selectedUserRegions);
@@ -2669,12 +2780,13 @@ def admin_dashboard():
           }
 
           const u = {
-            username: document.getElementById('new-user').value.trim(),
-            password: document.getElementById('new-pass').value.trim() || '1234',
-            full_name: document.getElementById('new-name').value.trim(),
+            username: document.getElementById('modal-new-user').value.trim(),
+            password: document.getElementById('modal-new-pass').value.trim(),
+            full_name: document.getElementById('modal-new-name').value.trim(),
+            email: document.getElementById('modal-new-email').value.trim(),
             assigned_region: regionsArr.includes('ALL') ? 'ALL' : regionsArr.join(', '),
             assigned_center: centersArr.includes('ALL') ? 'ALL' : centersArr.join(', '),
-            role: document.getElementById('new-role').value
+            role: document.getElementById('modal-new-role').value
           };
 
           try {
@@ -2686,7 +2798,7 @@ def admin_dashboard():
             const data = await res.json();
             if (res.ok) {
               alert(data.message || 'User saved successfully!');
-              resetUserForm();
+              closeUserModal();
               fetchUsers();
             } else {
               alert('Error: ' + (data.detail || 'Could not save user'));
