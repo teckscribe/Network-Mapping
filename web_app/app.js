@@ -268,14 +268,19 @@ function initDropdowns() {
     regionSelect.disabled = true;
   }
 
-  // Technologies
+  // Technologies (Read-only, auto-reflected from Node Master Data)
   techSelect.innerHTML = '';
-  DEFAULT_PRELOAD.technologies.forEach(t => {
+  (DEFAULT_PRELOAD.technologies || ["GPON", "FTTH", "WDM", "EDFA"]).forEach(t => {
     const opt = document.createElement('option');
     opt.value = t;
     opt.innerText = t;
     techSelect.appendChild(opt);
   });
+  techSelect.disabled = true;
+
+  if (oltTypeSelect) {
+    oltTypeSelect.disabled = true;
+  }
 
   // Enclosures
   enclosureSelect.innerHTML = '';
@@ -449,37 +454,106 @@ function onRTRoomChange() {
   onOLTChange();
 }
 
+function findNodeEntry(c, rt, olt) {
+  if (!DEFAULT_PRELOAD || !DEFAULT_PRELOAD.hierarchy) return null;
+  // 1. Direct key match
+  if (DEFAULT_PRELOAD.hierarchy[c] && DEFAULT_PRELOAD.hierarchy[c][rt] && DEFAULT_PRELOAD.hierarchy[c][rt][olt]) {
+    return DEFAULT_PRELOAD.hierarchy[c][rt][olt];
+  }
+  // 2. Case-insensitive & trimmed fallback
+  const cNorm = (c || '').trim().toLowerCase();
+  const cKey = Object.keys(DEFAULT_PRELOAD.hierarchy).find(k => k.trim().toLowerCase() === cNorm);
+  if (!cKey) return null;
+
+  const rtMap = DEFAULT_PRELOAD.hierarchy[cKey];
+  if (!rtMap) return null;
+  const rtNorm = (rt || '').trim().toLowerCase();
+  const rtKey = Object.keys(rtMap).find(k => k.trim().toLowerCase() === rtNorm);
+  if (!rtKey) return null;
+
+  const oltMap = rtMap[rtKey];
+  if (!oltMap) return null;
+  const oltNorm = (olt || '').trim().toLowerCase();
+  const oltKey = Object.keys(oltMap).find(k => k.trim().toLowerCase() === oltNorm);
+  if (!oltKey) return null;
+
+  return oltMap[oltKey];
+}
+
 function onOLTChange() {
   const c = centerSelect ? centerSelect.value : '';
   const rt = rtRoomSelect ? rtRoomSelect.value : '';
   const olt = oltSelect ? oltSelect.value : '';
 
-  if (c && rt && olt && DEFAULT_PRELOAD.hierarchy[c] && DEFAULT_PRELOAD.hierarchy[c][rt]) {
-    const entry = DEFAULT_PRELOAD.hierarchy[c][rt][olt];
-    if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
-      if (entry.region && regionSelect) {
-        regionSelect.value = entry.region;
-      }
-      if (entry.tech && techSelect) {
-        techSelect.value = entry.tech;
-      }
-      if (entry.olt_type && oltTypeSelect) {
-        const cleanType = entry.olt_type.replace(/\s+/g, '');
-        if (cleanType.includes('16')) oltTypeSelect.value = '16P';
-        else if (cleanType.includes('32')) oltTypeSelect.value = '32P';
-        else oltTypeSelect.value = '8P';
-      }
+  const entry = findNodeEntry(c, rt, olt);
+  if (entry) {
+    if (entry.region && regionSelect) {
+      regionSelect.value = entry.region;
     }
+
+    // 1. Reflect Technology from Node Master Data & lock as read-only
+    if (techSelect) {
+      const tVal = (entry.tech || 'GPON').trim();
+      let matched = false;
+      for (let i = 0; i < techSelect.options.length; i++) {
+        if (techSelect.options[i].value.toLowerCase() === tVal.toLowerCase()) {
+          techSelect.selectedIndex = i;
+          matched = true;
+          break;
+        }
+      }
+      if (!matched && tVal) {
+        const opt = document.createElement('option');
+        opt.value = tVal;
+        opt.innerText = tVal;
+        techSelect.appendChild(opt);
+        techSelect.value = tVal;
+      }
+      techSelect.disabled = true; // Read-only mode
+    }
+
+    // 2. Reflect Number of Ports from Node Master Data & lock as read-only
+    if (oltTypeSelect) {
+      let portCount = 8;
+      if (entry.olt_type) {
+        const clean = String(entry.olt_type).replace(/\s+/g, '');
+        if (clean.includes('32')) portCount = 32;
+        else if (clean.includes('16')) portCount = 16;
+        else portCount = 8;
+      } else if (Array.isArray(entry.ports) && entry.ports.length > 0) {
+        portCount = entry.ports.length;
+      } else if (Array.isArray(entry) && entry.length > 0) {
+        portCount = entry.length;
+      }
+      oltTypeSelect.value = (portCount >= 32 ? '32P' : (portCount >= 16 ? '16P' : '8P'));
+      oltTypeSelect.disabled = true; // Read-only mode
+    }
+  } else {
+    if (techSelect) techSelect.disabled = true;
+    if (oltTypeSelect) oltTypeSelect.disabled = true;
   }
+
   onOLTTypeChange();
 }
 
 function onOLTTypeChange() {
-  const oType = oltTypeSelect ? oltTypeSelect.value : '8P';
+  const c = centerSelect ? centerSelect.value : '';
+  const rt = rtRoomSelect ? rtRoomSelect.value : '';
+  const olt = oltSelect ? oltSelect.value : '';
+  const entry = findNodeEntry(c, rt, olt);
+
   portSelect.innerHTML = '';
-  const ports = (DEFAULT_PRELOAD.ports_by_type && DEFAULT_PRELOAD.ports_by_type[oType])
-    ? DEFAULT_PRELOAD.ports_by_type[oType]
-    : Array.from({length: 8}, (_, i) => `P${i + 1}`);
+  let ports = null;
+  if (entry && Array.isArray(entry.ports) && entry.ports.length > 0) {
+    ports = entry.ports;
+  } else if (Array.isArray(entry) && entry.length > 0) {
+    ports = entry;
+  } else {
+    const oType = oltTypeSelect ? oltTypeSelect.value : '8P';
+    ports = (DEFAULT_PRELOAD.ports_by_type && DEFAULT_PRELOAD.ports_by_type[oType])
+      ? DEFAULT_PRELOAD.ports_by_type[oType]
+      : (oType === '16P' ? Array.from({length: 16}, (_, i) => `P${i + 1}`) : (oType === '32P' ? Array.from({length: 32}, (_, i) => `P${i + 1}`) : Array.from({length: 8}, (_, i) => `P${i + 1}`)));
+  }
 
   ports.forEach(p => {
     const opt = document.createElement('option');
@@ -1057,36 +1131,10 @@ async function fetchHierarchyFromServer() {
     const res = await fetch(`${serverUrl}/api/hierarchy`);
     if (res.ok) {
       const data = await res.json();
-      if (data && data.hierarchy && typeof data.hierarchy === 'object') {
-        let changed = false;
-        Object.keys(data.hierarchy).forEach(c => {
-          if (!DEFAULT_PRELOAD.hierarchy[c]) {
-            DEFAULT_PRELOAD.hierarchy[c] = {};
-            changed = true;
-          }
-          // Deep merge: don't replace existing RT rooms, merge OLT entries
-          const serverCenter = data.hierarchy[c];
-          Object.keys(serverCenter).forEach(rt => {
-            if (!DEFAULT_PRELOAD.hierarchy[c][rt]) {
-              DEFAULT_PRELOAD.hierarchy[c][rt] = {};
-              changed = true;
-            }
-            Object.keys(serverCenter[rt]).forEach(olt => {
-              if (!DEFAULT_PRELOAD.hierarchy[c][rt][olt]) {
-                DEFAULT_PRELOAD.hierarchy[c][rt][olt] = serverCenter[rt][olt];
-                changed = true;
-              } else if (typeof serverCenter[rt][olt] === 'object' && !Array.isArray(serverCenter[rt][olt])) {
-                // Server has rich data, update local
-                DEFAULT_PRELOAD.hierarchy[c][rt][olt] = serverCenter[rt][olt];
-                changed = true;
-              }
-            });
-          });
-        });
-        if (changed) {
-          localStorage.setItem('gpon_custom_hierarchy', JSON.stringify(DEFAULT_PRELOAD.hierarchy));
-          initDropdowns();
-        }
+      if (data && data.hierarchy && typeof data.hierarchy === 'object' && Object.keys(data.hierarchy).length > 0) {
+        DEFAULT_PRELOAD.hierarchy = Object.assign({}, DEFAULT_PRELOAD.hierarchy, data.hierarchy);
+        localStorage.setItem('gpon_custom_hierarchy', JSON.stringify(DEFAULT_PRELOAD.hierarchy));
+        initDropdowns();
       }
     }
   } catch (e) {}

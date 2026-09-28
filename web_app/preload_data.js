@@ -1,7 +1,7 @@
 // Preloaded Network Hierarchy & Metadata for GPON Mapping
 const DEFAULT_PRELOAD = {
   regions: ["Thrissur", "Palakkad", "Ernakulam", "Malappuram"],
-  technologies: ["GPON", "FTTH", "WDM"],
+  technologies: ["GPON", "FTTH", "WDM", "EDFA"],
   hierarchy: {
   "CHALAKKUDY": {
     "Potta": {
