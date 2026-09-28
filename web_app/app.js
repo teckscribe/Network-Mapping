@@ -441,19 +441,26 @@ function handleExcelHierarchyUpload(e) {
             normRow[cleanKey] = String(row[k]).trim();
           });
 
-          const center = normRow['center'] || normRow['regioncenter'] || '';
+          const center = normRow['center'] || normRow['regioncenter'] || normRow['centre'] || '';
           const rtRoom = normRow['rtroom'] || normRow['room'] || 'Main RT';
-          const olt = normRow['oltnodename'] || normRow['oltname'] || normRow['olt'] || '';
+          let olt = normRow['oltnodename'] || normRow['oltname'] || normRow['olt'] || '';
+          if (!olt) {
+            const ipVal = normRow['deviceip'] || normRow['ip'] || normRow['ipaddress'] || '';
+            if (ipVal) olt = ipVal.toLowerCase().startsWith('olt') ? ipVal : `OLT (${ipVal})`;
+          }
 
-          if (center && olt && center !== 'Center' && olt !== 'OLT/Node  Name') {
+          if (center && olt && center.toLowerCase() !== 'center' && !olt.toLowerCase().includes('olt/node')) {
             importedCenters.add(center);
             importedOlts++;
 
             if (!newHierarchy[center]) newHierarchy[center] = {};
             if (!newHierarchy[center][rtRoom]) newHierarchy[center][rtRoom] = {};
-            if (!newHierarchy[center][rtRoom][olt]) {
-              newHierarchy[center][rtRoom][olt] = DEFAULT_PRELOAD.ports_by_type["8P"];
-            }
+
+            const oType = normRow['olttype'] || normRow['type'] || '8P';
+            let portCount = 8;
+            if (oType.includes('16')) portCount = 16;
+            else if (oType.includes('32')) portCount = 32;
+            newHierarchy[center][rtRoom][olt] = Array.from({ length: portCount }, (_, i) => `P${i + 1}`);
           }
         });
       });

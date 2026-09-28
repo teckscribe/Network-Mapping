@@ -7,9 +7,12 @@ import os
 import sqlite3
 import datetime
 import socket
+import io
+import json
+import re
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, status, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -261,12 +264,171 @@ def get_hierarchy():
 def upload_hierarchy(payload: dict):
     hierarchy_file = os.path.join(BASE_DIR, "custom_hierarchy.json")
     try:
-        import json
         with open(hierarchy_file, "w", encoding="utf-8") as f:
             json.dump(payload.get("hierarchy", payload), f, indent=2)
         return {"status": "success", "message": "Server network hierarchy updated successfully."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/upload-hierarchy-excel")
+async def upload_hierarchy_excel(file: UploadFile = File(...)):
+    if not (file.filename.lower().endswith(".xlsx") or file.filename.lower().endswith(".xls") or file.filename.lower().endswith(".csv")):
+        raise HTTPException(status_code=400, detail="Only Excel (.xlsx/.xls) or CSV files are supported.")
+    
+    contents = await file.read()
+    new_hierarchy = {}
+    total_olts = 0
+    centers_found = set()
+    regions_found = set()
+    
+    try:
+        sheet_list = []
+        if file.filename.lower().endswith(".csv"):
+            import csv
+            reader = csv.reader(io.StringIO(contents.decode("utf-8", errors="ignore")))
+            sheet_list.append(list(reader))
+        else:
+            wb = openpyxl.load_workbook(io.BytesIO(contents), data_only=True)
+            for sheet_name in wb.sheetnames:
+                ws = wb[sheet_name]
+                sheet_rows = list(ws.iter_rows(values_only=True))
+                if sheet_rows and len(sheet_rows) >= 2:
+                    sheet_list.append(sheet_rows)
+
+        if not sheet_list:
+            raise HTTPException(status_code=400, detail="File is empty or missing data sheets.")
+
+        for rows in sheet_list:
+            # Find header row
+            header_row_idx = -1
+            col_indices = {}
+            for r_idx, row in enumerate(rows[:10]):
+                row_str = " ".join([str(c).lower() for c in row if c])
+                if "center" in row_str or "olt" in row_str or "node" in row_str:
+                    header_row_idx = r_idx
+                    for c_idx, val in enumerate(row):
+                        if not val: continue
+                        clean_k = re.sub(r'[^a-z0-9]', '', str(val).lower())
+                        col_indices[clean_k] = c_idx
+                    break
+            
+            if header_row_idx == -1:
+                continue
+
+            def get_col(row_data, *candidates, default=""):
+                for cand in candidates:
+                    cand_clean = re.sub(r'[^a-z0-9]', '', cand.lower())
+                    if cand_clean in col_indices:
+                        idx = col_indices[cand_clean]
+                        if idx < len(row_data) and row_data[idx] is not None:
+                            val = str(row_data[idx]).strip()
+                            if val and val.lower() != cand.lower():
+                                return val
+                return default
+
+            for row in rows[header_row_idx + 1:]:
+                center = get_col(row, "center", "centre", "regioncenter")
+                rt_room = get_col(row, "rtroom", "rt_room", "room", default="Main RT")
+                olt = get_col(row, "oltnodename", "oltname", "olt", "nodename")
+                if not olt:
+                    ip_val = get_col(row, "deviceip", "ip", "ipaddress")
+                    if ip_val:
+                        olt = f"OLT ({ip_val})" if not ip_val.lower().startswith("olt") else ip_val
+
+                region = get_col(row, "region", "district", default="Thrissur")
+                olt_type = get_col(row, "olttype", "type", default="8P")
+
+                if center and olt and center.lower() != "center" and not olt.lower().startswith("olt/node"):
+                    centers_found.add(center)
+                    regions_found.add(region)
+                    total_olts += 1
+
+                    if center not in new_hierarchy:
+                        new_hierarchy[center] = {}
+                    if rt_room not in new_hierarchy[center]:
+                        new_hierarchy[center][rt_room] = {}
+
+                    port_count = 8
+                    if "16" in str(olt_type): port_count = 16
+                    elif "32" in str(olt_type): port_count = 32
+                    new_hierarchy[center][rt_room][olt] = [f"P{i+1}" for i in range(port_count)]
+
+        if total_olts == 0:
+            raise HTTPException(status_code=400, detail="No valid Center and OLT rows found in uploaded sheet.")
+
+        # Merge with existing custom hierarchy
+        hierarchy_file = os.path.join(BASE_DIR, "custom_hierarchy.json")
+        existing_hierarchy = {}
+        if os.path.exists(hierarchy_file):
+            try:
+                with open(hierarchy_file, "r", encoding="utf-8") as f:
+                    existing_hierarchy = json.load(f)
+            except Exception:
+                pass
+
+        for c, rts in new_hierarchy.items():
+            if c not in existing_hierarchy:
+                existing_hierarchy[c] = {}
+            for rt, olts in rts.items():
+                if rt not in existing_hierarchy[c]:
+                    existing_hierarchy[c][rt] = {}
+                existing_hierarchy[c][rt].update(olts)
+
+        with open(hierarchy_file, "w", encoding="utf-8") as f:
+            json.dump(existing_hierarchy, f, indent=2)
+
+        return {
+            "status": "success",
+            "message": f"Imported {total_olts} OLTs across {len(centers_found)} Centers successfully!",
+            "total_olts": total_olts,
+            "centers": list(centers_found),
+            "hierarchy": existing_hierarchy
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse Excel: {str(e)}")
+
+@app.get("/api/download-hierarchy-template")
+def download_hierarchy_template():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Network_Hierarchy"
+
+    headers = ['Region', 'Center', 'RT Room', 'GPON/FTTH/WDM', 'OLT/Node Name', 'OLT Type']
+    header_fill = PatternFill(start_color="0F9D58", end_color="0F9D58", fill_type="solid")
+    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+
+    for col_idx, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col_idx, value=h)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    sample_rows = [
+        ["Thrissur", "Thrissur North", "Mulamkunnathukavu", "GPON", "THN156 OLT53 Mulamkunnathukavu", "8P"],
+        ["Thrissur", "Thrissur North", "Mulamkunnathukavu", "GPON", "THN-156-OLT-53- Mulamkunnathukavu", "8P"],
+        ["Palakkad", "Thathamangalm", "Kollengode", "GPON", "TMM/25/OLT-08-KOLLEMGODE", "8P"],
+        ["Palakkad", "Palakkad South", "Alathur", "GPON", "PLK/12/OLT-03-ALATHUR", "16P"]
+    ]
+
+    for r_idx, row in enumerate(sample_rows, 2):
+        for c_idx, val in enumerate(row, 1):
+            cell = ws.cell(row=r_idx, column=c_idx, value=val)
+            cell.font = Font(name="Calibri", size=10)
+
+    for col in ws.columns:
+        max_len = max(len(str(cell.value or '')) for cell in col)
+        col_letter = col[0].column_letter
+        ws.column_dimensions[col_letter].width = max(max_len + 4, 15)
+
+    template_path = os.path.join(BASE_DIR, "Network_Hierarchy_Template.xlsx")
+    wb.save(template_path)
+    return FileResponse(
+        template_path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename="Network_Hierarchy_Template.xlsx"
+    )
 
 # ====================
 # SYNC & DATA API
@@ -508,6 +670,7 @@ def admin_dashboard():
       <div class="tabs">
         <button class="tab-btn active" onclick="switchTab('feed')">📋 Survey Feed</button>
         <button class="tab-btn" onclick="switchTab('users')">👥 Field Users & Center Assignment</button>
+        <button class="tab-btn" onclick="switchTab('hierarchy')">📡 Upload Network Hierarchy (Excel)</button>
       </div>
 
       <!-- Tab 1: Survey Feed -->
@@ -572,18 +735,83 @@ def admin_dashboard():
         </div>
       </div>
 
+      <!-- Tab 3: Network Hierarchy Management -->
+      <div id="tab-hierarchy" style="display:none; background:#ffffff; border-radius:10px; padding:16px; border:1px solid #cbd5e1; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px; margin-bottom:16px;">
+          <div>
+            <h3 style="margin:0 0 6px 0; color:#0284c7;">Upload Network Hierarchy (Region, Center, RT Room, OLT Name)</h3>
+            <p style="margin:0; font-size:0.85rem; color:#64748b;">
+              Upload your Excel file (<code>.xlsx</code>, <code>.xls</code>, <code>.csv</code>) containing <strong>Center</strong>, <strong>RT Room</strong>, <strong>OLT Name</strong> (or <strong>Device IP</strong>), and optional <strong>OLT Type</strong> (8P/16P/32P).
+              All field surveyor devices will automatically download and cache this hierarchy upon connecting.
+            </p>
+          </div>
+          <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            <a href="/api/download-hierarchy-template" class="btn" style="background:#0f766e;">📥 Download Template (.xlsx)</a>
+            <input type="file" id="hierarchy-upload-input" accept=".xlsx, .xls, .csv" style="display:none;" onchange="uploadHierarchyExcel(event)">
+            <button class="btn btn-green" onclick="document.getElementById('hierarchy-upload-input').click()">📂 Browse & Upload Excel File</button>
+          </div>
+        </div>
+
+        <div id="hierarchy-upload-status" style="margin-bottom:15px; font-size:0.85rem; display:none; padding:10px 14px; border-radius:8px;"></div>
+
+        <div class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-bottom:16px;">
+          <div class="stat-card" style="padding:12px 16px;">
+            <div class="stat-num" id="hier-total-centers" style="font-size:1.5rem;">0</div>
+            <div class="stat-label">Total Centers</div>
+          </div>
+          <div class="stat-card" style="padding:12px 16px;">
+            <div class="stat-num" id="hier-total-rtrooms" style="font-size:1.5rem;">0</div>
+            <div class="stat-label">Total RT Rooms</div>
+          </div>
+          <div class="stat-card" style="padding:12px 16px;">
+            <div class="stat-num" id="hier-total-olts" style="font-size:1.5rem;">0</div>
+            <div class="stat-label">Total OLT Nodes</div>
+          </div>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; gap:10px; flex-wrap:wrap;">
+          <input type="text" id="hierarchy-search" placeholder="🔍 Search Center, RT Room, or OLT..." oninput="filterHierarchyTable()" style="flex:1; min-width:240px; max-width:400px;">
+          <button onclick="fetchHierarchy()" class="btn" style="background:#64748b; padding:8px 12px;">🔄 Refresh Table</button>
+        </div>
+
+        <div style="overflow-x:auto; max-height:480px; overflow-y:auto; border:1px solid #cbd5e1; border-radius:8px;">
+          <table>
+            <thead>
+              <tr style="position:sticky; top:0; z-index:2;">
+                <th>#</th>
+                <th>Center</th>
+                <th>RT Room</th>
+                <th>OLT / Node Name</th>
+                <th>Default Ports</th>
+              </tr>
+            </thead>
+            <tbody id="hierarchy-table-body">
+              <tr><td colspan="5" style="text-align:center; padding:20px;">Loading network hierarchy...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <script>
+        let fullHierarchyRows = [];
+
         function switchTab(t) {
           document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+          document.getElementById('tab-feed').style.display = 'none';
+          document.getElementById('tab-users').style.display = 'none';
+          document.getElementById('tab-hierarchy').style.display = 'none';
+
           if (t === 'feed') {
             document.querySelectorAll('.tab-btn')[0].classList.add('active');
             document.getElementById('tab-feed').style.display = 'block';
-            document.getElementById('tab-users').style.display = 'none';
-          } else {
+          } else if (t === 'users') {
             document.querySelectorAll('.tab-btn')[1].classList.add('active');
-            document.getElementById('tab-feed').style.display = 'none';
             document.getElementById('tab-users').style.display = 'block';
             fetchUsers();
+          } else if (t === 'hierarchy') {
+            document.querySelectorAll('.tab-btn')[2].classList.add('active');
+            document.getElementById('tab-hierarchy').style.display = 'block';
+            fetchHierarchy();
           }
         }
 
@@ -629,6 +857,138 @@ def admin_dashboard():
             console.error(e);
           }
           fetchUsers();
+          fetchHierarchyQuick();
+        }
+
+        async function fetchHierarchyQuick() {
+          try {
+            const res = await fetch('/api/hierarchy');
+            const data = await res.json();
+            const centerSelect = document.getElementById('new-center');
+            const existingVals = Array.from(centerSelect.options).map(o => o.value);
+            Object.keys(data).forEach(c => {
+              if (!existingVals.includes(c)) {
+                const opt = document.createElement('option');
+                opt.value = c;
+                opt.innerText = c;
+                centerSelect.insertBefore(opt, centerSelect.lastElementChild);
+              }
+            });
+          } catch(e) {}
+        }
+
+        async function fetchHierarchy() {
+          try {
+            const res = await fetch('/api/hierarchy');
+            const data = await res.json();
+            const tbody = document.getElementById('hierarchy-table-body');
+            tbody.innerHTML = '';
+
+            let totalCenters = Object.keys(data).length;
+            let totalRTRooms = 0;
+            let totalOLTs = 0;
+            fullHierarchyRows = [];
+
+            Object.keys(data).sort().forEach(center => {
+              const rts = data[center];
+              Object.keys(rts).sort().forEach(rtRoom => {
+                totalRTRooms++;
+                const olts = rts[rtRoom];
+                Object.keys(olts).sort().forEach(oltName => {
+                  totalOLTs++;
+                  const ports = olts[oltName] || [];
+                  fullHierarchyRows.push({
+                    center,
+                    rtRoom,
+                    oltName,
+                    portsCount: ports.length,
+                    portsStr: ports.length > 0 ? `${ports[0]} - ${ports[ports.length - 1]} (${ports.length}P)` : '8P'
+                  });
+                });
+              });
+            });
+
+            document.getElementById('hier-total-centers').innerText = totalCenters;
+            document.getElementById('hier-total-rtrooms').innerText = totalRTRooms;
+            document.getElementById('hier-total-olts').innerText = totalOLTs;
+
+            renderHierarchyTable(fullHierarchyRows);
+            fetchHierarchyQuick();
+          } catch(e) {
+            console.error(e);
+          }
+        }
+
+        function renderHierarchyTable(rows) {
+          const tbody = document.getElementById('hierarchy-table-body');
+          tbody.innerHTML = '';
+          if (rows.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:20px; color:#94a3b8;">No hierarchy records found. Upload an Excel file above.</td></tr>';
+            return;
+          }
+          rows.forEach((r, idx) => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+              <td style="color:#64748b; font-family:monospace; font-size:0.8rem;">${idx + 1}</td>
+              <td><strong>${r.center}</strong></td>
+              <td>${r.rtRoom}</td>
+              <td><strong style="color:#0284c7;">${r.oltName}</strong></td>
+              <td><span class="tag" style="background:#059669;">${r.portsStr}</span></td>
+            `;
+            tbody.appendChild(tr);
+          });
+        }
+
+        function filterHierarchyTable() {
+          const q = (document.getElementById('hierarchy-search').value || '').toLowerCase().trim();
+          if (!q) {
+            renderHierarchyTable(fullHierarchyRows);
+            return;
+          }
+          const filtered = fullHierarchyRows.filter(r => 
+            r.center.toLowerCase().includes(q) || 
+            r.rtRoom.toLowerCase().includes(q) || 
+            r.oltName.toLowerCase().includes(q)
+          );
+          renderHierarchyTable(filtered);
+        }
+
+        async function uploadHierarchyExcel(e) {
+          const file = e.target.files[0];
+          if (!file) return;
+
+          const statusDiv = document.getElementById('hierarchy-upload-status');
+          statusDiv.style.display = 'block';
+          statusDiv.style.background = '#e0f2fe';
+          statusDiv.style.color = '#0369a1';
+          statusDiv.innerText = `⏳ Uploading and parsing ${file.name}...`;
+
+          const formData = new FormData();
+          formData.append('file', file);
+
+          try {
+            const res = await fetch('/api/upload-hierarchy-excel', {
+              method: 'POST',
+              body: formData
+            });
+            const data = await res.json();
+            if (res.ok) {
+              statusDiv.style.background = '#d1fae5';
+              statusDiv.style.color = '#065f46';
+              statusDiv.innerText = `✅ ${data.message || 'Hierarchy imported successfully!'}`;
+              fetchHierarchy();
+            } else {
+              statusDiv.style.background = '#fee2e2';
+              statusDiv.style.color = '#991b1b';
+              statusDiv.innerText = `❌ Error: ${data.detail || 'Upload failed'}`;
+            }
+          } catch(err) {
+            statusDiv.style.background = '#fee2e2';
+            statusDiv.style.color = '#991b1b';
+            statusDiv.innerText = `❌ Network Error: ${err.message}`;
+          } finally {
+            e.target.value = '';
+          }
         }
 
         async function fetchUsers() {
