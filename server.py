@@ -675,6 +675,46 @@ def delete_olt(payload: OLTDeleteModel):
     
     raise HTTPException(status_code=404, detail="OLT not found in hierarchy.")
 
+@app.post("/api/hierarchy/bulk-delete")
+def bulk_delete_olts(payload: dict):
+    """Delete multiple OLTs at once. Expects {"items": [{"center":..., "rt_room":..., "olt_name":...}, ...]}"""
+    hierarchy_file = os.path.join(BASE_DIR, "custom_hierarchy.json")
+    if not os.path.exists(hierarchy_file):
+        raise HTTPException(status_code=404, detail="Hierarchy file not found.")
+    
+    try:
+        with open(hierarchy_file, "r", encoding="utf-8") as f:
+            hierarchy = json.load(f)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+    items = payload.get("items", [])
+    if not items:
+        raise HTTPException(status_code=400, detail="No items provided for deletion.")
+    
+    deleted_count = 0
+    for item in items:
+        c = str(item.get("center", "")).strip()
+        rt = str(item.get("rt_room", "")).strip()
+        olt = str(item.get("olt_name", "")).strip()
+        
+        if c in hierarchy and rt in hierarchy[c]:
+            for k in list(hierarchy[c][rt].keys()):
+                if k.strip().lower() == olt.lower():
+                    del hierarchy[c][rt][k]
+                    deleted_count += 1
+                    break
+            
+            if not hierarchy[c][rt]:
+                del hierarchy[c][rt]
+            if c in hierarchy and not hierarchy[c]:
+                del hierarchy[c]
+    
+    with open(hierarchy_file, "w", encoding="utf-8") as f:
+        json.dump(hierarchy, f, indent=2)
+    
+    return {"status": "success", "message": f"Deleted {deleted_count} OLT(s) successfully.", "deleted": deleted_count}
+
 @app.delete("/api/hierarchy/clear")
 def clear_hierarchy():
     hierarchy_file = os.path.join(BASE_DIR, "custom_hierarchy.json")
@@ -949,21 +989,6 @@ def admin_dashboard():
         </div>
       </div>
 
-      <div class="stats-grid">
-        <div class="stat-card">
-          <div class="stat-num" id="total-count">0</div>
-          <div class="stat-label">Total Poles / Enclosures Synced</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-num" id="total-customers">0</div>
-          <div class="stat-label">Total Connected Customers</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-num" id="active-agents">0</div>
-          <div class="stat-label">Field Survey Users</div>
-        </div>
-      </div>
-
       <div class="tabs">
         <button class="tab-btn active" onclick="switchTab('feed')">📋 Survey Feed</button>
         <button class="tab-btn" onclick="switchTab('users')">👥 Field Users & Center Assignment</button>
@@ -1077,13 +1102,18 @@ def admin_dashboard():
 
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; gap:10px; flex-wrap:wrap;">
           <input type="text" id="hierarchy-search" placeholder="🔍 Search Center, RT Room, or OLT..." oninput="filterHierarchyTable()" style="flex:1; min-width:240px; max-width:400px;">
-          <button onclick="fetchHierarchy()" class="btn" style="background:#64748b; padding:8px 12px;">🔄 Refresh Table</button>
+          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <span id="selection-count" style="font-size:0.8rem; color:#64748b; font-weight:600; display:none;">0 selected</span>
+            <button id="btn-delete-selected" onclick="deleteSelectedOlts()" class="btn btn-danger" style="padding:8px 12px; display:none;">🗑️ Delete Selected</button>
+            <button onclick="fetchHierarchy()" class="btn" style="background:#64748b; padding:8px 12px;">🔄 Refresh Table</button>
+          </div>
         </div>
 
         <div style="overflow-x:auto; max-height:480px; overflow-y:auto; border:1px solid #cbd5e1; border-radius:8px;">
           <table>
             <thead>
               <tr style="position:sticky; top:0; z-index:2;">
+                <th style="width:36px; text-align:center;"><input type="checkbox" id="select-all-cb" onchange="toggleSelectAll(this)" title="Select All"></th>
                 <th>#</th>
                 <th>Region</th>
                 <th>Center</th>
@@ -1095,7 +1125,7 @@ def admin_dashboard():
               </tr>
             </thead>
             <tbody id="hierarchy-table-body">
-              <tr><td colspan="8" style="text-align:center; padding:20px;">Loading network hierarchy...</td></tr>
+              <tr><td colspan="9" style="text-align:center; padding:20px;">Loading network hierarchy...</td></tr>
             </tbody>
           </table>
         </div>
@@ -1180,7 +1210,8 @@ def admin_dashboard():
           try {
             const res = await fetch('/api/records');
             const data = await res.json();
-            document.getElementById('total-count').innerText = data.count;
+            const cntEl = document.getElementById('total-count');
+            if (cntEl) cntEl.innerText = data.count;
             
             let custTotal = 0;
             const tbody = document.getElementById('table-body');
@@ -1213,7 +1244,8 @@ def admin_dashboard():
               tbody.appendChild(tr);
             });
 
-            document.getElementById('total-customers').innerText = custTotal;
+            const custEl = document.getElementById('total-customers');
+            if (custEl) custEl.innerText = custTotal;
           } catch(e) {
             console.error(e);
           }
@@ -1304,13 +1336,18 @@ def admin_dashboard():
         function renderHierarchyTable(rows) {
           const tbody = document.getElementById('hierarchy-table-body');
           tbody.innerHTML = '';
+          const masterCb = document.getElementById('select-all-cb');
+          if (masterCb) { masterCb.checked = false; masterCb.indeterminate = false; }
+          updateSelectionUI();
+
           if (rows.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:20px; color:#94a3b8;">No hierarchy records found. Upload an Excel file or click "+ Add Single OLT" above.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; padding:20px; color:#94a3b8;">No hierarchy records found. Upload an Excel file or click "+ Add Single OLT" above.</td></tr>';
             return;
           }
           rows.forEach((r, idx) => {
             const tr = document.createElement('tr');
             tr.innerHTML = `
+              <td style="text-align:center;"><input type="checkbox" class="row-cb" data-center="${encodeURIComponent(r.center)}" data-rt="${encodeURIComponent(r.rtRoom)}" data-olt="${encodeURIComponent(r.oltName)}" onchange="updateSelectionUI()"></td>
               <td style="color:#64748b; font-family:monospace; font-size:0.8rem;">${idx + 1}</td>
               <td><span style="background:#f1f5f9; color:#334155; padding:2px 8px; border-radius:4px; font-weight:600; font-size:0.8rem;">${r.region}</span></td>
               <td><strong>${r.center}</strong></td>
@@ -1320,11 +1357,82 @@ def admin_dashboard():
               <td><span class="tag" style="background:#059669; color:white; font-size:0.75rem;">${r.oltType}</span></td>
               <td style="white-space:nowrap;">
                 <button class="btn" style="padding:4px 8px; font-size:0.75rem; background:#0284c7; color:white; margin-right:4px;" onclick="openEditOltModal('${encodeURIComponent(r.region)}', '${encodeURIComponent(r.center)}', '${encodeURIComponent(r.rtRoom)}', '${encodeURIComponent(r.tech)}', '${encodeURIComponent(r.oltName)}', '${encodeURIComponent(r.oltType)}')">✏️ Edit</button>
-                <button class="btn btn-danger" style="padding:4px 8px; font-size:0.75rem;" onclick="deleteOlt('${encodeURIComponent(r.center)}', '${encodeURIComponent(r.rtRoom)}', '${encodeURIComponent(r.oltName)}')">🗑️ Delete</button>
+                <button class="btn btn-danger" style="padding:4px 8px; font-size:0.75rem;" onclick="deleteOlt('${encodeURIComponent(r.center)}', '${encodeURIComponent(r.rtRoom)}', '${encodeURIComponent(r.oltName)}')">🗑️</button>
               </td>
             `;
             tbody.appendChild(tr);
           });
+        }
+
+        function toggleSelectAll(masterCb) {
+          const checkboxes = document.querySelectorAll('#hierarchy-table-body .row-cb');
+          checkboxes.forEach(cb => { cb.checked = masterCb.checked; });
+          updateSelectionUI();
+        }
+
+        function updateSelectionUI() {
+          const allCbs = document.querySelectorAll('#hierarchy-table-body .row-cb');
+          const checked = document.querySelectorAll('#hierarchy-table-body .row-cb:checked');
+          const countEl = document.getElementById('selection-count');
+          const btnEl = document.getElementById('btn-delete-selected');
+          const masterCb = document.getElementById('select-all-cb');
+
+          if (countEl && btnEl) {
+            if (checked.length > 0) {
+              countEl.innerText = `${checked.length} selected`;
+              countEl.style.display = '';
+              btnEl.style.display = '';
+              btnEl.innerText = `🗑️ Delete Selected (${checked.length})`;
+            } else {
+              countEl.style.display = 'none';
+              btnEl.style.display = 'none';
+            }
+          }
+
+          if (masterCb) {
+            if (allCbs.length > 0 && checked.length === allCbs.length) {
+              masterCb.checked = true;
+              masterCb.indeterminate = false;
+            } else if (checked.length > 0) {
+              masterCb.checked = false;
+              masterCb.indeterminate = true;
+            } else {
+              masterCb.checked = false;
+              masterCb.indeterminate = false;
+            }
+          }
+        }
+
+        async function deleteSelectedOlts() {
+          const checked = document.querySelectorAll('#hierarchy-table-body .row-cb:checked');
+          if (checked.length === 0) return;
+          if (!confirm(`Are you sure you want to delete ${checked.length} selected OLT(s)? This cannot be undone.`)) return;
+
+          const items = [];
+          checked.forEach(cb => {
+            items.push({
+              center: decodeURIComponent(cb.dataset.center),
+              rt_room: decodeURIComponent(cb.dataset.rt),
+              olt_name: decodeURIComponent(cb.dataset.olt)
+            });
+          });
+
+          try {
+            const res = await fetch('/api/hierarchy/bulk-delete', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({ items: items })
+            });
+            const data = await res.json();
+            if (res.ok) {
+              alert(data.message || 'Deleted successfully');
+              fetchHierarchy();
+            } else {
+              alert('Error: ' + (data.detail || 'Could not delete selected OLTs'));
+            }
+          } catch(err) {
+            alert('Network error: ' + err.message);
+          }
         }
 
         function openAddOltModal() {
@@ -1491,7 +1599,8 @@ def admin_dashboard():
           try {
             const res = await fetch('/api/users');
             const data = await res.json();
-            document.getElementById('active-agents').innerText = data.users.length;
+            const agentsEl = document.getElementById('active-agents');
+            if (agentsEl) agentsEl.innerText = data.users.length;
             const tbody = document.getElementById('users-table-body');
             tbody.innerHTML = '';
             data.users.forEach(u => {
