@@ -1010,7 +1010,7 @@ def admin_dashboard():
                 <th>Landmark</th>
                 <th>Lat / Long</th>
                 <th>Cust</th>
-                <th>Lead Color</th>
+                <th>Out Color</th>
                 <th>ADL ID</th>
                 <th>ACS ID</th>
                 <th>Surveyor</th>

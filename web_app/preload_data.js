@@ -5237,22 +5237,22 @@ const DEFAULT_PRELOAD = {
   },
   ratios: ["1:2", "1:4", "1:8", "1:16", "1:32"],
   color_codes_by_ratio: {
-    "1:2": ["Port 1 - Blue", "Port 2 - Orange"],
-    "1:4": ["Port 1 - Blue", "Port 2 - Orange", "Port 3 - Green", "Port 4 - Brown"],
+    "1:2": ["Out 1 - Blue", "Out 2 - Orange"],
+    "1:4": ["Out 1 - Blue", "Out 2 - Orange", "Out 3 - Green", "Out 4 - Brown"],
     "1:8": [
-      "Port 1 - Blue", "Port 2 - Orange", "Port 3 - Green", "Port 4 - Brown",
-      "Port 5 - Slate", "Port 6 - White", "Port 7 - Red", "Port 8 - Black"
+      "Out 1 - Blue", "Out 2 - Orange", "Out 3 - Green", "Out 4 - Brown",
+      "Out 5 - Slate", "Out 6 - White", "Out 7 - Red", "Out 8 - Black"
     ],
     "1:16": [
-      "Port 1 - Blue", "Port 2 - Orange", "Port 3 - Green", "Port 4 - Brown",
-      "Port 5 - Slate", "Port 6 - White", "Port 7 - Red", "Port 8 - Black",
-      "Port 9 - Yellow", "Port 10 - Violet", "Port 11 - Rose", "Port 12 - Aqua",
-      "Port 13 - Blue", "Port 14 - Orange", "Port 15 - Green", "Port 16 - Brown"
+      "Out 1 - Blue", "Out 2 - Orange", "Out 3 - Green", "Out 4 - Brown",
+      "Out 5 - Slate", "Out 6 - White", "Out 7 - Red", "Out 8 - Black",
+      "Out 9 - Yellow", "Out 10 - Violet", "Out 11 - Rose", "Out 12 - Aqua",
+      "Out 13 - Blue", "Out 14 - Orange", "Out 15 - Green", "Out 16 - Brown"
     ],
     "1:32": [
-      "Port 1 - Blue", "Port 2 - Orange", "Port 3 - Green", "Port 4 - Brown",
-      "Port 5 - Slate", "Port 6 - White", "Port 7 - Red", "Port 8 - Black",
-      "Port 9 - Yellow", "Port 10 - Violet", "Port 11 - Rose", "Port 12 - Aqua"
+      "Out 1 - Blue", "Out 2 - Orange", "Out 3 - Green", "Out 4 - Brown",
+      "Out 5 - Slate", "Out 6 - White", "Out 7 - Red", "Out 8 - Black",
+      "Out 9 - Yellow", "Out 10 - Violet", "Out 11 - Rose", "Out 12 - Aqua"
     ]
   },
   color_codes: [

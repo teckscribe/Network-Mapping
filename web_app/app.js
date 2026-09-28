@@ -316,7 +316,7 @@ function updateSplitterColorOptions() {
 
   const defOpt = document.createElement('option');
   defOpt.value = '';
-  defOpt.innerText = `-- Select Lead Color (${ratio}) --`;
+  defOpt.innerText = `-- Select Out Color (${ratio}) --`;
   splitterColorSelect.appendChild(defOpt);
 
   colorList.forEach(col => {
