@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>GPON Field Survey</title>
+  <title>GPON Network Mapping - Sheet</title>
   
   <!-- PWA Manifest & Meta -->
   <link rel="manifest" href="manifest.json">
-  <meta name="theme-color" content="#0284c7">
+  <meta name="theme-color" content="#ffffff">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <link rel="apple-touch-icon" href="icon-192.png">
 
   <!-- Local Offline Vendor Styles -->
@@ -21,183 +21,213 @@
   <!-- Toast Notification -->
   <div id="toast" class="toast">Action Saved</div>
 
-  <!-- Header -->
-  <header>
-    <div class="brand">
-      <div class="brand-icon">📡</div>
-      <div>
-        <h1>GPON Field Survey</h1>
-        <div class="sub-title">Network & Enclosure Mapping</div>
-      </div>
-    </div>
-    <div class="header-badges">
-      <span class="badge" id="sync-status-badge" onclick="triggerManualSync()" style="cursor:pointer;" title="Tap to sync with server">
-        <span id="sync-dot" style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#94a3b8;"></span>
-        <span id="sync-text">Checking server...</span>
-      </span>
-      <span class="badge badge-count">Saved: <span id="records-count-badge">0</span></span>
-    </div>
-  </header>
-
-  <!-- User Profile & Center Bar -->
-  <div class="user-bar" id="user-bar">
-    <div class="user-info">
-      <span>👤 <strong id="logged-user-name">Field Surveyor</strong></span>
-      <span class="user-center-tag" id="logged-user-center">Thrissur North</span>
-    </div>
-    <button class="btn-logout" onclick="logout()">Logout</button>
-  </div>
-
-  <!-- 1. GPS Location Card -->
-  <div class="card">
-    <div class="card-title">
-      <span>📍 Field Coordinates</span>
-      <button class="map-toggle-btn" id="map-toggle-btn" onclick="toggleMap()">Adjust Pin on Map</button>
-    </div>
-    <div class="gps-box">
-      <button class="btn-gps" onclick="captureGPS()">
-        <span style="font-size: 1.2rem;">🎯</span> Tap to Capture GPS Location
-      </button>
-      <div class="gps-info">
-        <input type="text" id="manual-coords-input" placeholder="Latitude, Longitude (auto or manual)" style="background:transparent; border:none; color:#38bdf8; font-family:monospace; font-weight:bold; font-size:0.9rem; padding:2px;" onchange="onManualCoordsChange(this.value)">
-        <span class="gps-acc" id="gps-acc">Ready</span>
-      </div>
-      <div id="map-container"></div>
-    </div>
-  </div>
-
-  <!-- 2. Network Node Details (Preloaded Cascading Dropdowns) -->
-  <div class="card">
-    <div class="card-title">🌐 Node & OLT Configuration</div>
-    <div class="form-grid">
-      <div class="form-group">
-        <label for="center-select">Center</label>
-        <select id="center-select"></select>
-      </div>
-      <div class="form-group">
-        <label for="rtroom-select">RT Room</label>
-        <select id="rtroom-select"></select>
-      </div>
-      <div class="form-group col-full">
-        <label for="olt-select">OLT / Node Name</label>
-        <select id="olt-select"></select>
-      </div>
-      <div class="form-group">
-        <label for="tech-select">Technology</label>
-        <select id="tech-select"></select>
-      </div>
-      <div class="form-group">
-        <label for="port-select">Port Number</label>
-        <select id="port-select"></select>
-      </div>
-    </div>
-  </div>
-
-  <!-- 3. Pole & Enclosure Details -->
-  <div class="card">
-    <div class="card-title">⚡ KSEB Pole & Enclosure Entry</div>
-    
-    <div class="form-grid">
-      <div class="form-group col-full">
-        <label for="post-input">KSEB Post Number *</label>
-        <input type="text" id="post-input" placeholder="e.g. MAT 148/9 or KGD 45/1" autocomplete="off" autocapitalize="characters">
-      </div>
-
-      <div class="form-group col-full">
-        <label for="landmark-input">Landmark</label>
-        <input type="text" id="landmark-input" placeholder="e.g. NR RT ROOM / OPP BAKERY" autocomplete="off">
-      </div>
-
-      <div class="form-group">
-        <label for="enclosure-select">Enclosure Number</label>
-        <select id="enclosure-select"></select>
-      </div>
-
-      <div class="form-group">
-        <label for="splitter-ratio-select">Splitter Ratio</label>
-        <select id="splitter-ratio-select"></select>
-      </div>
-
-      <div class="form-group">
-        <label for="splitter-id-select">Splitter ID</label>
-        <select id="splitter-id-select"></select>
-      </div>
-
-      <div class="form-group">
-        <label>Connected Customers</label>
-        <div class="counter-box">
-          <button class="counter-btn" type="button" onclick="adjustCustomer(-1)">−</button>
-          <input type="number" id="cust-count-input" value="0" min="0" style="text-align: center; font-weight: bold;">
-          <button class="counter-btn" type="button" onclick="adjustCustomer(1)">+</button>
+  <!-- Google Sheets Top Bar -->
+  <div class="gs-header">
+    <div class="gs-brand">
+      <div class="gs-icon">田</div>
+      <div class="gs-title-area">
+        <div class="gs-doc-title">GPON OLT Mapping</div>
+        <div class="gs-doc-subtitle">
+          <span id="sync-dot" style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#0f9d58;"></span>
+          <span id="sync-text">Checking server...</span>
         </div>
       </div>
     </div>
-
-    <!-- Live Enclosure ID Auto Preview -->
-    <div class="id-preview-box">
-      <span class="id-label">Auto-Generated Enclosure ID:</span>
-      <span class="id-value" id="enclosure-id-preview">---</span>
-    </div>
-
-    <button class="btn-save" onclick="saveRecord()">
-      <span>💾</span> Save Pole & Next
-    </button>
-  </div>
-
-  <!-- Bottom Pinned Export Bar -->
-  <div class="bottom-bar">
-    <button class="btn-export btn-records" onclick="openRecordsModal()">
-      <span>📋</span> View (<span id="btn-count">0</span>)
-    </button>
-    <button class="btn-export btn-excel" onclick="exportToExcel()">
-      <span>📊</span> Export Excel
-    </button>
-    <button class="btn-export btn-csv" onclick="exportToCSV()">
-      <span>📄</span> Export CSV
-    </button>
-  </div>
-
-  <!-- Records Inspection Modal -->
-  <div id="records-modal" class="modal">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h2 style="font-size: 1.1rem; color: #38bdf8;">Saved Survey Points</h2>
-        <button class="close-btn" onclick="closeRecordsModal()">&times;</button>
-      </div>
-      <div id="records-list-container" class="records-list"></div>
-      <div style="display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap;">
-        <button class="btn-export btn-excel" style="flex: 1;" onclick="exportToExcel()">Download Local Excel (.xlsx)</button>
-        <button class="btn-export" style="background:#0284c7; color:white;" onclick="configureServerUrl()">⚙️ Server IP</button>
-        <button class="btn-export" style="background:#ef4444; color:white;" onclick="clearAllRecords()">Clear All</button>
-      </div>
+    <div class="gs-header-actions">
+      <button class="btn-gs-action" style="padding:6px 10px; font-size:0.75rem;" onclick="triggerManualSync()">
+        🔄 Sync
+      </button>
+      <button class="btn-gs-action" style="padding:6px 10px; font-size:0.75rem;" onclick="configureServerUrl()">
+        ⚙️ IP
+      </button>
     </div>
   </div>
 
-  <!-- Login Screen Modal / Overlay -->
+  <!-- User & Center Ribbon -->
+  <div class="gs-ribbon" id="user-bar">
+    <div class="gs-user-badge">
+      <span>👤 <span id="logged-user-name">Field Surveyor</span></span>
+      <span class="gs-center-tag" id="logged-user-center">Thrissur North</span>
+    </div>
+    <div>
+      <button class="btn-link" onclick="logout()">Sign Out</button>
+    </div>
+  </div>
+
+  <!-- Main Content Container -->
+  <div class="main-content">
+
+    <!-- Active Row Entry Form (Spreadsheet Input Row) -->
+    <div class="gs-card">
+      <div class="gs-card-header">
+        <span>📝 New Pole Entry</span>
+        <button class="btn-map-toggle" id="map-toggle-btn" onclick="toggleMap()">🗺️ Map Pin</button>
+      </div>
+
+      <div class="gs-card-body">
+        
+        <!-- Formula Bar fx (Live Enclosure ID Auto Calculation) -->
+        <div class="gs-formula-bar">
+          <span class="gs-fx">fx</span>
+          <span style="color:#5f6368; font-size:0.8rem;">Enclosure ID =</span>
+          <span class="gs-formula-val" id="enclosure-id-preview">---</span>
+        </div>
+
+        <!-- Spreadsheet Cells Grid -->
+        <div class="gs-grid">
+          <div class="gs-cell-group">
+            <label class="gs-cell-label" for="center-select">Center (Locked)</label>
+            <select id="center-select" class="gs-select"></select>
+          </div>
+
+          <div class="gs-cell-group">
+            <label class="gs-cell-label" for="rtroom-select">RT Room</label>
+            <select id="rtroom-select" class="gs-select"></select>
+          </div>
+
+          <div class="gs-cell-group col-full">
+            <label class="gs-cell-label" for="olt-select">OLT / Node Name (Filtered)</label>
+            <select id="olt-select" class="gs-select"></select>
+          </div>
+
+          <div class="gs-cell-group">
+            <label class="gs-cell-label" for="tech-select">Technology</label>
+            <select id="tech-select" class="gs-select"></select>
+          </div>
+
+          <div class="gs-cell-group">
+            <label class="gs-cell-label" for="port-select">Port Number</label>
+            <select id="port-select" class="gs-select"></select>
+          </div>
+
+          <div class="gs-cell-group col-full">
+            <label class="gs-cell-label" for="post-input">KSEB Post Number *</label>
+            <input type="text" id="post-input" class="gs-input" placeholder="e.g. MAT 148/9 or KGD 45/1" autocomplete="off" autocapitalize="characters">
+          </div>
+
+          <div class="gs-cell-group col-full">
+            <label class="gs-cell-label" for="landmark-input">Landmark</label>
+            <input type="text" id="landmark-input" class="gs-input" placeholder="e.g. NR RT ROOM / OPP BAKERY" autocomplete="off">
+          </div>
+
+          <!-- GPS Coordinates Cell -->
+          <div class="gs-cell-group col-full">
+            <label class="gs-cell-label">GPS Coordinates (Lat, Long)</label>
+            <div class="gs-gps-bar">
+              <input type="text" id="manual-coords-input" class="gs-input" placeholder="10.60665, 76.21449" onchange="onManualCoordsChange(this.value)">
+              <button class="btn-gps-sheet" type="button" onclick="captureGPS()">🎯 GPS</button>
+            </div>
+            <span id="gps-acc" style="font-size:0.75rem; color:#5f6368; margin-top:2px;">Tap GPS at pole</span>
+            <div id="map-container"></div>
+          </div>
+
+          <div class="gs-cell-group">
+            <label class="gs-cell-label" for="enclosure-select">Enclosure #</label>
+            <select id="enclosure-select" class="gs-select"></select>
+          </div>
+
+          <div class="gs-cell-group">
+            <label class="gs-cell-label" for="splitter-ratio-select">Splitter Ratio</label>
+            <select id="splitter-ratio-select" class="gs-select"></select>
+          </div>
+
+          <div class="gs-cell-group">
+            <label class="gs-cell-label" for="splitter-id-select">Splitter ID</label>
+            <select id="splitter-id-select" class="gs-select"></select>
+          </div>
+
+          <div class="gs-cell-group">
+            <label class="gs-cell-label">Connected Customers</label>
+            <div class="gs-counter">
+              <button class="gs-counter-btn" type="button" onclick="adjustCustomer(-1)">−</button>
+              <input type="number" id="cust-count-input" class="gs-input" value="0" min="0" style="text-align: center; font-weight: bold;">
+              <button class="gs-counter-btn" type="button" onclick="adjustCustomer(1)">+</button>
+            </div>
+          </div>
+        </div>
+
+        <button class="btn-add-row" onclick="saveRecord()">
+          <span>➕</span> Add Pole to Sheet
+        </button>
+      </div>
+    </div>
+
+    <!-- Live Google Sheet Table View -->
+    <div class="gs-card">
+      <div class="gs-card-header">
+        <span>📊 Surveyed Sheet (<span id="records-count-badge">0</span> Poles Recorded)</span>
+        <button class="btn-link" style="color:#d93025;" onclick="clearAllRecords()">Clear Sheet</button>
+      </div>
+      
+      <div class="gs-sheet-table-wrapper">
+        <table class="gs-sheet-table">
+          <thead>
+            <tr>
+              <th class="gs-row-num">#</th>
+              <th>Enclosure ID</th>
+              <th>KSEB Post #</th>
+              <th>Landmark</th>
+              <th>Center</th>
+              <th>RT Room</th>
+              <th>OLT & Port</th>
+              <th>Lat / Long</th>
+              <th>Ratio</th>
+              <th>Cust</th>
+              <th>Sync</th>
+              <th>Del</th>
+            </tr>
+          </thead>
+          <tbody id="sheet-table-body">
+            <tr>
+              <td colspan="12" style="text-align: center; padding: 24px; color: #80868b;">
+                No survey points entered yet. Fill the row above and tap "Add Pole to Sheet".
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Bottom Google Sheets Floating Action Bar -->
+  <div class="gs-bottom-bar">
+    <button class="btn-gs-action btn-gs-excel" onclick="exportToExcel()">
+      <span>📥</span> Download Excel (.xlsx)
+    </button>
+    <button class="btn-gs-action" onclick="exportToCSV()">
+      <span>📄</span> CSV
+    </button>
+    <button class="btn-gs-action btn-gs-sync" onclick="triggerManualSync()">
+      <span>☁️</span> Sync Server
+    </button>
+  </div>
+
+  <!-- Login Modal / Screen Overlay -->
   <div id="login-overlay" class="login-overlay" style="display: none;">
     <div class="login-card">
-      <div style="font-size: 2.5rem; text-align: center; margin-bottom: 8px;">📡</div>
-      <h2 style="text-align: center; margin: 0 0 6px; color: #fff; font-size: 1.3rem;">Field Surveyor Login</h2>
-      <p style="text-align: center; font-size: 0.8rem; color: #94a3b8; margin-bottom: 20px;">
-        Sign in to lock your assigned Center and OLTs.
+      <div style="font-size: 2rem; text-align: center; margin-bottom: 6px; color: #0f9d58;">田</div>
+      <h2 style="text-align: center; margin: 0 0 4px; font-size: 1.25rem; font-weight: 500;">Field Surveyor Sign In</h2>
+      <p style="text-align: center; font-size: 0.8rem; color: #5f6368; margin-bottom: 20px;">
+        Sign in to open your assigned center's spreadsheet.
       </p>
 
       <form onsubmit="handleLogin(event)">
-        <div class="form-group" style="margin-bottom: 12px;">
-          <label for="login-username">Username</label>
-          <input type="text" id="login-username" placeholder="e.g. thrissur_agent" required autocomplete="username">
+        <div class="gs-cell-group" style="margin-bottom: 12px;">
+          <label class="gs-cell-label" for="login-username">Username</label>
+          <input type="text" id="login-username" class="gs-input" placeholder="e.g. thrissur_agent" required autocomplete="username">
         </div>
-        <div class="form-group" style="margin-bottom: 16px;">
-          <label for="login-password">Password / PIN</label>
-          <input type="password" id="login-password" placeholder="Enter Password (default 1234)" required autocomplete="current-password">
+        <div class="gs-cell-group" style="margin-bottom: 16px;">
+          <label class="gs-cell-label" for="login-password">Password / PIN</label>
+          <input type="password" id="login-password" class="gs-input" placeholder="Default: 1234" required autocomplete="current-password">
         </div>
-        <button type="submit" class="btn-save" style="margin-top: 0; padding: 14px;">
+        <button type="submit" class="btn-add-row" style="margin-top: 0; padding: 12px;">
           Sign In
         </button>
       </form>
 
-      <div style="margin-top: 20px; border-top: 1px solid #334155; padding-top: 14px;">
-        <div style="font-size: 0.75rem; color: #94a3b8; margin-bottom: 8px; text-align: center;">Fast 1-Tap Login:</div>
+      <div style="margin-top: 18px; border-top: 1px solid #dadce0; padding-top: 14px;">
+        <div style="font-size: 0.75rem; color: #5f6368; margin-bottom: 8px; text-align: center;">Quick 1-Tap Login:</div>
         <div style="display: flex; gap: 8px;">
           <button type="button" class="btn-demo" onclick="quickLogin('thrissur_agent', '1234')">Thrissur Agent</button>
           <button type="button" class="btn-demo" onclick="quickLogin('tmm_agent', '1234')">Thathamangalam</button>
@@ -211,13 +241,5 @@
   <script src="vendor/xlsx.full.min.js"></script>
   <script src="preload_data.js"></script>
   <script src="app.js"></script>
-  <script>
-    // Keep badge count updated on bottom button
-    const origUpdate = updateRecordsBadge;
-    updateRecordsBadge = function() {
-      origUpdate();
-      document.getElementById('btn-count').innerText = records.length;
-    };
-  </script>
 </body>
 </html>

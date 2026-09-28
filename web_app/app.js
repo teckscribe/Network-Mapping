@@ -462,7 +462,49 @@ function saveRecord() {
 }
 
 function updateRecordsBadge() {
-  recordsBadge.innerText = records.length;
+  if (recordsBadge) recordsBadge.innerText = records.length;
+  renderSheetTable();
+}
+
+function renderSheetTable() {
+  const tbody = document.getElementById('sheet-table-body');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+
+  if (records.length === 0) {
+    tbody.innerHTML = `
+      <tr>
+        <td colspan="12" style="text-align: center; padding: 24px; color: #80868b;">
+          No survey points entered yet. Fill the row above and tap "Add Pole to Sheet".
+        </td>
+      </tr>
+    `;
+    return;
+  }
+
+  records.forEach((r, idx) => {
+    const isSynced = r.sync_status === 'synced';
+    const syncTag = isSynced 
+      ? '<span class="gs-tag-synced">✓ Synced</span>' 
+      : '<span class="gs-tag-pending">⏳ Pending</span>';
+
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="gs-row-num">${idx + 1}</td>
+      <td class="gs-id-cell">${r["Enclosure ID"] || '-'}</td>
+      <td><strong>${r["KSEB Post Number"] || '-'}</strong></td>
+      <td>${r["Land Mark"] || '-'}</td>
+      <td>${r["Center"] || '-'}</td>
+      <td>${r["RT Room"] || '-'}</td>
+      <td>${r["OLT/Node  Name"] || '-'} [${r["Port Number"] || '-'}]</td>
+      <td style="font-family: monospace; font-size: 0.75rem;">${r["Lat /Long"] || '-'}</td>
+      <td>${r["Splitter Ratio"] || '-'}</td>
+      <td style="text-align:center;">${r["No: Of Customer Connected"] || 0}</td>
+      <td>${syncTag}</td>
+      <td style="text-align:center;"><button class="btn-del-cell" onclick="deleteRecord(${idx})" title="Delete Row">🗑️</button></td>
+    `;
+    tbody.appendChild(tr);
+  });
 }
 
 // Export to Excel (.xlsx)

@@ -388,34 +388,35 @@ def admin_dashboard():
       <title>GPON Central Office Survey Dashboard</title>
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 20px; }
-        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #334155; padding-bottom: 15px; margin-bottom: 20px; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f1f5f9; color: #0f172a; margin: 0; padding: 20px; }
+        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #cbd5e1; padding-bottom: 15px; margin-bottom: 20px; }
         .btn { background: #0284c7; color: white; border: none; border-radius: 8px; padding: 9px 14px; font-weight: bold; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem; }
         .btn:hover { background: #0369a1; }
-        .btn-green { background: #107c41; }
-        .btn-green:hover { background: #0b5c30; }
-        .btn-danger { background: #ef4444; }
+        .btn-green { background: #059669; }
+        .btn-green:hover { background: #047857; }
+        .btn-danger { background: #dc2626; }
         .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
-        .stat-card { background: #1e293b; border: 1px solid #334155; border-radius: 10px; padding: 16px; }
-        .stat-num { font-size: 2rem; font-weight: bold; color: #38bdf8; }
-        .stat-label { font-size: 0.85rem; color: #94a3b8; }
+        .stat-card { background: #ffffff; border: 1px solid #cbd5e1; border-radius: 10px; padding: 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        .stat-num { font-size: 2rem; font-weight: bold; color: #0284c7; }
+        .stat-label { font-size: 0.85rem; color: #64748b; font-weight: 600; margin-top: 4px; }
         .tabs { display: flex; gap: 10px; margin-bottom: 16px; }
-        .tab-btn { background: #1e293b; color: #94a3b8; border: 1px solid #334155; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: 600; }
+        .tab-btn { background: #e2e8f0; color: #475569; border: 1px solid #cbd5e1; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: 700; }
         .tab-btn.active { background: #0284c7; color: white; border-color: #0284c7; }
-        table { width: 100%; border-collapse: collapse; background: #1e293b; border-radius: 10px; overflow: hidden; font-size: 0.85rem; }
-        th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #334155; }
-        th { background: #334155; color: #f8fafc; }
-        tr:hover { background: rgba(56, 189, 248, 0.05); }
-        .tag { font-size: 0.75rem; padding: 3px 6px; border-radius: 4px; background: #0284c7; }
+        table { width: 100%; border-collapse: collapse; background: #ffffff; border-radius: 10px; overflow: hidden; font-size: 0.85rem; border: 1px solid #cbd5e1; }
+        th, td { padding: 11px 12px; text-align: left; border-bottom: 1px solid #e2e8f0; color: #0f172a; }
+        th { background: #f8fafc; color: #334155; font-weight: 700; border-bottom: 2px solid #cbd5e1; }
+        tr:hover { background: #f1f5f9; }
+        .tag { font-size: 0.75rem; padding: 3px 8px; border-radius: 12px; background: #0284c7; color: white; font-weight: bold; }
         .form-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 15px; }
-        input, select { background: #0f172a; color: white; border: 1px solid #475569; padding: 8px 12px; border-radius: 6px; outline: none; }
+        input, select { background: #ffffff; color: #0f172a; border: 1.5px solid #cbd5e1; padding: 8px 12px; border-radius: 6px; outline: none; }
+        input:focus, select:focus { border-color: #0284c7; }
       </style>
     </head>
     <body>
       <div class="header">
         <div>
-          <h1 style="margin:0; font-size:1.5rem;">📡 GPON Central Survey Management</h1>
-          <div style="color:#94a3b8; font-size:0.9rem;">Ubuntu 24/7 Server Ledger & Field Agent Portal</div>
+          <h1 style="margin:0; font-size:1.5rem; color:#0f172a;">📡 GPON Central Survey Management</h1>
+          <div style="color:#64748b; font-size:0.9rem;">Ubuntu 24/7 Server Ledger & Field Agent Portal</div>
         </div>
         <div style="display:flex; gap:10px;">
           <a href="/api/export-excel" class="btn btn-green">📊 Download Master Excel</a>
@@ -444,8 +445,8 @@ def admin_dashboard():
       </div>
 
       <!-- Tab 1: Survey Feed -->
-      <div id="tab-feed" style="background:#1e293b; border-radius:10px; padding:16px; border:1px solid #334155;">
-        <h3 style="margin-top:0; color:#38bdf8;">Survey Submissions (Live Feed)</h3>
+      <div id="tab-feed" style="background:#ffffff; border-radius:10px; padding:16px; border:1px solid #cbd5e1; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+        <h3 style="margin-top:0; color:#0284c7;">Survey Submissions (Live Feed)</h3>
         <div style="overflow-x:auto;">
           <table>
             <thead>
@@ -469,8 +470,8 @@ def admin_dashboard():
       </div>
 
       <!-- Tab 2: User Management -->
-      <div id="tab-users" style="display:none; background:#1e293b; border-radius:10px; padding:16px; border:1px solid #334155;">
-        <h3 style="margin-top:0; color:#38bdf8;">Add / Manage Field Surveyors</h3>
+      <div id="tab-users" style="display:none; background:#ffffff; border-radius:10px; padding:16px; border:1px solid #cbd5e1; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+        <h3 style="margin-top:0; color:#0284c7;">Add / Manage Field Surveyors</h3>
         
         <form onsubmit="createUser(event)" class="form-row">
           <input type="text" id="new-user" placeholder="Username (e.g. anoop)" required>
