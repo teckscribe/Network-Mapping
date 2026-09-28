@@ -10,6 +10,7 @@ import socket
 import io
 import json
 import re
+import uuid
 import zipfile
 import shutil
 import openpyxl
@@ -311,104 +312,16 @@ def build_excel_workbook(rows, title="Survey_Data") -> openpyxl.Workbook:
 
     return wb
 
-def get_center_excel_path(region: str, center: str) -> str:
-    """Computes and ensures the directory for a Center's Excel spreadsheet path."""
-    det_reg = region or get_region_for_center(center) or "Thrissur"
-    safe_reg = sanitize_folder_name(det_reg, "Thrissur")
-    safe_cent = sanitize_folder_name(center, "General")
-    center_dir = os.path.join(DATA_DIR, safe_reg, safe_cent)
-    os.makedirs(center_dir, exist_ok=True)
-    return os.path.join(center_dir, f"{safe_cent}_Survey_Data.xlsx")
-
-def update_center_excel(region: str, center: str) -> Optional[str]:
-    """Generates / updates the Excel spreadsheet for a specific Center inside data/<Region>/<Center>/"""
-    if not center or not str(center).strip():
-        return None
-    safe_center = str(center).strip()
-    
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT * FROM survey_records 
-        WHERE LOWER(TRIM(center)) = LOWER(TRIM(?))
-        ORDER BY rowid ASC
-    """, (safe_center,))
-    rows = cur.fetchall()
-    
-    determined_region = region
-    if rows and rows[0]['region']:
-        determined_region = rows[0]['region']
-    elif not determined_region or determined_region.lower() in ["", "none", "null"]:
-        determined_region = get_region_for_center(safe_center) or "Thrissur"
-        
-    conn.close()
-    
-    file_path = get_center_excel_path(determined_region, safe_center)
-    wb = build_excel_workbook(rows, title=safe_center[:31])
-    wb.save(file_path)
-    return file_path
-
-def sync_all_center_excels(only_folders=False):
-    """
-    Ensures that for every (Region, Center) in custom_hierarchy.json AND in survey_records:
-    1. Folder data/<safe_region>/<safe_center>/ exists.
-    2. Excel spreadsheet data/<safe_region>/<safe_center>/<safe_center>_Survey_Data.xlsx is generated/updated.
-    """
-    os.makedirs(DATA_DIR, exist_ok=True)
-    
-    hierarchy = load_hierarchy_data()
-    center_to_region = {}
-    for center, rts in hierarchy.items():
-        if not isinstance(rts, dict):
-            continue
-        center_to_region[center.strip()] = get_region_for_center(center, hierarchy)
-    
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("SELECT DISTINCT region, center FROM survey_records")
-    db_pairs = cur.fetchall()
-    conn.close()
-    
-    for r_reg, r_cent in db_pairs:
-        if r_cent and str(r_cent).strip():
-            c_clean = str(r_cent).strip()
-            reg_clean = str(r_reg).strip() if (r_reg and str(r_reg).strip()) else center_to_region.get(c_clean, "Thrissur")
-            center_to_region[c_clean] = reg_clean
-
-    updated_files = []
-    for center, region in center_to_region.items():
-        try:
-            safe_reg = sanitize_folder_name(region, "Thrissur")
-            safe_cent = sanitize_folder_name(center, "General")
-            center_dir = os.path.join(DATA_DIR, safe_reg, safe_cent)
-            os.makedirs(center_dir, exist_ok=True)
-            
-            excel_path = os.path.join(center_dir, f"{safe_cent}_Survey_Data.xlsx")
-            if not only_folders or not os.path.exists(excel_path):
-                conn = sqlite3.connect(DB_PATH)
-                conn.row_factory = sqlite3.Row
-                cur = conn.cursor()
-                cur.execute("""
-                    SELECT * FROM survey_records 
-                    WHERE LOWER(TRIM(center)) = LOWER(TRIM(?))
-                    ORDER BY rowid ASC
-                """, (center,))
-                rows = cur.fetchall()
-                conn.close()
-                
-                wb = build_excel_workbook(rows, title=safe_cent[:31])
-                wb.save(excel_path)
-                updated_files.append(excel_path)
-        except Exception as e:
-            print(f"[Sync Warning] Could not sync Excel for center '{center}': {e}")
-            
-    return updated_files
+def workbook_to_bytes(wb: openpyxl.Workbook) -> bytes:
+    """Serializes an openpyxl Workbook into an in-memory byte buffer (zero disk writes)."""
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
 
 def ensure_directories_and_migrate():
-    """Initializes 'Node Master' and 'data' directories and migrates existing files."""
+    """Initializes 'Node Master' directory and cleans up static disk .xlsx files."""
     os.makedirs(NODE_MASTER_DIR, exist_ok=True)
-    os.makedirs(DATA_DIR, exist_ok=True)
 
     # 1. Migrate custom_hierarchy.json into Node Master/
     legacy_hier = os.path.join(BASE_DIR, "custom_hierarchy.json")
@@ -426,23 +339,24 @@ def ensure_directories_and_migrate():
                 except Exception:
                     pass
 
-    # 2. Archive any existing Node Master spreadsheets from BASE_DIR to Node Master/ if not present
-    for fname in os.listdir(BASE_DIR):
-        if (fname.endswith(".xlsx") or fname.endswith(".xls")) and any(k in fname.lower() for k in ["hierarchy", "olt", "node", "mapping"]):
-            target_path = os.path.join(NODE_MASTER_DIR, fname)
-            src_path = os.path.join(BASE_DIR, fname)
-            if not os.path.exists(target_path) and os.path.isfile(src_path) and "export" not in fname.lower() and "survey_data" not in fname.lower():
-                try:
-                    shutil.copy2(src_path, target_path)
-                    print(f"[Init] Preserved master spreadsheet {fname} -> {target_path}")
-                except Exception as e:
-                    print(f"[Init Warning] Could not copy {fname}: {e}")
+    # 2. Clean up static 'data/' folder from disk (all Excel generation is now streamed dynamically in-memory)
+    data_folder = os.path.join(BASE_DIR, "data")
+    if os.path.exists(data_folder):
+        try:
+            shutil.rmtree(data_folder, ignore_errors=True)
+            print("[Init] Cleaned up static data/ folder (all Excel files now stream in-memory).")
+        except Exception as e:
+            print(f"[Init Warning] Could not clean up data/ folder: {e}")
 
-    # 3. Synchronize / pre-create all Region and Center folders inside data/
-    try:
-        sync_all_center_excels(only_folders=False)
-    except Exception as e:
-        print(f"[Init Warning] Could not sync center excels: {e}")
+    # 3. Clean up temporary static .xlsx / .bak export files from BASE_DIR and Node Master
+    for dir_to_clean in [BASE_DIR, NODE_MASTER_DIR]:
+        if os.path.exists(dir_to_clean):
+            for fname in os.listdir(dir_to_clean):
+                if fname.endswith(".bak") or (fname.endswith(".xlsx") and any(k in fname.lower() for k in ["export", "template", "uploaded", "latest", "mapping", "olt"])):
+                    try:
+                        os.remove(os.path.join(dir_to_clean, fname))
+                    except Exception:
+                        pass
 
 init_db()
 ensure_directories_and_migrate()
@@ -667,7 +581,6 @@ def upload_hierarchy(payload: dict):
                     existing[center][rt][target_key] = olt_data
 
         save_hierarchy_data(existing)
-        sync_all_center_excels(only_folders=False)
         return {"status": "success", "message": "Server network hierarchy merged successfully."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -678,23 +591,6 @@ async def upload_hierarchy_excel(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Only Excel (.xlsx/.xls) or CSV files are supported.")
     
     contents = await file.read()
-    
-    # Save a physical archive copy into "Node Master" folder
-    os.makedirs(NODE_MASTER_DIR, exist_ok=True)
-    timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    clean_upload_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', file.filename)
-    saved_upload_path = os.path.join(NODE_MASTER_DIR, f"Node_Master_{timestamp_str}_{clean_upload_name}")
-    try:
-        with open(saved_upload_path, "wb") as f_out:
-            f_out.write(contents)
-        ext = os.path.splitext(file.filename)[1] or ".xlsx"
-        latest_path = os.path.join(NODE_MASTER_DIR, f"Node_Master_Latest{ext}")
-        with open(latest_path, "wb") as f_out:
-            f_out.write(contents)
-        print(f"[Node Master] Saved uploaded file to {saved_upload_path} and {latest_path}")
-    except Exception as e:
-        print(f"[Node Master Warning] Failed saving physical file: {e}")
-        
     new_hierarchy = {}
     total_olts = 0
     centers_found = set()
@@ -818,11 +714,10 @@ async def upload_hierarchy_excel(file: UploadFile = File(...)):
                     existing_hierarchy[c][rt][target_k] = olt_data
 
         save_hierarchy_data(existing_hierarchy)
-        sync_all_center_excels(only_folders=False)
 
         return {
             "status": "success",
-            "message": f"Imported {total_olts} unique Nodes across {len(centers_found)} Centers successfully! Saved to 'Node Master' folder.",
+            "message": f"Imported {total_olts} unique Nodes across {len(centers_found)} Centers successfully into Node Master!",
             "total_olts": total_olts,
             "centers": list(centers_found),
             "hierarchy": existing_hierarchy
@@ -884,7 +779,6 @@ def save_or_edit_olt(payload: OLTEditModel):
     }
 
     save_hierarchy_data(hierarchy)
-    update_center_excel(reg, c)
 
     return {"status": "success", "message": f"Node '{olt}' saved successfully!", "hierarchy": hierarchy}
 
@@ -981,12 +875,11 @@ def download_hierarchy_template():
         col_letter = col[0].column_letter
         ws.column_dimensions[col_letter].width = max(max_len + 4, 15)
 
-    template_path = os.path.join(BASE_DIR, "Network_Hierarchy_Template.xlsx")
-    wb.save(template_path)
-    return FileResponse(
-        template_path,
+    excel_bytes = workbook_to_bytes(wb)
+    return Response(
+        content=excel_bytes,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        filename="Network_Hierarchy_Template.xlsx"
+        headers={"Content-Disposition": 'attachment; filename="Network_Hierarchy_Template.xlsx"'}
     )
 
 # ====================
@@ -1061,20 +954,6 @@ def sync_records(payload: SyncPayload):
     total_count = cur.fetchone()[0]
     conn.close()
 
-    # Update per-center Excel spreadsheets in data/<Region>/<Center>/ in real time
-    affected_centers = set()
-    for r in payload.records:
-        if r.center and str(r.center).strip():
-            cent = str(r.center).strip()
-            reg = r.region or get_region_for_center(cent) or "Thrissur"
-            affected_centers.add((reg, cent))
-
-    for reg, cent in affected_centers:
-        try:
-            update_center_excel(reg, cent)
-        except Exception as err:
-            print(f"[Sync Warning] Failed updating Excel for center '{cent}': {err}")
-
     return {
         "status": "success",
         "synced_count": len(synced_uuids),
@@ -1102,48 +981,83 @@ def export_server_excel():
     conn.close()
 
     wb = build_excel_workbook(rows, title="Master_Data")
-    export_path = os.path.join(BASE_DIR, "GPON_Master_Server_Export.xlsx")
-    wb.save(export_path)
-
+    excel_bytes = workbook_to_bytes(wb)
     today = datetime.date.today().isoformat()
-    return FileResponse(
-        export_path,
+    return Response(
+        content=excel_bytes,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        filename=f"GPON_Master_Network_Mapping_{today}.xlsx"
+        headers={
+            "Content-Disposition": f'attachment; filename="GPON_Master_Network_Mapping_{today}.xlsx"'
+        }
     )
 
 @app.get("/api/export-center-excel")
 def export_center_excel(center: str, region: Optional[str] = None):
-    """Exports and downloads an individual Center's survey Excel file from data/<Region>/<Center>/"""
+    """Exports and downloads an individual Center's survey Excel file streamed dynamically in-memory."""
     if not center or not center.strip():
         raise HTTPException(status_code=400, detail="Center name is required.")
     
-    reg = region or get_region_for_center(center.strip()) or "Thrissur"
-    file_path = update_center_excel(reg, center.strip())
-    if not file_path or not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail=f"No survey data file found for center '{center}'.")
-    
-    safe_cent = sanitize_folder_name(center.strip(), "General")
+    cent_clean = center.strip()
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM survey_records WHERE LOWER(TRIM(center)) = LOWER(TRIM(?)) ORDER BY rowid ASC", (cent_clean,))
+    rows = cur.fetchall()
+    conn.close()
+
+    safe_cent = sanitize_folder_name(cent_clean, "General")
+    wb = build_excel_workbook(rows, title=safe_cent[:31])
+    excel_bytes = workbook_to_bytes(wb)
     today = datetime.date.today().isoformat()
-    return FileResponse(
-        file_path,
+    return Response(
+        content=excel_bytes,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        filename=f"{safe_cent}_Survey_Data_{today}.xlsx"
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_cent}_Survey_Data_{today}.xlsx"'
+        }
     )
 
 @app.get("/api/export-data-zip")
 def export_data_zip():
-    """Generates and downloads a ZIP archive of all region/center Excel files inside data/"""
-    sync_all_center_excels()
-    
+    """Generates and downloads a ZIP archive of all region/center Excel files dynamically in-memory."""
+    hierarchy = load_hierarchy_data()
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM survey_records ORDER BY rowid ASC")
+    all_rows = cur.fetchall()
+    conn.close()
+
+    # Group records by (region, center)
+    center_rows = {}
+    for r in all_rows:
+        c = (r["center"] or "").strip()
+        if not c:
+            continue
+        reg = (r["region"] or "").strip() or get_region_for_center(c, hierarchy) or "Thrissur"
+        key = (reg, c)
+        if key not in center_rows:
+            center_rows[key] = []
+        center_rows[key].append(r)
+
+    # Also include any centers present in hierarchy
+    for c, rts in hierarchy.items():
+        c_clean = c.strip()
+        reg = get_region_for_center(c_clean, hierarchy) or "Thrissur"
+        key = (reg, c_clean)
+        if key not in center_rows:
+            center_rows[key] = []
+
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-        for root, dirs, files in os.walk(DATA_DIR):
-            for file in files:
-                abs_path = os.path.join(root, file)
-                rel_path = os.path.relpath(abs_path, BASE_DIR)
-                zip_file.write(abs_path, rel_path)
-                
+        for (reg, cent), rows in sorted(center_rows.items()):
+            safe_reg = sanitize_folder_name(reg, "Thrissur")
+            safe_cent = sanitize_folder_name(cent, "General")
+            wb = build_excel_workbook(rows, title=safe_cent[:31])
+            excel_bytes = workbook_to_bytes(wb)
+            zip_path = f"data/{safe_reg}/{safe_cent}/{safe_cent}_Survey_Data.xlsx"
+            zip_file.writestr(zip_path, excel_bytes)
+
     zip_buffer.seek(0)
     today = datetime.date.today().isoformat()
     return Response(
@@ -1154,9 +1068,157 @@ def export_data_zip():
         }
     )
 
+@app.post("/api/upload-survey-excel")
+async def upload_survey_excel(file: UploadFile = File(...)):
+    """Imports survey records from an Excel (.xlsx/.xls) or CSV file directly into SQLite in-memory."""
+    if not (file.filename.lower().endswith(".xlsx") or file.filename.lower().endswith(".xls") or file.filename.lower().endswith(".csv")):
+        raise HTTPException(status_code=400, detail="Only Excel (.xlsx/.xls) or CSV files are supported.")
+
+    contents = await file.read()
+    sheet_list = []
+    if file.filename.lower().endswith(".csv"):
+        import csv
+        reader = csv.reader(io.StringIO(contents.decode("utf-8", errors="ignore")))
+        sheet_list.append(list(reader))
+    else:
+        wb = openpyxl.load_workbook(io.BytesIO(contents), data_only=True)
+        for sname in wb.sheetnames:
+            ws = wb[sname]
+            rows = list(ws.iter_rows(values_only=True))
+            if rows and len(rows) >= 2:
+                sheet_list.append(rows)
+
+    if not sheet_list:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty or missing data sheets.")
+
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    imported_count = 0
+    now_str = datetime.datetime.now().isoformat()
+
+    try:
+        for rows in sheet_list:
+            header_idx = -1
+            col_map = {}
+            for r_idx, row in enumerate(rows[:10]):
+                row_str = " ".join([str(c).lower() for c in row if c])
+                if any(k in row_str for k in ["enclosure", "post", "kseb", "olt", "node", "center", "landmark"]):
+                    header_idx = r_idx
+                    for c_idx, val in enumerate(row):
+                        if not val: continue
+                        clean_k = re.sub(r'[^a-z0-9]', '', str(val).lower())
+                        col_map[clean_k] = c_idx
+                    break
+
+            if header_idx == -1:
+                continue
+
+            def get_val(row_data, *candidates, default=""):
+                for cand in candidates:
+                    cand_clean = re.sub(r'[^a-z0-9]', '', cand.lower())
+                    if cand_clean in col_map:
+                        idx = col_map[cand_clean]
+                        if idx < len(row_data) and row_data[idx] is not None:
+                            val = str(row_data[idx]).strip()
+                            if val and val.lower() != cand.lower():
+                                return val
+                return default
+
+            for row in rows[header_idx + 1:]:
+                if not any(row):
+                    continue
+
+                region = get_val(row, "region", "district", default="Thrissur")
+                center = get_val(row, "center", "centre")
+                rt_room = get_val(row, "rtroom", "room", default="Main RT")
+                technology = get_val(row, "technology", "gponftthwdm", "tech", default="GPON")
+                olt_name = get_val(row, "oltnodename", "oltname", "nodename", "olt")
+                port_number = get_val(row, "portnumber", "port")
+                kseb_post = get_val(row, "ksebpostnumber", "ksebpost", "postnumber", "post")
+                landmark = get_val(row, "landmark", "location")
+                enclosure_no = get_val(row, "enclosurenumber", "enclosureno")
+                enclosure_id = get_val(row, "enclosureid", "fdbid", "boxid")
+                lat_long = get_val(row, "latlong", "coordinates", "gps", "latlng")
+                splitter_id = get_val(row, "splitterid")
+                splitter_ratio = get_val(row, "splitterratio", "ratio")
+                customers_raw = get_val(row, "customersconnected", "cust", "customers", default="0")
+                splitter_color = get_val(row, "splitteroutcolourcode", "splitterleadcolor", "colourcode", "color")
+                adl_id = get_val(row, "adlsubscriberid", "adlid", "adl")
+                acs_id = get_val(row, "acssubscriberid", "acsid", "acs")
+                survey_dt = get_val(row, "surveydatetime", "surveydate", "datetime", "date", default=now_str[:19].replace('T', ' '))
+                surveyor_name = get_val(row, "surveyorname", "surveyor", "agent")
+                surveyor_user = get_val(row, "surveyorusername", default="imported")
+                client_uuid = get_val(row, "clientuuid", "uuid")
+
+                if not (enclosure_id or kseb_post or olt_name or center):
+                    continue
+
+                try:
+                    cust_num = int(float(customers_raw)) if customers_raw else 0
+                except Exception:
+                    cust_num = 0
+
+                if not client_uuid:
+                    if enclosure_id and survey_dt:
+                        client_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{enclosure_id}_{survey_dt}"))
+                    else:
+                        client_uuid = str(uuid.uuid4())
+
+                cur.execute("""
+                INSERT INTO survey_records (
+                    client_uuid, region, center, rt_room, technology,
+                    olt_name, port_number, kseb_post_number, landmark,
+                    enclosure_number, enclosure_id, lat_long, splitter_id,
+                    splitter_ratio, customers_connected, splitter_lead_color,
+                    adl_subscriber_id, acs_subscriber_id, survey_date_time,
+                    device_id, surveyor_username, surveyor_name, created_at, synced_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(client_uuid) DO UPDATE SET
+                    region=excluded.region,
+                    center=excluded.center,
+                    rt_room=excluded.rt_room,
+                    technology=excluded.technology,
+                    olt_name=excluded.olt_name,
+                    port_number=excluded.port_number,
+                    kseb_post_number=excluded.kseb_post_number,
+                    landmark=excluded.landmark,
+                    enclosure_number=excluded.enclosure_number,
+                    enclosure_id=excluded.enclosure_id,
+                    lat_long=excluded.lat_long,
+                    splitter_id=excluded.splitter_id,
+                    splitter_ratio=excluded.splitter_ratio,
+                    customers_connected=excluded.customers_connected,
+                    splitter_lead_color=excluded.splitter_lead_color,
+                    adl_subscriber_id=excluded.adl_subscriber_id,
+                    acs_subscriber_id=excluded.acs_subscriber_id,
+                    survey_date_time=excluded.survey_date_time,
+                    surveyor_username=excluded.surveyor_username,
+                    surveyor_name=excluded.surveyor_name,
+                    synced_at=excluded.synced_at
+                """, (
+                    client_uuid, region or "Thrissur", center, rt_room, technology or "GPON",
+                    olt_name, port_number, kseb_post, landmark,
+                    enclosure_no, enclosure_id, lat_long, splitter_id,
+                    splitter_ratio, cust_num, splitter_color,
+                    adl_id, acs_id, survey_dt,
+                    "excel_import", surveyor_user, surveyor_name,
+                    now_str, now_str
+                ))
+                imported_count += 1
+
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {
+        "status": "success",
+        "message": f"Successfully imported {imported_count} survey records into SQLite database!",
+        "imported_count": imported_count
+    }
+
 @app.get("/api/data-folders-summary")
 def get_data_folders_summary():
-    """Returns structured summary of region folders, center folders, record counts, and Excel files."""
+    """Returns structured summary of region and center survey records with dynamic in-memory exports."""
     hierarchy = load_hierarchy_data()
     
     conn = sqlite3.connect(DB_PATH)
@@ -1198,14 +1260,12 @@ def get_data_folders_summary():
             safe_cent = sanitize_folder_name(cent_name, "General")
             center_rel_path = f"data/{safe_reg}/{safe_cent}"
             excel_name = f"{safe_cent}_Survey_Data.xlsx"
-            excel_abs_path = os.path.join(DATA_DIR, safe_reg, safe_cent, excel_name)
             
             center_list.append({
                 "center": cent_name,
                 "region": reg,
                 "folder": center_rel_path,
                 "excel_file": excel_name,
-                "excel_exists": os.path.exists(excel_abs_path),
                 "records_count": info["records_count"]
             })
             total_centers += 1
@@ -1213,8 +1273,7 @@ def get_data_folders_summary():
         
     return {
         "status": "success",
-        "data_dir": "data",
-        "node_master_dir": "Node Master",
+        "data_storage": "SQLite Database (In-Memory Excel Streaming)",
         "total_regions": len(result_regions),
         "total_centers": total_centers,
         "total_records": total_records,
@@ -1223,9 +1282,14 @@ def get_data_folders_summary():
 
 @app.post("/api/resync-data-folders")
 def resync_data_folders():
-    """Manual re-synchronization of all center spreadsheets from SQLite."""
-    updated = sync_all_center_excels(only_folders=False)
-    return {"status": "success", "message": f"Synchronized {len(updated)} center Excel spreadsheets.", "updated_files": len(updated)}
+    """Optimizes server storage and recounts SQLite records."""
+    ensure_directories_and_migrate()
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM survey_records")
+    cnt = cur.fetchone()[0]
+    conn.close()
+    return {"status": "success", "message": f"Storage optimized: 0 static Excel files on disk. {cnt} survey records active in SQLite.", "records_count": cnt}
 
 # Central Office Web Dashboard
 @app.get("/admin", response_class=HTMLResponse)
@@ -1267,6 +1331,8 @@ def admin_dashboard():
           <h1 style="margin:0; font-size:1.5rem; color:#0f172a;">📡 Network Mapping</h1>
         </div>
         <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+          <input type="file" id="top-survey-upload-input" accept=".xlsx, .xls, .csv" style="display:none;" onchange="uploadSurveyExcel(event)">
+          <button class="btn" style="background:#0f766e; color:white;" onclick="document.getElementById('top-survey-upload-input').click()">📤 Import Survey Excel</button>
           <a href="/api/export-excel" class="btn btn-green">📊 Download Master Excel</a>
           <a href="/api/export-data-zip" class="btn" style="background:#2563eb; color:white; text-decoration:none;">🗂️ Download All Centers (ZIP)</a>
           <button onclick="fetchData()" class="btn">🔄 Refresh</button>
@@ -1282,7 +1348,13 @@ def admin_dashboard():
 
       <!-- Tab 1: Survey Feed -->
       <div id="tab-feed" style="background:#ffffff; border-radius:10px; padding:16px; border:1px solid #cbd5e1; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
-        <h3 style="margin-top:0; color:#0284c7;">Survey Submissions (Live Feed)</h3>
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
+          <h3 style="margin:0; color:#0284c7;">Survey Submissions (Live Feed)</h3>
+          <div style="display:flex; gap:8px;">
+            <input type="file" id="tab1-survey-upload-input" accept=".xlsx, .xls, .csv" style="display:none;" onchange="uploadSurveyExcel(event)">
+            <button class="btn" style="background:#0f766e; color:white; font-size:0.8rem; padding:6px 12px;" onclick="document.getElementById('tab1-survey-upload-input').click()">📤 Import Survey Data (.xlsx)</button>
+          </div>
+        </div>
         <div style="overflow-x:auto;">
           <table>
             <thead>
@@ -1419,15 +1491,15 @@ def admin_dashboard():
       <div id="tab-folders" style="display:none; background:#ffffff; border-radius:10px; padding:16px; border:1px solid #cbd5e1; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
         <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px; margin-bottom:16px;">
           <div>
-            <h3 style="margin:0 0 6px 0; color:#0284c7;">📁 Field Survey Data Folders (data/ &lt;Region&gt;/ &lt;Center&gt;/)</h3>
+            <h3 style="margin:0 0 6px 0; color:#0284c7;">📁 Dynamic Region & Center Exports (In-Memory Streaming)</h3>
             <p style="margin:0; font-size:0.85rem; color:#64748b;">
-              Field survey data is stored by Region and Center in the server's <code>data/</code> folder.
-              Each center subfolder contains its live Excel spreadsheet (<code>&lt;Center&gt;_Survey_Data.xlsx</code>) updated in real time.
+              All survey records are stored securely in SQLite. Excel files are streamed dynamically on demand with zero disk waste on the server.
+              Download any Center's spreadsheet individually, or download all Centers in a single structured ZIP archive.
             </p>
           </div>
           <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
             <a href="/api/export-data-zip" class="btn" style="background:#2563eb; color:white; font-size:0.85rem; text-decoration:none;">🗂️ Download All Centers (ZIP)</a>
-            <button onclick="resyncFoldersAction()" class="btn" style="background:#0f766e; color:white; font-size:0.85rem;">🔄 Re-sync All Excels</button>
+            <button onclick="resyncFoldersAction()" class="btn" style="background:#0f766e; color:white; font-size:0.85rem;">🧹 Optimize Storage & Recount</button>
           </div>
         </div>
 
@@ -1438,7 +1510,7 @@ def admin_dashboard():
           </div>
           <div class="stat-card" style="padding:12px 16px;">
             <div class="stat-num" id="folder-stat-centers" style="font-size:1.5rem; color:#0284c7;">0</div>
-            <div class="stat-label">Total Center Folders</div>
+            <div class="stat-label">Total Center Exports</div>
           </div>
           <div class="stat-card" style="padding:12px 16px;">
             <div class="stat-num" id="folder-stat-records" style="font-size:1.5rem; color:#059669;">0</div>
@@ -1447,7 +1519,7 @@ def admin_dashboard():
         </div>
 
         <div id="folders-container">
-          <p style="text-align:center; padding:20px; color:#64748b;">Loading folder hierarchy...</p>
+          <p style="text-align:center; padding:20px; color:#64748b;">Loading dynamic export centers...</p>
         </div>
       </div>
 
@@ -1613,7 +1685,7 @@ def admin_dashboard():
                       <tr>
                         <th style="width:36px;">#</th>
                         <th>Center</th>
-                        <th>Server Folder Path</th>
+                        <th>Folder Path (in ZIP)</th>
                         <th>Excel Spreadsheet</th>
                         <th>Captured Records</th>
                         <th>Action</th>
@@ -1636,10 +1708,10 @@ def admin_dashboard():
           try {
             const res = await fetch('/api/resync-data-folders', { method: 'POST' });
             const data = await res.json();
-            alert(data.message || 'All center Excels synchronized successfully!');
+            alert(data.message || 'Storage optimized and counts refreshed!');
             fetchFoldersSummary();
           } catch(err) {
-            alert('Failed to resync: ' + err.message);
+            alert('Failed to optimize: ' + err.message);
           }
         }
 
@@ -2088,6 +2160,44 @@ def admin_dashboard():
             statusDiv.style.background = '#fee2e2';
             statusDiv.style.color = '#991b1b';
             statusDiv.innerText = `❌ Network Error: ${err.message}`;
+          } finally {
+            e.target.value = '';
+          }
+        }
+
+        async function uploadSurveyExcel(e) {
+          const file = e.target.files[0];
+          if (!file) return;
+
+          const confirmed = await showConfirmModal(
+            '📤 Confirm Survey Data Import',
+            `Import survey data records from "${file.name}" into the database? Records with matching IDs will be updated.`,
+            'Import Now',
+            '#0f766e'
+          );
+          if (!confirmed) {
+            e.target.value = '';
+            return;
+          }
+
+          const formData = new FormData();
+          formData.append('file', file);
+
+          try {
+            const res = await fetch('/api/upload-survey-excel', {
+              method: 'POST',
+              body: formData
+            });
+            const data = await res.json();
+            if (res.ok) {
+              alert('✅ ' + (data.message || 'Survey records imported successfully!'));
+              fetchData();
+              fetchFoldersSummary();
+            } else {
+              alert('❌ Import failed: ' + (data.detail || 'Error uploading survey file'));
+            }
+          } catch(err) {
+            alert('❌ Network error: ' + err.message);
           } finally {
             e.target.value = '';
           }
