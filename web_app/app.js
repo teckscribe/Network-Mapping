@@ -229,7 +229,34 @@ function getRegionForCenter(centerName) {
   return "Thrissur";
 }
 
-function initDropdowns() {
+function getRtRoomsForCenter(c) {
+  if (!DEFAULT_PRELOAD || !DEFAULT_PRELOAD.hierarchy) return [];
+  if (DEFAULT_PRELOAD.hierarchy[c]) return Object.keys(DEFAULT_PRELOAD.hierarchy[c]);
+  const cNorm = (c || '').trim().toLowerCase();
+  const foundKey = Object.keys(DEFAULT_PRELOAD.hierarchy).find(k => k.trim().toLowerCase() === cNorm);
+  return (foundKey && DEFAULT_PRELOAD.hierarchy[foundKey]) ? Object.keys(DEFAULT_PRELOAD.hierarchy[foundKey]) : [];
+}
+
+function getOltsForRtRoom(c, rt) {
+  if (!DEFAULT_PRELOAD || !DEFAULT_PRELOAD.hierarchy) return [];
+  if (DEFAULT_PRELOAD.hierarchy[c] && DEFAULT_PRELOAD.hierarchy[c][rt]) {
+    return Object.keys(DEFAULT_PRELOAD.hierarchy[c][rt]);
+  }
+  const cNorm = (c || '').trim().toLowerCase();
+  const cKey = Object.keys(DEFAULT_PRELOAD.hierarchy).find(k => k.trim().toLowerCase() === cNorm);
+  if (!cKey || !DEFAULT_PRELOAD.hierarchy[cKey]) return [];
+  const rtMap = DEFAULT_PRELOAD.hierarchy[cKey];
+  if (rtMap[rt]) return Object.keys(rtMap[rt]);
+  const rtNorm = (rt || '').trim().toLowerCase();
+  const rtKey = Object.keys(rtMap).find(k => k.trim().toLowerCase() === rtNorm);
+  return (rtKey && rtMap[rtKey]) ? Object.keys(rtMap[rtKey]) : [];
+}
+
+function initDropdowns(preserveSelection = false) {
+  const prevCenter = preserveSelection && centerSelect ? centerSelect.value : '';
+  const prevRt = preserveSelection && rtRoomSelect ? rtRoomSelect.value : '';
+  const prevOlt = preserveSelection && oltSelect ? oltSelect.value : '';
+
   // Center
   centerSelect.innerHTML = '';
   let centers = Object.keys(DEFAULT_PRELOAD.hierarchy);
@@ -237,10 +264,10 @@ function initDropdowns() {
   // Filter centers based on logged-in user assignment
   if (currentUser && currentUser.assigned_center && currentUser.assigned_center !== 'ALL') {
     const assigned = currentUser.assigned_center;
-    if (DEFAULT_PRELOAD.hierarchy[assigned]) {
-      centers = [assigned];
+    const match = centers.find(c => c.trim().toLowerCase() === assigned.trim().toLowerCase());
+    if (match) {
+      centers = [match];
     } else {
-      // If custom center, add it to hierarchy
       DEFAULT_PRELOAD.hierarchy[assigned] = {};
       centers = [assigned];
     }
@@ -255,6 +282,10 @@ function initDropdowns() {
     opt.innerText = c;
     centerSelect.appendChild(opt);
   });
+
+  if (prevCenter && centers.includes(prevCenter)) {
+    centerSelect.value = prevCenter;
+  }
 
   // Region (Defaulted against Center, locked / not editable)
   if (regionSelect) {
@@ -283,29 +314,30 @@ function initDropdowns() {
   }
 
   // Enclosures
-  enclosureSelect.innerHTML = '';
-  DEFAULT_PRELOAD.enclosures.forEach(e => {
-    const opt = document.createElement('option');
-    opt.value = e;
-    opt.innerText = e;
-    enclosureSelect.appendChild(opt);
-  });
+  if (enclosureSelect.options.length === 0) {
+    DEFAULT_PRELOAD.enclosures.forEach(e => {
+      const opt = document.createElement('option');
+      opt.value = e;
+      opt.innerText = e;
+      enclosureSelect.appendChild(opt);
+    });
+  }
 
   // Splitter Ratio
-  splitterRatioSelect.innerHTML = '';
-  DEFAULT_PRELOAD.ratios.forEach(r => {
-    const opt = document.createElement('option');
-    opt.value = r;
-    opt.innerText = r;
-    splitterRatioSelect.appendChild(opt);
-  });
-  // Default to 1:8 if available
-  if (DEFAULT_PRELOAD.ratios.includes("1:8")) {
-    splitterRatioSelect.value = "1:8";
+  if (splitterRatioSelect.options.length === 0) {
+    DEFAULT_PRELOAD.ratios.forEach(r => {
+      const opt = document.createElement('option');
+      opt.value = r;
+      opt.innerText = r;
+      splitterRatioSelect.appendChild(opt);
+    });
+    if (DEFAULT_PRELOAD.ratios.includes("1:8")) {
+      splitterRatioSelect.value = "1:8";
+    }
   }
 
   updateSplitterColorOptions();
-  onCenterChange();
+  onCenterChange(prevRt, prevOlt);
 }
 
 // Splitter Lead Colour Code dynamically based on Splitter Ratio
@@ -415,7 +447,7 @@ function updateAvailableSplitters() {
   }
 }
 
-function onCenterChange() {
+function onCenterChange(targetRt = null, targetOlt = null) {
   const c = centerSelect.value;
   if (regionSelect) {
     const reg = getRegionForCenter(c);
@@ -428,29 +460,33 @@ function onCenterChange() {
     regionSelect.disabled = true;
   }
   rtRoomSelect.innerHTML = '';
-  const rtRooms = DEFAULT_PRELOAD.hierarchy[c] ? Object.keys(DEFAULT_PRELOAD.hierarchy[c]) : [];
+  const rtRooms = getRtRoomsForCenter(c);
   rtRooms.forEach(rt => {
     const opt = document.createElement('option');
     opt.value = rt;
     opt.innerText = rt;
     rtRoomSelect.appendChild(opt);
   });
-  onRTRoomChange();
+  if (targetRt && rtRooms.includes(targetRt)) {
+    rtRoomSelect.value = targetRt;
+  }
+  onRTRoomChange(targetOlt);
 }
 
-function onRTRoomChange() {
+function onRTRoomChange(targetOlt = null) {
   const c = centerSelect.value;
   const rt = rtRoomSelect.value;
   oltSelect.innerHTML = '';
-  const olts = (DEFAULT_PRELOAD.hierarchy[c] && DEFAULT_PRELOAD.hierarchy[c][rt]) 
-    ? Object.keys(DEFAULT_PRELOAD.hierarchy[c][rt]) 
-    : [];
+  const olts = getOltsForRtRoom(c, rt);
   olts.forEach(o => {
     const opt = document.createElement('option');
     opt.value = o;
     opt.innerText = o;
     oltSelect.appendChild(opt);
   });
+  if (targetOlt && olts.includes(targetOlt)) {
+    oltSelect.value = targetOlt;
+  }
   onOLTChange();
 }
 
@@ -1128,13 +1164,17 @@ async function checkServerConnection() {
 
 async function fetchHierarchyFromServer() {
   try {
-    const res = await fetch(`${serverUrl}/api/hierarchy`);
+    const res = await fetch(`${serverUrl}/api/hierarchy?t=${Date.now()}`);
     if (res.ok) {
       const data = await res.json();
       if (data && data.hierarchy && typeof data.hierarchy === 'object' && Object.keys(data.hierarchy).length > 0) {
-        DEFAULT_PRELOAD.hierarchy = Object.assign({}, DEFAULT_PRELOAD.hierarchy, data.hierarchy);
-        localStorage.setItem('gpon_custom_hierarchy', JSON.stringify(DEFAULT_PRELOAD.hierarchy));
-        initDropdowns();
+        const newStr = JSON.stringify(data.hierarchy);
+        const oldStr = localStorage.getItem('gpon_custom_hierarchy');
+        if (newStr !== oldStr) {
+          DEFAULT_PRELOAD.hierarchy = data.hierarchy;
+          localStorage.setItem('gpon_custom_hierarchy', newStr);
+          initDropdowns(true);
+        }
       }
     }
   } catch (e) {}
@@ -1347,11 +1387,21 @@ document.addEventListener('DOMContentLoaded', () => {
   checkServerConnection();
   captureGPS(); // Automatically attempt GPS lock on app launch
   
-  // Periodic background sync attempt every 25 seconds
+  // Periodic background check for Node Master Data updates & record sync
   setInterval(() => {
     checkServerConnection();
     if (isServerReachable && records.some(r => r.sync_status !== 'synced')) {
       syncWithServer(true);
     }
-  }, 25000);
+  }, 10000); // Check every 10 seconds
+
+  // Live auto-refresh when surveyor returns to the app
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      checkServerConnection();
+    }
+  });
+  window.addEventListener('focus', () => {
+    checkServerConnection();
+  });
 });

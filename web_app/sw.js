@@ -1,4 +1,4 @@
-const CACHE_NAME = 'gpon-survey-v22';
+const CACHE_NAME = 'gpon-survey-v24';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
@@ -42,6 +42,12 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
+  // Always fetch live /api/ requests with zero caching
+  if (event.request.url.includes('/api/')) {
+    event.respondWith(fetch(event.request));
+    return;
+  }
+
   // Network-first for navigation (HTML page load) so code updates appear immediately
   if (event.request.mode === 'navigate') {
     event.respondWith(

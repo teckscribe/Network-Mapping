@@ -5267,7 +5267,7 @@ try {
   if (savedHierarchy) {
     const parsed = JSON.parse(savedHierarchy);
     if (parsed && typeof parsed === 'object') {
-      DEFAULT_PRELOAD.hierarchy = Object.assign(DEFAULT_PRELOAD.hierarchy, parsed);
+      DEFAULT_PRELOAD.hierarchy = parsed;
     }
   }
 } catch (e) {
