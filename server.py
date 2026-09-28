@@ -235,6 +235,20 @@ class SyncPayload(BaseModel):
     device_id: Optional[str] = "android_mobile"
     records: List[SurveyRecordModel]
 
+class OLTEditModel(BaseModel):
+    center: str
+    rt_room: str
+    olt_name: str
+    port_count: Optional[int] = 8
+    old_center: Optional[str] = None
+    old_rt_room: Optional[str] = None
+    old_olt_name: Optional[str] = None
+
+class OLTDeleteModel(BaseModel):
+    center: str
+    rt_room: str
+    olt_name: str
+
 # ====================
 # AUTHENTICATION API
 # ====================
@@ -433,27 +447,41 @@ async def upload_hierarchy_excel(file: UploadFile = File(...)):
                         olt = f"OLT ({ip_val})" if not ip_val.lower().startswith("olt") else ip_val
 
                 region = get_col(row, "region", "district", default="Thrissur")
-                olt_type = get_col(row, "olttype", "type", default="8P")
+                # Clean & normalize strings
+                center = str(center).strip()
+                rt_room = str(rt_room).strip()
+                olt = re.sub(r'\s+', ' ', str(olt).strip())
 
                 if center and olt and center.lower() != "center" and not olt.lower().startswith("olt/node"):
-                    centers_found.add(center)
-                    regions_found.add(region)
-                    total_olts += 1
-
                     if center not in new_hierarchy:
                         new_hierarchy[center] = {}
                     if rt_room not in new_hierarchy[center]:
                         new_hierarchy[center][rt_room] = {}
 
+                    # Strict Case-Insensitive Duplicate Check in RT Room
+                    existing_match = None
+                    for existing_k in new_hierarchy[center][rt_room].keys():
+                        if existing_k.strip().lower() == olt.lower():
+                            existing_match = existing_k
+                            break
+
                     port_count = 8
                     if "16" in str(olt_type): port_count = 16
                     elif "32" in str(olt_type): port_count = 32
-                    new_hierarchy[center][rt_room][olt] = [f"P{i+1}" for i in range(port_count)]
+
+                    if existing_match:
+                        # Already exists in this RT room - update ports, do not create duplicate!
+                        new_hierarchy[center][rt_room][existing_match] = [f"P{i+1}" for i in range(port_count)]
+                    else:
+                        centers_found.add(center)
+                        regions_found.add(region)
+                        total_olts += 1
+                        new_hierarchy[center][rt_room][olt] = [f"P{i+1}" for i in range(port_count)]
 
         if total_olts == 0:
             raise HTTPException(status_code=400, detail="No valid Center and OLT rows found in uploaded sheet.")
 
-        # Merge with existing custom hierarchy
+        # Merge with existing custom hierarchy without duplicates
         hierarchy_file = os.path.join(BASE_DIR, "custom_hierarchy.json")
         existing_hierarchy = {}
         if os.path.exists(hierarchy_file):
@@ -469,14 +497,20 @@ async def upload_hierarchy_excel(file: UploadFile = File(...)):
             for rt, olts in rts.items():
                 if rt not in existing_hierarchy[c]:
                     existing_hierarchy[c][rt] = {}
-                existing_hierarchy[c][rt].update(olts)
+                for olt_k, ports_v in olts.items():
+                    target_k = olt_k
+                    for exist_k in list(existing_hierarchy[c][rt].keys()):
+                        if exist_k.strip().lower() == olt_k.lower():
+                            target_k = exist_k
+                            break
+                    existing_hierarchy[c][rt][target_k] = ports_v
 
         with open(hierarchy_file, "w", encoding="utf-8") as f:
             json.dump(existing_hierarchy, f, indent=2)
 
         return {
             "status": "success",
-            "message": f"Imported {total_olts} OLTs across {len(centers_found)} Centers successfully!",
+            "message": f"Imported {total_olts} unique OLTs across {len(centers_found)} Centers successfully!",
             "total_olts": total_olts,
             "centers": list(centers_found),
             "hierarchy": existing_hierarchy
@@ -485,6 +519,102 @@ async def upload_hierarchy_excel(file: UploadFile = File(...)):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to parse Excel: {str(e)}")
+
+@app.post("/api/hierarchy/olt")
+def save_or_edit_olt(payload: OLTEditModel):
+    hierarchy_file = os.path.join(BASE_DIR, "custom_hierarchy.json")
+    hierarchy = {}
+    if os.path.exists(hierarchy_file):
+        try:
+            with open(hierarchy_file, "r", encoding="utf-8") as f:
+                hierarchy = json.load(f)
+        except Exception:
+            hierarchy = {}
+    
+    # If old keys provided, remove old location (for rename/move)
+    if payload.old_center and payload.old_rt_room and payload.old_olt_name:
+        try:
+            if payload.old_center in hierarchy and payload.old_rt_room in hierarchy[payload.old_center]:
+                hierarchy[payload.old_center][payload.old_rt_room].pop(payload.old_olt_name, None)
+                if not hierarchy[payload.old_center][payload.old_rt_room]:
+                    hierarchy[payload.old_center].pop(payload.old_rt_room, None)
+                if not hierarchy[payload.old_center]:
+                    hierarchy.pop(payload.old_center, None)
+        except Exception:
+            pass
+
+    c = payload.center.strip()
+    rt = payload.rt_room.strip()
+    olt = re.sub(r'\s+', ' ', payload.olt_name.strip())
+
+    if not c or not rt or not olt:
+        raise HTTPException(status_code=400, detail="Center, RT Room, and OLT Name are required.")
+
+    if c not in hierarchy:
+        hierarchy[c] = {}
+    if rt not in hierarchy[c]:
+        hierarchy[c][rt] = {}
+    
+    # Check if duplicate exists with different casing
+    for existing_k in list(hierarchy[c][rt].keys()):
+        if existing_k.lower() == olt.lower() and existing_k != olt:
+            del hierarchy[c][rt][existing_k]
+
+    port_cnt = payload.port_count or 8
+    ports = [f"P{i+1}" for i in range(port_cnt)]
+    hierarchy[c][rt][olt] = ports
+
+    with open(hierarchy_file, "w", encoding="utf-8") as f:
+        json.dump(hierarchy, f, indent=2)
+
+    return {"status": "success", "message": f"OLT '{olt}' saved successfully!", "hierarchy": hierarchy}
+
+@app.delete("/api/hierarchy/olt")
+def delete_olt(payload: OLTDeleteModel):
+    hierarchy_file = os.path.join(BASE_DIR, "custom_hierarchy.json")
+    if not os.path.exists(hierarchy_file):
+        raise HTTPException(status_code=404, detail="Hierarchy file not found.")
+    
+    try:
+        with open(hierarchy_file, "r", encoding="utf-8") as f:
+            hierarchy = json.load(f)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+    c = payload.center.strip()
+    rt = payload.rt_room.strip()
+    olt = payload.olt_name.strip()
+
+    if c in hierarchy and rt in hierarchy[c]:
+        deleted = False
+        for k in list(hierarchy[c][rt].keys()):
+            if k.lower() == olt.lower():
+                del hierarchy[c][rt][k]
+                deleted = True
+                break
+        
+        if not hierarchy[c][rt]:
+            del hierarchy[c][rt]
+        if not hierarchy[c]:
+            del hierarchy[c]
+
+        if deleted:
+            with open(hierarchy_file, "w", encoding="utf-8") as f:
+                json.dump(hierarchy, f, indent=2)
+            return {"status": "success", "message": f"Deleted OLT '{olt}' successfully."}
+    
+    raise HTTPException(status_code=404, detail="OLT not found in hierarchy.")
+
+@app.delete("/api/hierarchy/clear")
+def clear_hierarchy():
+    hierarchy_file = os.path.join(BASE_DIR, "custom_hierarchy.json")
+    if os.path.exists(hierarchy_file):
+        try:
+            with open(hierarchy_file, "w", encoding="utf-8") as f:
+                json.dump({}, f, indent=2)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+    return {"status": "success", "message": "All hierarchy data cleared."}
 
 @app.get("/api/download-hierarchy-template")
 def download_hierarchy_template():
@@ -853,6 +983,8 @@ def admin_dashboard():
             <a href="/api/download-hierarchy-template" class="btn" style="background:#0f766e;">📥 Download Template (.xlsx)</a>
             <input type="file" id="hierarchy-upload-input" accept=".xlsx, .xls, .csv" style="display:none;" onchange="uploadHierarchyExcel(event)">
             <button class="btn btn-green" onclick="document.getElementById('hierarchy-upload-input').click()">📂 Browse & Upload Excel File</button>
+            <button class="btn" style="background:#0284c7; color:white;" onclick="openAddOltModal()">➕ Add Single OLT</button>
+            <button class="btn btn-danger" onclick="clearAllHierarchy()">🗑️ Clear All Hierarchy</button>
           </div>
         </div>
 
@@ -887,12 +1019,49 @@ def admin_dashboard():
                 <th>RT Room</th>
                 <th>OLT / Node Name</th>
                 <th>Default Ports</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody id="hierarchy-table-body">
-              <tr><td colspan="5" style="text-align:center; padding:20px;">Loading network hierarchy...</td></tr>
+              <tr><td colspan="6" style="text-align:center; padding:20px;">Loading network hierarchy...</td></tr>
             </tbody>
           </table>
+        </div>
+      </div>
+
+      <!-- Add / Edit OLT Modal -->
+      <div id="olt-modal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); z-index:9999; justify-content:center; align-items:center; padding:16px;">
+        <div style="background:white; border-radius:10px; padding:24px; max-width:480px; width:100%; box-shadow:0 10px 25px rgba(0,0,0,0.2);">
+          <h3 id="olt-modal-title" style="margin-top:0; color:#0284c7;">Add / Edit OLT Node</h3>
+          <form onsubmit="saveOltModal(event)">
+            <input type="hidden" id="modal-old-center">
+            <input type="hidden" id="modal-old-rtroom">
+            <input type="hidden" id="modal-old-olt">
+            <div style="margin-bottom:12px;">
+              <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">Center</label>
+              <input type="text" id="modal-center" required style="width:100%; box-sizing:border-box;" placeholder="e.g. CHALAKKUDY or THRISSUR NORTH">
+            </div>
+            <div style="margin-bottom:12px;">
+              <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">RT Room</label>
+              <input type="text" id="modal-rtroom" required style="width:100%; box-sizing:border-box;" placeholder="e.g. Potta or Main RT">
+            </div>
+            <div style="margin-bottom:12px;">
+              <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">OLT / Node Name</label>
+              <input type="text" id="modal-olt" required style="width:100%; box-sizing:border-box;" placeholder="e.g. CKY/116/OLT 01/Potta-1">
+            </div>
+            <div style="margin-bottom:18px;">
+              <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">OLT Type / Ports</label>
+              <select id="modal-ports" style="width:100%; box-sizing:border-box;">
+                <option value="8">8 Ports (P1 - P8)</option>
+                <option value="16">16 Ports (P1 - P16)</option>
+                <option value="32">32 Ports (P1 - P32)</option>
+              </select>
+            </div>
+            <div style="display:flex; justify-content:flex-end; gap:8px;">
+              <button type="button" class="btn" style="background:#94a3b8; color:white;" onclick="closeOltModal()">Cancel</button>
+              <button type="submit" class="btn btn-green">💾 Save OLT</button>
+            </div>
+          </form>
         </div>
       </div>
 
@@ -985,19 +1154,22 @@ def admin_dashboard():
           try {
             const res = await fetch('/api/hierarchy');
             const data = await res.json();
+            const hier = (data && data.hierarchy) ? data.hierarchy : data;
             const tbody = document.getElementById('hierarchy-table-body');
             tbody.innerHTML = '';
 
-            let totalCenters = Object.keys(data).length;
+            let totalCenters = Object.keys(hier).length;
             let totalRTRooms = 0;
             let totalOLTs = 0;
             fullHierarchyRows = [];
 
-            Object.keys(data).sort().forEach(center => {
-              const rts = data[center];
+            Object.keys(hier).sort().forEach(center => {
+              const rts = hier[center];
+              if (!rts || typeof rts !== 'object') return;
               Object.keys(rts).sort().forEach(rtRoom => {
                 totalRTRooms++;
                 const olts = rts[rtRoom];
+                if (!olts || typeof olts !== 'object') return;
                 Object.keys(olts).sort().forEach(oltName => {
                   totalOLTs++;
                   const ports = olts[oltName] || [];
@@ -1027,7 +1199,7 @@ def admin_dashboard():
           const tbody = document.getElementById('hierarchy-table-body');
           tbody.innerHTML = '';
           if (rows.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:20px; color:#94a3b8;">No hierarchy records found. Upload an Excel file above.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:20px; color:#94a3b8;">No hierarchy records found. Upload an Excel file or click "+ Add Single OLT" above.</td></tr>';
             return;
           }
           rows.forEach((r, idx) => {
@@ -1038,9 +1210,105 @@ def admin_dashboard():
               <td>${r.rtRoom}</td>
               <td><strong style="color:#0284c7;">${r.oltName}</strong></td>
               <td><span class="tag" style="background:#059669;">${r.portsStr}</span></td>
+              <td style="white-space:nowrap;">
+                <button class="btn" style="padding:4px 8px; font-size:0.75rem; background:#0284c7; color:white; margin-right:4px;" onclick="openEditOltModal('${encodeURIComponent(r.center)}', '${encodeURIComponent(r.rtRoom)}', '${encodeURIComponent(r.oltName)}', ${r.portsCount})">✏️ Edit</button>
+                <button class="btn btn-danger" style="padding:4px 8px; font-size:0.75rem;" onclick="deleteOlt('${encodeURIComponent(r.center)}', '${encodeURIComponent(r.rtRoom)}', '${encodeURIComponent(r.oltName)}')">🗑️ Delete</button>
+              </td>
             `;
             tbody.appendChild(tr);
           });
+        }
+
+        function openAddOltModal() {
+          document.getElementById('olt-modal-title').innerText = '➕ Add New OLT Node';
+          document.getElementById('modal-old-center').value = '';
+          document.getElementById('modal-old-rtroom').value = '';
+          document.getElementById('modal-old-olt').value = '';
+          document.getElementById('modal-center').value = '';
+          document.getElementById('modal-rtroom').value = '';
+          document.getElementById('modal-olt').value = '';
+          document.getElementById('modal-ports').value = '8';
+          document.getElementById('olt-modal').style.display = 'flex';
+        }
+
+        function openEditOltModal(encC, encRt, encOlt, portsCount) {
+          const c = decodeURIComponent(encC);
+          const rt = decodeURIComponent(encRt);
+          const olt = decodeURIComponent(encOlt);
+          document.getElementById('olt-modal-title').innerText = '✏️ Edit OLT Node';
+          document.getElementById('modal-old-center').value = c;
+          document.getElementById('modal-old-rtroom').value = rt;
+          document.getElementById('modal-old-olt').value = olt;
+          document.getElementById('modal-center').value = c;
+          document.getElementById('modal-rtroom').value = rt;
+          document.getElementById('modal-olt').value = olt;
+          document.getElementById('modal-ports').value = (portsCount === 16 || portsCount === 32) ? String(portsCount) : '8';
+          document.getElementById('olt-modal').style.display = 'flex';
+        }
+
+        function closeOltModal() {
+          document.getElementById('olt-modal').style.display = 'none';
+        }
+
+        async function saveOltModal(e) {
+          e.preventDefault();
+          const payload = {
+            center: document.getElementById('modal-center').value.trim(),
+            rt_room: document.getElementById('modal-rtroom').value.trim(),
+            olt_name: document.getElementById('modal-olt').value.trim(),
+            port_count: parseInt(document.getElementById('modal-ports').value, 10) || 8,
+            old_center: document.getElementById('modal-old-center').value.trim() || null,
+            old_rt_room: document.getElementById('modal-old-rtroom').value.trim() || null,
+            old_olt_name: document.getElementById('modal-old-olt').value.trim() || null
+          };
+          try {
+            const res = await fetch('/api/hierarchy/olt', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (res.ok) {
+              closeOltModal();
+              fetchHierarchy();
+            } else {
+              alert('Error: ' + (data.detail || 'Could not save OLT'));
+            }
+          } catch(err) {
+            alert('Network error: ' + err.message);
+          }
+        }
+
+        async function deleteOlt(encC, encRt, encOlt) {
+          const c = decodeURIComponent(encC);
+          const rt = decodeURIComponent(encRt);
+          const olt = decodeURIComponent(encOlt);
+          if (!confirm(`Are you sure you want to delete OLT "${olt}" from ${c} (${rt})?`)) return;
+          try {
+            const res = await fetch('/api/hierarchy/olt', {
+              method: 'DELETE',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({ center: c, rt_room: rt, olt_name: olt })
+            });
+            const data = await res.json();
+            if (res.ok) {
+              fetchHierarchy();
+            } else {
+              alert('Error: ' + (data.detail || 'Could not delete OLT'));
+            }
+          } catch(err) {
+            alert('Network error: ' + err.message);
+          }
+        }
+
+        async function clearAllHierarchy() {
+          if (!confirm('⚠️ WARNING: This will clear all uploaded network hierarchy data! Are you sure?')) return;
+          try {
+            await fetch('/api/hierarchy/clear', { method: 'DELETE' });
+            fetchHierarchy();
+          } catch(err) {
+            alert('Error: ' + err.message);
+          }
         }
 
         function filterHierarchyTable() {
