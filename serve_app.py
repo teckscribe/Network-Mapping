@@ -49,10 +49,9 @@ def run():
 
     print()
     print("=" * 68)
-    print(" Default Field User Accounts:")
-    print("   1. Username: thrissur_agent  | PIN: 1234 | Center: Thrissur North")
-    print("   2. Username: tmm_agent       | PIN: 1234 | Center: Thathamangalm")
-    print("   3. Username: admin           | PIN: admin123 | Center: ALL")
+    print(" Administrator Login:")
+    print("   Username: admin | Password: admin123 | Scope: Central Super Admin")
+    print("   (Create surveyor and supervisor accounts from the /admin portal)")
     print("=" * 68)
     print(f"Server is running on port {PORT}. Press Ctrl+C to stop.")
 

@@ -50,6 +50,8 @@ def normalize_role(role: str) -> str:
         return "field_technician"
     return "field_technician"
 
+BANNED_SAMPLE_USERS = {"rcsm_thrissur", "acso_thrissur", "thrissur_agent", "tmm_agent"}
+
 def save_users_to_json(conn=None):
     """Persists current SQLite users to users_config.json so git pulls never wipe user credentials."""
     close_at_end = False
@@ -58,7 +60,7 @@ def save_users_to_json(conn=None):
         close_at_end = True
     try:
         cur = conn.cursor()
-        cur.execute("SELECT username, password, full_name, assigned_center, assigned_region, role, created_at, email FROM users")
+        cur.execute("SELECT username, password, full_name, assigned_center, assigned_region, role, created_at, email FROM users WHERE username NOT IN ('rcsm_thrissur', 'acso_thrissur', 'thrissur_agent', 'tmm_agent')")
         rows = cur.fetchall()
         users_list = []
         for r in rows:
@@ -92,7 +94,11 @@ def load_users_from_json(conn):
             return False
         cur = conn.cursor()
         now = datetime.datetime.now().isoformat()
+        loaded_count = 0
         for u in users_list:
+            uname = u.get("username", "").strip()
+            if not uname or uname in BANNED_SAMPLE_USERS:
+                continue
             cur.execute("""
             INSERT INTO users (username, password, full_name, email, assigned_center, assigned_region, role, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -104,7 +110,7 @@ def load_users_from_json(conn):
                 assigned_region=excluded.assigned_region,
                 role=excluded.role
             """, (
-                u["username"].strip(),
+                uname,
                 u["password"].strip(),
                 u["full_name"].strip(),
                 u.get("email", "").strip(),
@@ -113,8 +119,9 @@ def load_users_from_json(conn):
                 normalize_role(u.get("role", "field_technician")),
                 u.get("created_at", now)
             ))
+            loaded_count += 1
         conn.commit()
-        print(f"[Config] Restored and verified {len(users_list)} users from persistent {USERS_CONFIG_PATH}")
+        print(f"[Config] Restored and verified {loaded_count} users from persistent {USERS_CONFIG_PATH}")
         return True
     except Exception as e:
         print(f"[Config Warning] Could not restore users from JSON backup: {e}")
@@ -652,7 +659,8 @@ def export_users_config():
 async def import_users_config(file: UploadFile = File(...)):
     try:
         contents = await file.read()
-        users_list = json.loads(contents.decode('utf-8'))
+        raw_list = json.loads(contents.decode('utf-8'))
+        users_list = [u for u in raw_list if u.get("username", "").strip() not in BANNED_SAMPLE_USERS]
         with open(USERS_CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(users_list, f, indent=2)
         conn = sqlite3.connect(DB_PATH)

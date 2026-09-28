@@ -79,15 +79,13 @@ To view the Central Office Dashboard:
 
 ---
 
-## 👥 Default Field User Accounts
+## 👥 Default Administrator Account
 
-| Username | Password / PIN | Full Name | Assigned Center | Dropdown Filter |
-| :--- | :--- | :--- | :--- | :--- |
-| `thrissur_agent` | `1234` | Thrissur Survey Agent | **Thrissur North** | Only OLTs for Thrissur North |
-| `tmm_agent` | `1234` | Thathamangalam Agent | **Thathamangalm** | Only OLTs for Thathamangalam |
-| `admin` | `admin123` | Central Administrator | **ALL** | Supervisor mode (All Centers) |
+| Username | Password / PIN | Full Name | Scope / Role |
+| :--- | :--- | :--- | :--- |
+| `admin` | `admin123` | Central Administrator | Super Admin (Access to all Centers & Admin Console) |
 
-New field surveyor accounts and center assignments can be added anytime from the `/admin` portal.
+New field technicians, ACSOs, RCSMs, and Super Admins can be added and assigned to specific Centers and Regions from the `/admin` portal.
 
 ---
 

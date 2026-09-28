@@ -114,17 +114,16 @@ Whenever management or the GIS team needs the consolidated report:
 
 Field technicians can log in with their assigned username and PIN. The app automatically locks and filters their center:
 
-### Pre-Configured Default Accounts:
-| Username | Password / PIN | Full Name | Assigned Center | What They See in Dropdown |
+### Default Root Account:
+| Username | Password / PIN | Full Name | Role | Scope |
 | :--- | :--- | :--- | :--- | :--- |
-| **`thrissur_agent`** | `1234` | Thrissur Survey Agent | **Thrissur North** | Only OLTs for Thrissur North *(Mulamkunnathukavu)* |
-| **`tmm_agent`** | `1234` | Thathamangalam Agent | **Thathamangalm** | Only OLTs for Thathamangalam *(Kollengode)* |
-| **`admin`** | `admin123` | Central Administrator | **ALL** | All Centers & OLTs |
+| **`admin`** | `admin123` | Central Administrator | `super_admin` | Full Access to All Centers & Admin Console |
 
-### How to Create New Surveyors via AnyDesk:
+### How to Create New Users:
 1. Open `http://localhost:9001/admin` in the browser on your Ubuntu desktop.
-2. Click on the **"Field Users & Center Assignment"** tab.
-3. Enter the surveyor's username, PIN, full name, and select their assigned **Center**.
-4. Click **"➕ Add / Update User"**.
-5. When that surveyor logs in on their Android phone, the Center is automatically locked to their assigned area, and only their center's OLTs will be visible!
+2. Click on the **"Users & Access Control"** tab.
+3. Click the **"➕ Add User"** button to open the user creation pop-up.
+4. Fill in the Username, Password, Full Name, Email, Role (Super Admin, RCSM, ACSO, Field Technician), Region, and Center.
+5. Click **"Save User"**.
+6. When the user logs in, their permissions and center dropdowns are automatically applied according to their assigned role and center!
 
