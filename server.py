@@ -311,6 +311,15 @@ def build_excel_workbook(rows, title="Survey_Data") -> openpyxl.Workbook:
 
     return wb
 
+def get_center_excel_path(region: str, center: str) -> str:
+    """Computes and ensures the directory for a Center's Excel spreadsheet path."""
+    det_reg = region or get_region_for_center(center) or "Thrissur"
+    safe_reg = sanitize_folder_name(det_reg, "Thrissur")
+    safe_cent = sanitize_folder_name(center, "General")
+    center_dir = os.path.join(DATA_DIR, safe_reg, safe_cent)
+    os.makedirs(center_dir, exist_ok=True)
+    return os.path.join(center_dir, f"{safe_cent}_Survey_Data.xlsx")
+
 def update_center_excel(region: str, center: str) -> Optional[str]:
     """Generates / updates the Excel spreadsheet for a specific Center inside data/<Region>/<Center>/"""
     if not center or not str(center).strip():
@@ -335,13 +344,8 @@ def update_center_excel(region: str, center: str) -> Optional[str]:
         
     conn.close()
     
-    safe_reg = sanitize_folder_name(determined_region, "Thrissur")
-    safe_cent = sanitize_folder_name(safe_center, "General")
-    center_dir = os.path.join(DATA_DIR, safe_reg, safe_cent)
-    os.makedirs(center_dir, exist_ok=True)
-    
-    file_path = os.path.join(center_dir, f"{safe_cent}_Survey_Data.xlsx")
-    wb = build_excel_workbook(rows, title=safe_cent[:31])
+    file_path = get_center_excel_path(determined_region, safe_center)
+    wb = build_excel_workbook(rows, title=safe_center[:31])
     wb.save(file_path)
     return file_path
 
