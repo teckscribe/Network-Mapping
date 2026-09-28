@@ -312,7 +312,6 @@ const custCountInput = document.getElementById('cust-count-input');
 const splitterColorSelect = document.getElementById('splitter-color-select');
 const adlSubInput = document.getElementById('adl-sub-input');
 const acsSubInput = document.getElementById('acs-sub-input');
-const liveTimestampPreview = document.getElementById('live-timestamp-preview');
 
 function getFormattedDateTime(d = new Date()) {
   const pad = (n) => String(n).padStart(2, '0');
@@ -324,13 +323,6 @@ function getFormattedDateTime(d = new Date()) {
   const secs = pad(d.getSeconds());
   return `${year}-${month}-${day} ${hours}:${mins}:${secs}`;
 }
-
-function updateLiveClock() {
-  if (liveTimestampPreview) {
-    liveTimestampPreview.innerText = '⏱️ ' + getFormattedDateTime();
-  }
-}
-setInterval(updateLiveClock, 1000);
 
 const manualCoordsInput = document.getElementById('manual-coords-input');
 const gpsAccText = document.getElementById('gps-acc');
