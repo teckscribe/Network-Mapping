@@ -44,8 +44,8 @@ function updateUserBar() {
   const adminLink = document.getElementById('admin-nav-link');
   const rcsmBanner = document.getElementById('rcsm-banner');
   const submitBtn = document.querySelector('.btn-add-row');
-  const excelBtn = document.querySelector('.btn-gs-excel');
-  const csvBtn = document.querySelector('.gs-bottom-bar button:nth-child(2)');
+  const excelBtn = document.getElementById('btn-export-excel') || document.querySelector('.btn-gs-excel');
+  const csvBtn = document.getElementById('btn-export-csv') || document.querySelector('.gs-bottom-bar button:nth-child(2)');
 
   if (currentUser) {
     nameEl.innerText = currentUser.full_name || currentUser.username;
@@ -1358,6 +1358,7 @@ async function checkServerConnection() {
     if (res.ok) {
       isServerReachable = true;
       fetchHierarchyFromServer();
+      refreshCurrentUserProfile();
     } else {
       isServerReachable = false;
     }
@@ -1383,6 +1384,34 @@ async function fetchHierarchyFromServer() {
       }
     }
   } catch (e) {}
+}
+
+async function refreshCurrentUserProfile() {
+  if (!currentUser || !currentUser.username) return;
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
+    const res = await fetch(`${serverUrl}/api/user-profile?username=${encodeURIComponent(currentUser.username)}`, {
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.user) {
+        const oldRole = currentUser.role;
+        const oldCenters = currentUser.assigned_center;
+        currentUser = data.user;
+        localStorage.setItem('gpon_logged_in_user', JSON.stringify(currentUser));
+        updateUserBar();
+        if (oldRole !== currentUser.role || oldCenters !== currentUser.assigned_center) {
+          initDropdowns();
+          console.log(`[Auth] User profile auto-refreshed from server. Role: ${currentUser.role}`);
+        }
+      }
+    }
+  } catch (e) {
+    // Offline or server unreachable
+  }
 }
 
 async function syncHierarchyToServer(hierarchy) {
@@ -1584,6 +1613,7 @@ document.addEventListener('DOMContentLoaded', () => {
   } else {
     document.getElementById('login-overlay').style.display = 'none';
     updateUserBar();
+    refreshCurrentUserProfile();
   }
 
   initDropdowns();
@@ -1604,9 +1634,11 @@ document.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
       checkServerConnection();
+      refreshCurrentUserProfile();
     }
   });
   window.addEventListener('focus', () => {
     checkServerConnection();
+    refreshCurrentUserProfile();
   });
 });

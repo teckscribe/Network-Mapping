@@ -526,6 +526,40 @@ def login(req: LoginRequest):
         }
     }
 
+@app.get("/api/user-profile")
+def get_user_profile(username: str):
+    uname = (username or "").strip()
+    if not uname:
+        raise HTTPException(status_code=400, detail="Username is required")
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))", (uname,))
+    user = cur.fetchone()
+    conn.close()
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User {uname} not found")
+    raw_center = user["assigned_center"] or "ALL"
+    raw_region = user["assigned_region"] or "Thrissur"
+    centers_list = [c.strip() for c in raw_center.split(",") if c.strip()]
+    regions_list = [r.strip() for r in raw_region.split(",") if r.strip()]
+    user_role = normalize_role(user["role"])
+    user_email = (user["email"] or "").strip() if "email" in user.keys() and user["email"] else ""
+    return {
+        "status": "success",
+        "user": {
+            "username": user["username"],
+            "full_name": user["full_name"],
+            "email": user_email,
+            "assigned_center": raw_center,
+            "assigned_centers": centers_list,
+            "assigned_region": raw_region,
+            "assigned_regions": regions_list,
+            "role": user_role,
+            "role_label": VALID_ROLES.get(user_role, "Field Technician")
+        }
+    }
+
 @app.get("/api/users")
 def get_users():
     conn = sqlite3.connect(DB_PATH)
