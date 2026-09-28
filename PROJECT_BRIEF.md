@@ -318,6 +318,19 @@ navigator.geolocation.getCurrentPosition(
 );
 ```
 
+### 7.4 Real-Time Server Connectivity & Synchronization States
+The top-left header of the PWA displays an interactive status indicator directly reflecting live connectivity with the Ubuntu server (`/api/health`):
+
+| Status Indicator Text | Dot Color | System State & Meaning |
+| :--- | :--- | :--- |
+| `Checking server...` | Amber (`#f59e0b`) | Initial ping / handshake on startup or reconnection. |
+| `Server Connected (Synced ✓)` | Emerald Green (`#10b981`) | Server reachable and all local records are saved to SQLite. |
+| `Server Connected (N unsynced)`| Blue (`#0284c7`) | Server reachable; N newly surveyed records are queued to upload. |
+| `Syncing with Server...` | Sky Blue (`#38bdf8`) | Active background HTTP payload upload in progress. |
+| `Server Disconnected (Offline)` | Red (`#ef4444`) | Server unreachable; all records safely preserved on device. |
+
+* **Interactive Tap-to-Sync**: Field surveyors can tap the status text at any time to immediately test server reachability and trigger a manual sync (`triggerManualSync()`).
+
 ---
 
 # Chapter 8: Central Office Web Portal (`/admin`)

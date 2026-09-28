@@ -28,6 +28,7 @@ if (!serverUrl || (window.location.protocol.startsWith('http') && window.locatio
 
 let isSyncing = false;
 let isServerReachable = false;
+let serverConnectionChecked = false;
 
 // User Session & Authentication
 let currentUser = JSON.parse(localStorage.getItem('gpon_logged_in_user') || 'null');
@@ -1618,8 +1619,10 @@ async function checkServerConnection() {
     }
   } catch (err) {
     isServerReachable = false;
+  } finally {
+    serverConnectionChecked = true;
+    updateSyncUI();
   }
-  updateSyncUI();
 }
 
 async function fetchHierarchyFromServer() {
@@ -1686,32 +1689,42 @@ async function syncHierarchyToServer(hierarchy) {
 }
 
 function updateSyncUI() {
-  const badge = document.getElementById('sync-status-badge');
+  const badge = document.getElementById('sync-status-badge') || document.querySelector('.gs-doc-subtitle');
   const dot = document.getElementById('sync-dot');
   const text = document.getElementById('sync-text');
-  if (!badge) return;
+  if (!text) return;
 
   const unsyncedCount = records.filter(r => r.sync_status !== 'synced').length;
 
   if (isSyncing) {
-    dot.style.background = '#38bdf8';
-    text.innerText = 'Syncing...';
+    if (dot) dot.style.background = '#38bdf8';
+    text.innerText = 'Syncing with Server...';
+    if (badge) badge.title = 'Uploading survey records to Ubuntu server...';
+    return;
+  }
+
+  if (!serverConnectionChecked) {
+    if (dot) dot.style.background = '#f59e0b';
+    text.innerText = 'Checking server...';
+    if (badge) badge.title = 'Testing connection to Ubuntu server...';
     return;
   }
 
   if (!isServerReachable) {
-    dot.style.background = '#94a3b8';
-    text.innerText = unsyncedCount > 0 ? `Offline (${unsyncedCount} unsynced)` : 'Offline (Local Safe)';
-    badge.title = 'Offline mode. Data is stored safely on phone. Tap to retry server sync.';
+    if (dot) dot.style.background = '#ef4444';
+    text.innerText = unsyncedCount > 0 
+      ? `Server Disconnected (${unsyncedCount} unsynced)` 
+      : 'Server Disconnected';
+    if (badge) badge.title = 'Ubuntu server unreachable / offline. Data is saved safely on your device. Tap to test connection.';
   } else {
     if (unsyncedCount === 0) {
-      dot.style.background = '#10b981';
-      text.innerText = 'Synced ✓';
-      badge.title = 'All records are synced with Ubuntu server!';
+      if (dot) dot.style.background = '#10b981';
+      text.innerText = 'Server Connected (Synced ✓)';
+      if (badge) badge.title = 'Connected to Ubuntu server. All records synced! Tap to re-check.';
     } else {
-      dot.style.background = '#f59e0b';
-      text.innerText = `Sync (${unsyncedCount})`;
-      badge.title = `${unsyncedCount} records ready to sync. Tap to sync now.`;
+      if (dot) dot.style.background = '#0284c7';
+      text.innerText = `Server Connected (${unsyncedCount} unsynced)`;
+      if (badge) badge.title = `Connected to Ubuntu server. ${unsyncedCount} records ready to sync. Tap to sync now.`;
     }
   }
 }
@@ -1789,18 +1802,22 @@ async function syncWithServer(silent = false) {
       if (!silent) showToast(`Synced ${syncedIds.size} records with Ubuntu server!`);
     } else {
       isServerReachable = false;
+      serverConnectionChecked = true;
       if (!silent) showToast('Server connection failed. Data is safe locally.', false);
     }
   } catch (err) {
     isServerReachable = false;
+    serverConnectionChecked = true;
     if (!silent) showToast('Could not reach server. Data is stored safely on phone.', false);
   } finally {
     isSyncing = false;
+    serverConnectionChecked = true;
     updateSyncUI();
   }
 }
 
 function triggerManualSync() {
+  checkServerConnection();
   syncWithServer(false);
 }
 
@@ -1830,12 +1847,14 @@ if ('serviceWorker' in navigator) {
 
 // Auto-Sync Listeners
 window.addEventListener('online', () => {
-  showToast('Internet connected. Syncing with server...');
+  showToast('Internet connected. Checking server...');
+  checkServerConnection();
   syncWithServer(true);
 });
 
 window.addEventListener('offline', () => {
   isServerReachable = false;
+  serverConnectionChecked = true;
   updateSyncUI();
 });
 

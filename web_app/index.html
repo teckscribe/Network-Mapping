@@ -14,7 +14,7 @@
 
   <!-- Local Offline Vendor Styles -->
   <link rel="stylesheet" href="vendor/leaflet.css">
-  <link rel="stylesheet" href="style.css?v=31">
+  <link rel="stylesheet" href="style.css?v=32">
 </head>
 <body>
 
@@ -27,8 +27,8 @@
       <div class="gs-icon">田</div>
       <div class="gs-title-area">
         <div class="gs-doc-title">📡 Network Mapping</div>
-        <div class="gs-doc-subtitle">
-          <span id="sync-dot" style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#0f9d58;"></span>
+        <div class="gs-doc-subtitle" id="sync-status-badge" onclick="triggerManualSync()" title="Tap to test connection or sync now" style="cursor: pointer;">
+          <span id="sync-dot" style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#f59e0b; transition: background 0.3s ease;"></span>
           <span id="sync-text">Checking server...</span>
         </div>
       </div>
@@ -334,6 +334,6 @@
   <script src="vendor/leaflet.js"></script>
   <script src="vendor/xlsx.full.min.js"></script>
   <script src="preload_data.js"></script>
-  <script src="app.js?v=31"></script>
+  <script src="app.js?v=32"></script>
 </body>
 </html>
