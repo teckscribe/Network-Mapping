@@ -378,9 +378,49 @@ def get_hierarchy():
 def upload_hierarchy(payload: dict):
     hierarchy_file = os.path.join(BASE_DIR, "custom_hierarchy.json")
     try:
+        incoming = payload.get("hierarchy", payload)
+        
+        # Load existing hierarchy to merge (never blindly overwrite)
+        existing = {}
+        if os.path.exists(hierarchy_file):
+            try:
+                with open(hierarchy_file, "r", encoding="utf-8") as f:
+                    existing = json.load(f)
+            except Exception:
+                existing = {}
+
+        # Merge incoming into existing: only ADD new centers/rt/olts, don't clobber rich metadata
+        for center, rts in incoming.items():
+            if not isinstance(rts, dict):
+                continue
+            if center not in existing:
+                existing[center] = {}
+            for rt, olts in rts.items():
+                if not isinstance(olts, dict):
+                    continue
+                if rt not in existing[center]:
+                    existing[center][rt] = {}
+                for olt_name, olt_data in olts.items():
+                    # Check for case-insensitive duplicate
+                    matched_key = None
+                    for exist_k in list(existing[center][rt].keys()):
+                        if exist_k.strip().lower() == olt_name.strip().lower():
+                            matched_key = exist_k
+                            break
+                    target_key = matched_key if matched_key else olt_name
+
+                    # If incoming is a simple port array and we already have rich metadata, keep rich
+                    if isinstance(olt_data, list) and target_key in existing[center][rt]:
+                        existing_entry = existing[center][rt][target_key]
+                        if isinstance(existing_entry, dict) and "ports" in existing_entry:
+                            # Already have rich data — don't downgrade, just skip
+                            continue
+                    
+                    existing[center][rt][target_key] = olt_data
+
         with open(hierarchy_file, "w", encoding="utf-8") as f:
-            json.dump(payload.get("hierarchy", payload), f, indent=2)
-        return {"status": "success", "message": "Server network hierarchy updated successfully."}
+            json.dump(existing, f, indent=2)
+        return {"status": "success", "message": "Server network hierarchy merged successfully."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

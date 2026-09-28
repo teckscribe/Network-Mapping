@@ -1036,7 +1036,24 @@ async function fetchHierarchyFromServer() {
             DEFAULT_PRELOAD.hierarchy[c] = {};
             changed = true;
           }
-          Object.assign(DEFAULT_PRELOAD.hierarchy[c], data.hierarchy[c]);
+          // Deep merge: don't replace existing RT rooms, merge OLT entries
+          const serverCenter = data.hierarchy[c];
+          Object.keys(serverCenter).forEach(rt => {
+            if (!DEFAULT_PRELOAD.hierarchy[c][rt]) {
+              DEFAULT_PRELOAD.hierarchy[c][rt] = {};
+              changed = true;
+            }
+            Object.keys(serverCenter[rt]).forEach(olt => {
+              if (!DEFAULT_PRELOAD.hierarchy[c][rt][olt]) {
+                DEFAULT_PRELOAD.hierarchy[c][rt][olt] = serverCenter[rt][olt];
+                changed = true;
+              } else if (typeof serverCenter[rt][olt] === 'object' && !Array.isArray(serverCenter[rt][olt])) {
+                // Server has rich data, update local
+                DEFAULT_PRELOAD.hierarchy[c][rt][olt] = serverCenter[rt][olt];
+                changed = true;
+              }
+            });
+          });
         });
         if (changed) {
           localStorage.setItem('gpon_custom_hierarchy', JSON.stringify(DEFAULT_PRELOAD.hierarchy));
@@ -1049,11 +1066,16 @@ async function fetchHierarchyFromServer() {
 
 async function syncHierarchyToServer(hierarchy) {
   try {
-    await fetch(`${serverUrl}/api/upload-hierarchy`, {
+    const res = await fetch(`${serverUrl}/api/upload-hierarchy`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ hierarchy: hierarchy })
     });
+    if (res.ok) {
+      console.log('Hierarchy synced to server successfully');
+    } else {
+      console.warn('Hierarchy sync returned error:', res.status);
+    }
   } catch (e) {
     console.log('Server not reachable for hierarchy upload sync');
   }
