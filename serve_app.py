@@ -10,7 +10,7 @@ import sys
 import uvicorn
 from server import app, init_db
 
-PORT = 8000
+PORT = 9001
 
 def get_local_ip():
     try:

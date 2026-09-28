@@ -64,7 +64,7 @@ Simply double-click:
 ```bash
 Run_Mobile_App.bat
 ```
-This starts the server on port `8000`, displays your local Wi-Fi IP and a QR code, and opens the application in your browser. Point your Android phone camera at the screen to open the app on your mobile device.
+This starts the server on port `9001`, displays your local Wi-Fi IP and a QR code, and opens the application in your browser. Point your Android phone camera at the screen to open the app on your mobile device.
 
 ### 2. Deploying on 24/7 Ubuntu Desktop
 Transfer this repository to your Ubuntu PC and run:
@@ -72,10 +72,10 @@ Transfer this repository to your Ubuntu PC and run:
 chmod +x install_on_ubuntu.sh
 ./install_on_ubuntu.sh
 ```
-This automatically configures the Python virtual environment and enables the `gpon-server` systemd background service.
+This automatically configures the Python virtual environment and enables the `gpon-server` systemd background service on port `9001`.
 
 To view the Central Office Dashboard:
-👉 Open `http://<ubuntu-ip>:8000/admin`
+👉 Open `http://<ubuntu-ip>:9001/admin`
 
 ---
 

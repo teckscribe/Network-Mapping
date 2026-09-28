@@ -30,7 +30,7 @@ After=network.target
 Type=simple
 User=$CURRENT_USER
 WorkingDirectory=$APP_DIR
-ExecStart=$APP_DIR/venv/bin/uvicorn server:app --host 0.0.0.0 --port 8000
+ExecStart=$APP_DIR/venv/bin/uvicorn server:app --host 0.0.0.0 --port 9001
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -45,10 +45,10 @@ sudo systemctl daemon-reload
 sudo systemctl enable gpon-server
 sudo systemctl restart gpon-server
 
-# Allow port 8000 through Ubuntu firewall
+# Allow port 9001 through Ubuntu firewall
 if sudo ufw status | grep -q "active"; then
-    echo "Configuring UFW firewall to allow port 8000..."
-    sudo ufw allow 8000/tcp
+    echo "Configuring UFW firewall to allow port 9001..."
+    sudo ufw allow 9001/tcp
 fi
 
 # Detect Local IP Address
@@ -58,9 +58,9 @@ echo ""
 echo "=============================================================================="
 echo "  SUCCESS! GPON Survey Server is now running 24/7 on this Ubuntu Desktop!   "
 echo "=============================================================================="
-echo " Local Network URL : http://$LOCAL_IP:8000"
-echo " Central Dashboard : http://$LOCAL_IP:8000/admin"
-echo " Download Excel    : http://$LOCAL_IP:8000/api/export-excel"
+echo " Local Network URL : http://$LOCAL_IP:9001"
+echo " Central Dashboard : http://$LOCAL_IP:9001/admin"
+echo " Download Excel    : http://$LOCAL_IP:9001/api/export-excel"
 echo ""
 echo " Useful Commands:"
 echo "   - Check Status  : sudo systemctl status gpon-server"

@@ -22,11 +22,11 @@ This guide explains how to set up your **24/7 Ubuntu Desktop** as the central da
      │     - Idempotent upsert (no duplicates on network drops)
      │     - Systemd auto-restart on reboot/crash
      │
-     ├─ Central Office Dashboard (http://<ubuntu-ip>:8000/admin)
+     ├─ Central Office Dashboard (http://<ubuntu-ip>:9001/admin)
      │     - Live count of surveyed poles across Kerala
      │     - Live table & feed
      │
-     └─ Master Excel Export (http://<ubuntu-ip>:8000/api/export-excel)
+     └─ Master Excel Export (http://<ubuntu-ip>:9001/api/export-excel)
            - 1-click download of consolidated master Excel file
 ```
 
@@ -51,7 +51,7 @@ This automated script will:
    - Starts automatically on Ubuntu boot.
    - Runs silently in the background 24/7.
    - Automatically restarts if there is any power interruption or crash.
-4. Open port `8000` in the Ubuntu firewall.
+4. Open port `9001` in the Ubuntu firewall.
 
 ---
 
@@ -69,7 +69,7 @@ Cloudflare Tunnel creates an encrypted tunnel from your Ubuntu desktop to the in
    sudo dpkg -i cloudflared.deb
 
    # Start a free instant tunnel
-   cloudflared tunnel --url http://localhost:8000
+   cloudflared tunnel --url http://localhost:9001
    ```
 2. Cloudflare will give you an instant HTTPS link, for example:
    `https://random-words.trycloudflare.com`
@@ -104,8 +104,8 @@ Cloudflare Tunnel creates an encrypted tunnel from your Ubuntu desktop to the in
 
 Whenever management or the GIS team needs the consolidated report:
 1. Open any browser on the Ubuntu desktop or office network:
-   - **Dashboard**: `http://localhost:8000/admin`
-   - **Download Consolidated Excel**: `http://localhost:8000/api/export-excel`
+   - **Dashboard**: `http://localhost:9001/admin`
+   - **Download Consolidated Excel**: `http://localhost:9001/api/export-excel`
 2. The downloaded Excel file contains all poles surveyed by all field teams, formatted identically to `GPON OLT MAPPING TCR.xlsx`.
 
 ---
@@ -122,7 +122,7 @@ Field technicians can log in with their assigned username and PIN. The app autom
 | **`admin`** | `admin123` | Central Administrator | **ALL** | All Centers & OLTs |
 
 ### How to Create New Surveyors via AnyDesk:
-1. Open `http://localhost:8000/admin` in the browser on your Ubuntu desktop.
+1. Open `http://localhost:9001/admin` in the browser on your Ubuntu desktop.
 2. Click on the **"Field Users & Center Assignment"** tab.
 3. Enter the surveyor's username, PIN, full name, and select their assigned **Center**.
 4. Click **"➕ Add / Update User"**.

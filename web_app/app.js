@@ -20,7 +20,7 @@ if (!serverUrl) {
   // Default to current host if served via HTTP/S, or default port 8000
   serverUrl = (window.location.protocol.startsWith('http') && window.location.port !== '5500') 
     ? window.location.origin 
-    : 'http://localhost:8000';
+    : 'http://localhost:9001';
   localStorage.setItem('gpon_server_url', serverUrl);
 }
 
