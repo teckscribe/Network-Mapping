@@ -16,7 +16,11 @@ const DEFAULT_PRELOAD = {
   },
   enclosures: ["E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9", "E10", "E11", "E12", "E13", "E14", "E15", "E16"],
   splitters: ["S1", "S2", "S3", "S4"],
-  ratios: ["1:8", "1:4", "1:16", "1:32", "1:2"]
+  ratios: ["1:8", "1:4", "1:16", "1:32", "1:2"],
+  color_codes: [
+    "Blue", "Orange", "Green", "Brown", "Slate", "White",
+    "Red", "Black", "Yellow", "Violet", "Rose", "Aqua"
+  ]
 };
 
 // Helper to auto-calculate Enclosure ID from OLT, Port, and Enclosure

@@ -94,6 +94,11 @@ def process_swmaps_file(input_csv_path, output_xlsx_path=None, output_csv_path=N
         except (ValueError, TypeError):
             cust_connected = 0
 
+        splitter_lead_color = get_val(row, "splitterleadcolourcode", "splitterleadcolorcode", "leadcolor", "colourcode", "colorcode", default="")
+        adl_sub_id = get_val(row, "adlsubscriberid", "adlsubid", "adlid", default="")
+        acs_sub_id = get_val(row, "acssubscriberid", "acssubid", "acsid", default="")
+        date_time = get_val(row, "dateandtime", "datetime", "timestamp", "time", "date", default="")
+
         processed_rows.append({
             "Region": region,
             "Center": center,
@@ -108,7 +113,11 @@ def process_swmaps_file(input_csv_path, output_xlsx_path=None, output_csv_path=N
             "Lat /Long": lat_long_str,
             "Splitter ID": splitter_id,
             "Splitter Ratio": splitter_ratio,
-            "No: Of Customer Connected": cust_connected
+            "No: Of Customer Connected": cust_connected,
+            "Splitter Lead Colour Code": splitter_lead_color,
+            "ADL Subscriber ID": adl_sub_id,
+            "ACS Subscriber ID": acs_sub_id,
+            "Date & Time": date_time
         })
 
     df_out = pd.DataFrame(processed_rows)

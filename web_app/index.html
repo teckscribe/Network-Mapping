@@ -26,7 +26,7 @@
     <div class="gs-brand">
       <div class="gs-icon">田</div>
       <div class="gs-title-area">
-        <div class="gs-doc-title">GPON OLT Mapping</div>
+        <div class="gs-doc-title">📡 Network Mapping</div>
         <div class="gs-doc-subtitle">
           <span id="sync-dot" style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#0f9d58;"></span>
           <span id="sync-text">Checking server...</span>
@@ -144,6 +144,28 @@
               <button class="gs-counter-btn" type="button" onclick="adjustCustomer(1)">+</button>
             </div>
           </div>
+
+          <div class="gs-cell-group">
+            <label class="gs-cell-label" for="splitter-color-select">Splitter Lead Colour Code</label>
+            <select id="splitter-color-select" class="gs-select"></select>
+          </div>
+
+          <div class="gs-cell-group">
+            <label class="gs-cell-label" for="adl-sub-input">ADL Subscriber ID</label>
+            <input type="text" id="adl-sub-input" class="gs-input" placeholder="e.g. ADL10234" autocomplete="off">
+          </div>
+
+          <div class="gs-cell-group">
+            <label class="gs-cell-label" for="acs-sub-input">ACS Subscriber ID</label>
+            <input type="text" id="acs-sub-input" class="gs-input" placeholder="e.g. ACS56789" autocomplete="off">
+          </div>
+
+          <div class="gs-cell-group">
+            <label class="gs-cell-label">Date & Time (Auto-Captured)</label>
+            <div id="live-timestamp-preview" class="gs-input" style="background:#f8f9fa; color:#5f6368; font-family:monospace; display:flex; align-items:center; font-size:0.85rem;">
+              ⏱️ Auto-captured on save
+            </div>
+          </div>
         </div>
 
         <button class="btn-add-row" onclick="saveRecord()">
@@ -164,6 +186,7 @@
           <thead>
             <tr>
               <th class="gs-row-num">#</th>
+              <th>Date & Time</th>
               <th>Enclosure ID</th>
               <th>KSEB Post #</th>
               <th>Landmark</th>
@@ -173,13 +196,16 @@
               <th>Lat / Long</th>
               <th>Ratio</th>
               <th>Cust</th>
+              <th>Lead Color</th>
+              <th>ADL Sub ID</th>
+              <th>ACS Sub ID</th>
               <th>Sync</th>
               <th>Del</th>
             </tr>
           </thead>
           <tbody id="sheet-table-body">
             <tr>
-              <td colspan="12" style="text-align: center; padding: 24px; color: #80868b;">
+              <td colspan="16" style="text-align: center; padding: 24px; color: #80868b;">
                 No survey points entered yet. Fill the row above and tap "Add Pole to Sheet".
               </td>
             </tr>

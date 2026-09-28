@@ -126,6 +126,28 @@ const enclosureIdPreview = document.getElementById('enclosure-id-preview');
 const splitterIdSelect = document.getElementById('splitter-id-select');
 const splitterRatioSelect = document.getElementById('splitter-ratio-select');
 const custCountInput = document.getElementById('cust-count-input');
+const splitterColorSelect = document.getElementById('splitter-color-select');
+const adlSubInput = document.getElementById('adl-sub-input');
+const acsSubInput = document.getElementById('acs-sub-input');
+const liveTimestampPreview = document.getElementById('live-timestamp-preview');
+
+function getFormattedDateTime(d = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0');
+  const year = d.getFullYear();
+  const month = pad(d.getMonth() + 1);
+  const day = pad(d.getDate());
+  const hours = pad(d.getHours());
+  const mins = pad(d.getMinutes());
+  const secs = pad(d.getSeconds());
+  return `${year}-${month}-${day} ${hours}:${mins}:${secs}`;
+}
+
+function updateLiveClock() {
+  if (liveTimestampPreview) {
+    liveTimestampPreview.innerText = '⏱️ ' + getFormattedDateTime();
+  }
+}
+setInterval(updateLiveClock, 1000);
 
 const manualCoordsInput = document.getElementById('manual-coords-input');
 const gpsAccText = document.getElementById('gps-acc');
@@ -235,6 +257,22 @@ function initDropdowns() {
     opt.innerText = r;
     splitterRatioSelect.appendChild(opt);
   });
+
+  // Splitter Lead Colour Code
+  if (splitterColorSelect) {
+    splitterColorSelect.innerHTML = '';
+    const defOpt = document.createElement('option');
+    defOpt.value = '';
+    defOpt.innerText = '-- Select Color Code --';
+    splitterColorSelect.appendChild(defOpt);
+
+    (DEFAULT_PRELOAD.color_codes || []).forEach(col => {
+      const opt = document.createElement('option');
+      opt.value = col;
+      opt.innerText = col;
+      splitterColorSelect.appendChild(opt);
+    });
+  }
 
   onCenterChange();
 }
@@ -418,10 +456,23 @@ function saveRecord() {
     ? crypto.randomUUID() 
     : ('rec_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9));
 
+  const olt = oltSelect.value;
+  const port = portSelect.value;
+  const enc = enclosureSelect.value;
+  const eid = computeEnclosureId(olt, port, enc);
+  const now = new Date();
+  const formattedDateTime = getFormattedDateTime(now);
+  const isoTimestamp = now.toISOString();
+
+  const colorCode = splitterColorSelect ? splitterColorSelect.value : '';
+  const adlId = adlSubInput ? adlSubInput.value.trim() : '';
+  const acsId = acsSubInput ? acsSubInput.value.trim() : '';
+
   const entry = {
     client_uuid: clientUuid,
     sync_status: 'pending',
     id: Date.now(),
+    "Date & Time": formattedDateTime,
     Region: "Thrissur",
     Center: centerSelect.value,
     "RT Room": rtRoomSelect.value,
@@ -436,7 +487,17 @@ function saveRecord() {
     "Splitter ID": splitterIdSelect.value,
     "Splitter Ratio": splitterRatioSelect.value,
     "No: Of Customer Connected": parseInt(custCountInput.value) || 0,
-    timestamp: new Date().toISOString()
+    "Splitter Lead Colour Code": colorCode,
+    "ADL Subscriber ID": adlId,
+    "ACS Subscriber ID": acsId,
+    splitter_lead_color: colorCode,
+    adl_subscriber_id: adlId,
+    acs_subscriber_id: acsId,
+    survey_date_time: formattedDateTime,
+    timestamp: isoTimestamp,
+    created_at: isoTimestamp,
+    surveyor_username: currentUser ? currentUser.username : '',
+    surveyor_name: currentUser ? (currentUser.full_name || currentUser.username) : ''
   };
 
   records.push(entry);
@@ -451,10 +512,12 @@ function saveRecord() {
     enclosureSelect.value = DEFAULT_PRELOAD.enclosures[curIdx + 1];
   }
   
-  // Clear landmark and post number if moving to new post
+  // Clear pole-specific inputs
   postInput.value = '';
   landmarkInput.value = '';
   custCountInput.value = '0';
+  if (adlSubInput) adlSubInput.value = '';
+  if (acsSubInput) acsSubInput.value = '';
   updateEnclosureId();
 
   // Trigger silent background sync if server is reachable
@@ -474,7 +537,7 @@ function renderSheetTable() {
   if (records.length === 0) {
     tbody.innerHTML = `
       <tr>
-        <td colspan="12" style="text-align: center; padding: 24px; color: #80868b;">
+        <td colspan="16" style="text-align: center; padding: 24px; color: #80868b;">
           No survey points entered yet. Fill the row above and tap "Add Pole to Sheet".
         </td>
       </tr>
@@ -488,9 +551,15 @@ function renderSheetTable() {
       ? '<span class="gs-tag-synced">✓ Synced</span>' 
       : '<span class="gs-tag-pending">⏳ Pending</span>';
 
+    const timeDisplay = r["Date & Time"] || r.survey_date_time || (r.timestamp ? r.timestamp.slice(0, 19).replace('T', ' ') : '-');
+    const colorDisplay = r["Splitter Lead Colour Code"] || r.splitter_lead_color || '-';
+    const adlDisplay = r["ADL Subscriber ID"] || r.adl_subscriber_id || '-';
+    const acsDisplay = r["ACS Subscriber ID"] || r.acs_subscriber_id || '-';
+
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td class="gs-row-num">${idx + 1}</td>
+      <td style="font-family: monospace; font-size: 0.75rem; color:#5f6368;">${timeDisplay}</td>
       <td class="gs-id-cell">${r["Enclosure ID"] || '-'}</td>
       <td><strong>${r["KSEB Post Number"] || '-'}</strong></td>
       <td>${r["Land Mark"] || '-'}</td>
@@ -500,6 +569,9 @@ function renderSheetTable() {
       <td style="font-family: monospace; font-size: 0.75rem;">${r["Lat /Long"] || '-'}</td>
       <td>${r["Splitter Ratio"] || '-'}</td>
       <td style="text-align:center;">${r["No: Of Customer Connected"] || 0}</td>
+      <td><span style="background:#e8f0fe; color:#1a73e8; padding:2px 6px; border-radius:4px; font-size:0.75rem; font-weight:600;">${colorDisplay}</span></td>
+      <td style="font-family: monospace; font-size: 0.75rem;">${adlDisplay}</td>
+      <td style="font-family: monospace; font-size: 0.75rem;">${acsDisplay}</td>
       <td>${syncTag}</td>
       <td style="text-align:center;"><button class="btn-del-cell" onclick="deleteRecord(${idx})" title="Delete Row">🗑️</button></td>
     `;
@@ -518,7 +590,9 @@ function exportToExcel() {
   const headers = [
     'Region', 'Center', 'RT Room', 'GPON/FTTH/WDM', 'OLT/Node  Name', 
     'Port Number', 'KSEB Post Number', 'Land Mark', 'Enclosure Number', 
-    'Enclosure ID', 'Lat /Long', 'Splitter ID', 'Splitter Ratio', 'No: Of Customer Connected'
+    'Enclosure ID', 'Lat /Long', 'Splitter ID', 'Splitter Ratio', 
+    'No: Of Customer Connected', 'Splitter Lead Colour Code', 
+    'ADL Subscriber ID', 'ACS Subscriber ID', 'Date & Time'
   ];
 
   const rows = [
@@ -541,7 +615,11 @@ function exportToExcel() {
       r["Lat /Long"],
       r["Splitter ID"],
       r["Splitter Ratio"],
-      r["No: Of Customer Connected"]
+      r["No: Of Customer Connected"],
+      r["Splitter Lead Colour Code"] || r["splitter_lead_color"] || "",
+      r["ADL Subscriber ID"] || r["adl_subscriber_id"] || "",
+      r["ACS Subscriber ID"] || r["acs_subscriber_id"] || "",
+      r["Date & Time"] || r["survey_date_time"] || (r["timestamp"] ? r["timestamp"].slice(0, 19).replace('T', ' ') : "")
     ]);
   });
 
@@ -564,7 +642,9 @@ function exportToCSV() {
   const headers = [
     'Region', 'Center', 'RT Room', 'GPON/FTTH/WDM', 'OLT/Node  Name', 
     'Port Number', 'KSEB Post Number', 'Land Mark', 'Enclosure Number', 
-    'Enclosure ID', 'Lat /Long', 'Splitter ID', 'Splitter Ratio', 'No: Of Customer Connected'
+    'Enclosure ID', 'Lat /Long', 'Splitter ID', 'Splitter Ratio', 
+    'No: Of Customer Connected', 'Splitter Lead Colour Code', 
+    'ADL Subscriber ID', 'ACS Subscriber ID', 'Date & Time'
   ];
 
   let csvContent = headers.join(',') + '\n';
@@ -584,7 +664,11 @@ function exportToCSV() {
       `"${r['Lat /Long'] || ''}"`,
       `"${r['Splitter ID'] || ''}"`,
       `"${r['Splitter Ratio'] || ''}"`,
-      r['No: Of Customer Connected'] || 0
+      r['No: Of Customer Connected'] || 0,
+      `"${r['Splitter Lead Colour Code'] || r['splitter_lead_color'] || ''}"`,
+      `"${r['ADL Subscriber ID'] || r['adl_subscriber_id'] || ''}"`,
+      `"${r['ACS Subscriber ID'] || r['acs_subscriber_id'] || ''}"`,
+      `"${r['Date & Time'] || r['survey_date_time'] || (r['timestamp'] ? r['timestamp'].slice(0, 19).replace('T', ' ') : '')}"`
     ];
     csvContent += row.join(',') + '\n';
   });
@@ -742,10 +826,14 @@ async function syncWithServer(silent = false) {
       splitter_id: r['Splitter ID'],
       splitter_ratio: r['Splitter Ratio'],
       customers_connected: r['No: Of Customer Connected'] || 0,
+      splitter_lead_color: r['Splitter Lead Colour Code'] || r.splitter_lead_color || '',
+      adl_subscriber_id: r['ADL Subscriber ID'] || r.adl_subscriber_id || '',
+      acs_subscriber_id: r['ACS Subscriber ID'] || r.acs_subscriber_id || '',
+      survey_date_time: r['Date & Time'] || r.survey_date_time || r.timestamp || '',
       device_id: deviceId,
       surveyor_username: r.surveyor_username || (currentUser ? currentUser.username : ''),
       surveyor_name: r.surveyor_name || (currentUser ? currentUser.full_name : ''),
-      created_at: r.timestamp
+      created_at: r.timestamp || r.created_at || r['Date & Time'] || ''
     }));
 
     const controller = new AbortController();

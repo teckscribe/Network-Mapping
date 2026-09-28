@@ -44,6 +44,10 @@ def init_db():
         splitter_id TEXT,
         splitter_ratio TEXT,
         customers_connected INTEGER,
+        splitter_lead_color TEXT,
+        adl_subscriber_id TEXT,
+        acs_subscriber_id TEXT,
+        survey_date_time TEXT,
         device_id TEXT,
         surveyor_username TEXT,
         surveyor_name TEXT,
@@ -72,6 +76,14 @@ def init_db():
         cur.execute("ALTER TABLE survey_records ADD COLUMN surveyor_username TEXT")
     if "surveyor_name" not in cols:
         cur.execute("ALTER TABLE survey_records ADD COLUMN surveyor_name TEXT")
+    if "splitter_lead_color" not in cols:
+        cur.execute("ALTER TABLE survey_records ADD COLUMN splitter_lead_color TEXT")
+    if "adl_subscriber_id" not in cols:
+        cur.execute("ALTER TABLE survey_records ADD COLUMN adl_subscriber_id TEXT")
+    if "acs_subscriber_id" not in cols:
+        cur.execute("ALTER TABLE survey_records ADD COLUMN acs_subscriber_id TEXT")
+    if "survey_date_time" not in cols:
+        cur.execute("ALTER TABLE survey_records ADD COLUMN survey_date_time TEXT")
 
     # Seed Default Users if none exist
     cur.execute("SELECT COUNT(*) FROM users")
@@ -133,6 +145,10 @@ class SurveyRecordModel(BaseModel):
     splitter_id: Optional[str] = "S1"
     splitter_ratio: Optional[str] = "1:8"
     customers_connected: Optional[int] = 0
+    splitter_lead_color: Optional[str] = ""
+    adl_subscriber_id: Optional[str] = ""
+    acs_subscriber_id: Optional[str] = ""
+    survey_date_time: Optional[str] = None
     device_id: Optional[str] = "unknown_device"
     surveyor_username: Optional[str] = None
     surveyor_name: Optional[str] = None
@@ -240,9 +256,10 @@ def sync_records(payload: SyncPayload):
                 client_uuid, region, center, rt_room, technology,
                 olt_name, port_number, kseb_post_number, landmark,
                 enclosure_number, enclosure_id, lat_long, splitter_id,
-                splitter_ratio, customers_connected, device_id,
-                surveyor_username, surveyor_name, created_at, synced_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                splitter_ratio, customers_connected, splitter_lead_color,
+                adl_subscriber_id, acs_subscriber_id, survey_date_time,
+                device_id, surveyor_username, surveyor_name, created_at, synced_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(client_uuid) DO UPDATE SET
                 region=excluded.region,
                 center=excluded.center,
@@ -258,6 +275,10 @@ def sync_records(payload: SyncPayload):
                 splitter_id=excluded.splitter_id,
                 splitter_ratio=excluded.splitter_ratio,
                 customers_connected=excluded.customers_connected,
+                splitter_lead_color=excluded.splitter_lead_color,
+                adl_subscriber_id=excluded.adl_subscriber_id,
+                acs_subscriber_id=excluded.acs_subscriber_id,
+                survey_date_time=excluded.survey_date_time,
                 surveyor_username=excluded.surveyor_username,
                 surveyor_name=excluded.surveyor_name,
                 synced_at=excluded.synced_at
@@ -265,8 +286,10 @@ def sync_records(payload: SyncPayload):
                 r.client_uuid, r.region, r.center, r.rt_room, r.technology,
                 r.olt_name, r.port_number, r.kseb_post_number, r.landmark,
                 r.enclosure_number, r.enclosure_id, r.lat_long, r.splitter_id,
-                r.splitter_ratio, r.customers_connected, payload.device_id,
-                r.surveyor_username, r.surveyor_name,
+                r.splitter_ratio, r.customers_connected, r.splitter_lead_color,
+                r.adl_subscriber_id, r.acs_subscriber_id,
+                r.survey_date_time or (r.created_at[:19].replace('T', ' ') if r.created_at else now_str[:19].replace('T', ' ')),
+                payload.device_id, r.surveyor_username, r.surveyor_name,
                 r.created_at or now_str, now_str
             ))
             synced_uuids.append(r.client_uuid)
@@ -308,7 +331,8 @@ def export_server_excel():
         'Region', 'Center', 'RT Room', 'GPON/FTTH/WDM', ' OLT/Node  Name',
         'Port Number', 'KSEB Post Number', 'Land Mark', 'Enclosure Number',
         'Enclosure ID', 'Lat /Long', 'Splitter ID', 'Splitter Ratio',
-        'No: Of Customer Connected', 'Surveyor Name'
+        'No: Of Customer Connected', 'Splitter Lead Colour Code',
+        'ADL Subscriber ID', 'ACS Subscriber ID', 'Date & Time', 'Surveyor Name'
     ]
 
     wb = openpyxl.Workbook()
@@ -349,13 +373,17 @@ def export_server_excel():
             r['splitter_id'] or '',
             r['splitter_ratio'] or '',
             r['customers_connected'] or 0,
+            r['splitter_lead_color'] or '',
+            r['adl_subscriber_id'] or '',
+            r['acs_subscriber_id'] or '',
+            r['survey_date_time'] or (r['created_at'][:19].replace('T', ' ') if r['created_at'] else ''),
             r['surveyor_name'] or r['surveyor_username'] or ''
         ]
         for col_idx, val in enumerate(vals, 1):
             cell = ws.cell(row=row_idx, column=col_idx, value=val)
             cell.font = Font(name="Calibri", size=10)
             cell.border = thin_border
-            if col_idx in [1, 2, 3, 4, 6, 9, 12, 13, 14]:
+            if col_idx in [1, 2, 3, 4, 6, 9, 12, 13, 14, 15, 18]:
                 cell.alignment = center_align
             else:
                 cell.alignment = left_align
@@ -450,7 +478,7 @@ def admin_dashboard():
           <table>
             <thead>
               <tr>
-                <th>Time Synced</th>
+                <th>Date & Time</th>
                 <th>Enclosure ID</th>
                 <th>Center / RT Room</th>
                 <th>OLT & Port</th>
@@ -458,11 +486,14 @@ def admin_dashboard():
                 <th>Landmark</th>
                 <th>Lat / Long</th>
                 <th>Cust</th>
+                <th>Lead Color</th>
+                <th>ADL ID</th>
+                <th>ACS ID</th>
                 <th>Surveyor</th>
               </tr>
             </thead>
             <tbody id="table-body">
-              <tr><td colspan="9" style="text-align:center; padding:20px;">Loading data...</td></tr>
+              <tr><td colspan="12" style="text-align:center; padding:20px;">Loading data...</td></tr>
             </tbody>
           </table>
         </div>
@@ -528,7 +559,7 @@ def admin_dashboard():
             tbody.innerHTML = '';
 
             if (data.records.length === 0) {
-              tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; padding:20px; color:#94a3b8;">No records synced from field devices yet.</td></tr>';
+              tbody.innerHTML = '<tr><td colspan="12" style="text-align:center; padding:20px; color:#94a3b8;">No records synced from field devices yet.</td></tr>';
               return;
             }
 
@@ -536,16 +567,20 @@ def admin_dashboard():
               custTotal += (r.customers_connected || 0);
 
               const tr = document.createElement('tr');
+              const timeDisplay = (r.survey_date_time || r.created_at || r.synced_at || '').slice(0, 19).replace('T', ' ');
               tr.innerHTML = `
-                <td>${(r.synced_at || r.created_at || '').slice(0, 19).replace('T', ' ')}</td>
-                <td><strong style="color:#38bdf8;">${r.enclosure_id || '-'}</strong></td>
+                <td style="font-family:monospace; font-size:0.8rem; color:#64748b;">${timeDisplay || '-'}</td>
+                <td><strong style="color:#0284c7;">${r.enclosure_id || '-'}</strong></td>
                 <td>${r.center || '-'} / ${r.rt_room || '-'}</td>
                 <td>${r.olt_name || '-'} [${r.port_number || '-'}]</td>
                 <td><strong>${r.kseb_post_number || '-'}</strong></td>
                 <td>${r.landmark || '-'}</td>
                 <td><span style="font-family:monospace; font-size:0.8rem;">${r.lat_long || '-'}</span></td>
                 <td><span class="tag">${r.customers_connected || 0}</span></td>
-                <td><strong style="color:#38bdf8;">${r.surveyor_name || r.surveyor_username || 'App'}</strong></td>
+                <td><span style="background:#e0f2fe; color:#0369a1; padding:2px 6px; border-radius:4px; font-weight:600; font-size:0.75rem;">${r.splitter_lead_color || '-'}</span></td>
+                <td style="font-family:monospace; font-size:0.8rem;">${r.adl_subscriber_id || '-'}</td>
+                <td style="font-family:monospace; font-size:0.8rem;">${r.acs_subscriber_id || '-'}</td>
+                <td><strong style="color:#0284c7;">${r.surveyor_name || r.surveyor_username || 'App'}</strong></td>
               `;
               tbody.appendChild(tr);
             });
