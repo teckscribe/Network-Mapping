@@ -118,6 +118,7 @@ const centerSelect = document.getElementById('center-select');
 const rtRoomSelect = document.getElementById('rtroom-select');
 const techSelect = document.getElementById('tech-select');
 const oltSelect = document.getElementById('olt-select');
+const oltTypeSelect = document.getElementById('olt-type-select');
 const portSelect = document.getElementById('port-select');
 const postInput = document.getElementById('post-input');
 const landmarkInput = document.getElementById('landmark-input');
@@ -240,15 +241,6 @@ function initDropdowns() {
     enclosureSelect.appendChild(opt);
   });
 
-  // Splitter ID
-  splitterIdSelect.innerHTML = '';
-  DEFAULT_PRELOAD.splitters.forEach(s => {
-    const opt = document.createElement('option');
-    opt.value = s;
-    opt.innerText = s;
-    splitterIdSelect.appendChild(opt);
-  });
-
   // Splitter Ratio
   splitterRatioSelect.innerHTML = '';
   DEFAULT_PRELOAD.ratios.forEach(r => {
@@ -257,24 +249,120 @@ function initDropdowns() {
     opt.innerText = r;
     splitterRatioSelect.appendChild(opt);
   });
-
-  // Splitter Lead Colour Code
-  if (splitterColorSelect) {
-    splitterColorSelect.innerHTML = '';
-    const defOpt = document.createElement('option');
-    defOpt.value = '';
-    defOpt.innerText = '-- Select Color Code --';
-    splitterColorSelect.appendChild(defOpt);
-
-    (DEFAULT_PRELOAD.color_codes || []).forEach(col => {
-      const opt = document.createElement('option');
-      opt.value = col;
-      opt.innerText = col;
-      splitterColorSelect.appendChild(opt);
-    });
+  // Default to 1:8 if available
+  if (DEFAULT_PRELOAD.ratios.includes("1:8")) {
+    splitterRatioSelect.value = "1:8";
   }
 
+  updateSplitterColorOptions();
   onCenterChange();
+}
+
+// Splitter Lead Colour Code dynamically based on Splitter Ratio
+function updateSplitterColorOptions() {
+  if (!splitterColorSelect) return;
+  const ratio = splitterRatioSelect ? splitterRatioSelect.value : '1:8';
+  const colorList = (DEFAULT_PRELOAD.color_codes_by_ratio && DEFAULT_PRELOAD.color_codes_by_ratio[ratio])
+    ? DEFAULT_PRELOAD.color_codes_by_ratio[ratio]
+    : (DEFAULT_PRELOAD.color_codes || []);
+
+  const prev = splitterColorSelect.value;
+  splitterColorSelect.innerHTML = '';
+
+  const defOpt = document.createElement('option');
+  defOpt.value = '';
+  defOpt.innerText = `-- Select Lead Color (${ratio}) --`;
+  splitterColorSelect.appendChild(defOpt);
+
+  colorList.forEach(col => {
+    const opt = document.createElement('option');
+    opt.value = col;
+    opt.innerText = col;
+    splitterColorSelect.appendChild(opt);
+  });
+
+  if (prev && colorList.includes(prev)) {
+    splitterColorSelect.value = prev;
+  }
+}
+
+// Filter Enclosures to prevent selecting duplicate enclosure number multiple times in same OLT port
+function updateAvailableEnclosures() {
+  const olt = oltSelect ? oltSelect.value : '';
+  const port = portSelect ? portSelect.value : '';
+
+  // Enclosures already used for this exact OLT & Port
+  const usedEnc = new Set(
+    records
+      .filter(r => (r["OLT/Node  Name"] || r.olt_name) === olt && (r["Port Number"] || r.port_number) === port)
+      .map(r => r["Enclosure Number"] || r.enclosure_number)
+  );
+
+  const prevVal = enclosureSelect.value;
+  enclosureSelect.innerHTML = '';
+
+  let firstAvailable = null;
+  DEFAULT_PRELOAD.enclosures.forEach(e => {
+    const opt = document.createElement('option');
+    opt.value = e;
+    if (usedEnc.has(e)) {
+      opt.innerText = `${e} (Already Used in ${port})`;
+      opt.disabled = true;
+      opt.style.color = '#94a3b8';
+    } else {
+      opt.innerText = e;
+      if (!firstAvailable) firstAvailable = e;
+    }
+    enclosureSelect.appendChild(opt);
+  });
+
+  if (prevVal && !usedEnc.has(prevVal)) {
+    enclosureSelect.value = prevVal;
+  } else if (firstAvailable) {
+    enclosureSelect.value = firstAvailable;
+  }
+
+  updateEnclosureId();
+  updateAvailableSplitters();
+}
+
+// Filter Splitter IDs to prevent selecting duplicate splitter ID under same Enclosure ID
+function updateAvailableSplitters() {
+  const olt = oltSelect ? oltSelect.value : '';
+  const port = portSelect ? portSelect.value : '';
+  const enc = enclosureSelect ? enclosureSelect.value : '';
+  const eid = computeEnclosureId(olt, port, enc);
+
+  // Splitters already used under this exact Enclosure ID
+  const usedSplitters = new Set(
+    records
+      .filter(r => (r["Enclosure ID"] || r.enclosure_id) === eid)
+      .map(r => r["Splitter ID"] || r.splitter_id)
+  );
+
+  const prevVal = splitterIdSelect.value;
+  splitterIdSelect.innerHTML = '';
+
+  let firstAvailable = null;
+  DEFAULT_PRELOAD.splitters.forEach(s => {
+    const opt = document.createElement('option');
+    opt.value = s;
+    if (usedSplitters.has(s)) {
+      opt.innerText = `${s} (Already Used in ${eid})`;
+      opt.disabled = true;
+      opt.style.color = '#94a3b8';
+    } else {
+      opt.innerText = s;
+      if (!firstAvailable) firstAvailable = s;
+    }
+    splitterIdSelect.appendChild(opt);
+  });
+
+  if (prevVal && !usedSplitters.has(prevVal)) {
+    splitterIdSelect.value = prevVal;
+  } else if (firstAvailable) {
+    splitterIdSelect.value = firstAvailable;
+  }
 }
 
 function onCenterChange() {
@@ -307,28 +395,99 @@ function onRTRoomChange() {
 }
 
 function onOLTChange() {
-  const c = centerSelect.value;
-  const rt = rtRoomSelect.value;
-  const o = oltSelect.value;
+  onOLTTypeChange();
+}
+
+function onOLTTypeChange() {
+  const oType = oltTypeSelect ? oltTypeSelect.value : '8P';
   portSelect.innerHTML = '';
-  const ports = (DEFAULT_PRELOAD.hierarchy[c] && DEFAULT_PRELOAD.hierarchy[c][rt] && DEFAULT_PRELOAD.hierarchy[c][rt][o])
-    ? DEFAULT_PRELOAD.hierarchy[c][rt][o]
-    : ["P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8"];
+  const ports = (DEFAULT_PRELOAD.ports_by_type && DEFAULT_PRELOAD.ports_by_type[oType])
+    ? DEFAULT_PRELOAD.ports_by_type[oType]
+    : Array.from({length: 8}, (_, i) => `P${i + 1}`);
+
   ports.forEach(p => {
     const opt = document.createElement('option');
     opt.value = p;
     opt.innerText = p;
     portSelect.appendChild(opt);
   });
-  updateEnclosureId();
+
+  updateAvailableEnclosures();
+}
+
+// Excel Hierarchy Upload (Center, RT Room, Technology, OLT/Node Name)
+function handleExcelHierarchyUpload(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = function(evt) {
+    try {
+      const data = evt.target.result;
+      const workbook = XLSX.read(data, { type: 'binary' });
+
+      let importedOlts = 0;
+      const importedCenters = new Set();
+      const newHierarchy = {};
+
+      workbook.SheetNames.forEach(sheetName => {
+        const sheet = workbook.Sheets[sheetName];
+        const jsonRows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+
+        jsonRows.forEach(row => {
+          const normRow = {};
+          Object.keys(row).forEach(k => {
+            const cleanKey = k.toLowerCase().replace(/[^a-z0-9]/g, '');
+            normRow[cleanKey] = String(row[k]).trim();
+          });
+
+          const center = normRow['center'] || normRow['regioncenter'] || '';
+          const rtRoom = normRow['rtroom'] || normRow['room'] || 'Main RT';
+          const olt = normRow['oltnodename'] || normRow['oltname'] || normRow['olt'] || '';
+
+          if (center && olt && center !== 'Center' && olt !== 'OLT/Node  Name') {
+            importedCenters.add(center);
+            importedOlts++;
+
+            if (!newHierarchy[center]) newHierarchy[center] = {};
+            if (!newHierarchy[center][rtRoom]) newHierarchy[center][rtRoom] = {};
+            if (!newHierarchy[center][rtRoom][olt]) {
+              newHierarchy[center][rtRoom][olt] = DEFAULT_PRELOAD.ports_by_type["8P"];
+            }
+          }
+        });
+      });
+
+      if (importedOlts > 0) {
+        Object.keys(newHierarchy).forEach(c => {
+          if (!DEFAULT_PRELOAD.hierarchy[c]) DEFAULT_PRELOAD.hierarchy[c] = {};
+          Object.assign(DEFAULT_PRELOAD.hierarchy[c], newHierarchy[c]);
+        });
+
+        localStorage.setItem('gpon_custom_hierarchy', JSON.stringify(DEFAULT_PRELOAD.hierarchy));
+        initDropdowns();
+        showToast(`🎉 Imported ${importedOlts} OLTs across ${importedCenters.size} Centers from Excel!`);
+        syncHierarchyToServer(DEFAULT_PRELOAD.hierarchy);
+      } else {
+        showToast('No matching Center and OLT columns found in uploaded Excel.', false);
+      }
+    } catch (err) {
+      console.error(err);
+      showToast('Error reading Excel file: ' + err.message, false);
+    }
+  };
+  reader.readAsBinaryString(file);
+  e.target.value = '';
 }
 
 // Event Listeners for Cascading
 centerSelect.addEventListener('change', onCenterChange);
 rtRoomSelect.addEventListener('change', onRTRoomChange);
 oltSelect.addEventListener('change', onOLTChange);
-portSelect.addEventListener('change', updateEnclosureId);
-enclosureSelect.addEventListener('change', updateEnclosureId);
+if (oltTypeSelect) oltTypeSelect.addEventListener('change', onOLTTypeChange);
+portSelect.addEventListener('change', updateAvailableEnclosures);
+enclosureSelect.addEventListener('change', () => { updateEnclosureId(); updateAvailableSplitters(); });
+splitterRatioSelect.addEventListener('change', updateSplitterColorOptions);
 
 // GPS Geolocation
 function captureGPS() {
@@ -460,6 +619,30 @@ function saveRecord() {
   const port = portSelect.value;
   const enc = enclosureSelect.value;
   const eid = computeEnclosureId(olt, port, enc);
+
+  // Condition 1: Can not able to select the same enclosure number multiple time in a same OLT port
+  const isDuplicateEnclosure = records.some(r => 
+    (r["OLT/Node  Name"] || r.olt_name) === olt && 
+    (r["Port Number"] || r.port_number) === port && 
+    (r["Enclosure Number"] || r.enclosure_number) === enc
+  );
+  if (isDuplicateEnclosure) {
+    showToast(`❌ Enclosure ${enc} is already used in ${olt} (${port})! Duplicate enclosures on same OLT port not allowed.`, false);
+    enclosureSelect.focus();
+    return;
+  }
+
+  // Condition 2: Can not able to select the same splitter id number under same Enclosure ID
+  const isDuplicateSplitter = records.some(r => 
+    (r["Enclosure ID"] || r.enclosure_id) === eid && 
+    (r["Splitter ID"] || r.splitter_id) === splitterIdSelect.value
+  );
+  if (isDuplicateSplitter) {
+    showToast(`❌ Splitter ${splitterIdSelect.value} is already used under Enclosure ${eid}! Duplicate Splitter ID under same Enclosure not allowed.`, false);
+    splitterIdSelect.focus();
+    return;
+  }
+
   const now = new Date();
   const formattedDateTime = getFormattedDateTime(now);
   const isoTimestamp = now.toISOString();
@@ -506,18 +689,16 @@ function saveRecord() {
   updateSyncUI();
   showToast('Saved locally: ' + eid);
 
-  // Auto-increment Enclosure number for convenience (e.g. E1 -> E2)
-  const curIdx = DEFAULT_PRELOAD.enclosures.indexOf(enc);
-  if (curIdx >= 0 && curIdx < DEFAULT_PRELOAD.enclosures.length - 1) {
-    enclosureSelect.value = DEFAULT_PRELOAD.enclosures[curIdx + 1];
-  }
-  
   // Clear pole-specific inputs
   postInput.value = '';
   landmarkInput.value = '';
   custCountInput.value = '0';
   if (adlSubInput) adlSubInput.value = '';
   if (acsSubInput) acsSubInput.value = '';
+
+  // Refresh available enclosures & splitters for next entry
+  updateAvailableEnclosures();
+  updateAvailableSplitters();
   updateEnclosureId();
 
   // Trigger silent background sync if server is reachable
@@ -727,7 +908,8 @@ function deleteRecord(index) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
     updateRecordsBadge();
     updateSyncUI();
-    openRecordsModal();
+    updateAvailableEnclosures();
+    updateAvailableSplitters();
     showToast('Record deleted');
   }
 }
@@ -739,7 +921,8 @@ function clearAllRecords() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
     updateRecordsBadge();
     updateSyncUI();
-    openRecordsModal();
+    updateAvailableEnclosures();
+    updateAvailableSplitters();
     showToast('All records cleared');
   }
 }
@@ -756,6 +939,7 @@ async function checkServerConnection() {
     clearTimeout(timeoutId);
     if (res.ok) {
       isServerReachable = true;
+      fetchHierarchyFromServer();
     } else {
       isServerReachable = false;
     }
@@ -763,6 +947,41 @@ async function checkServerConnection() {
     isServerReachable = false;
   }
   updateSyncUI();
+}
+
+async function fetchHierarchyFromServer() {
+  try {
+    const res = await fetch(`${serverUrl}/api/hierarchy`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.hierarchy && typeof data.hierarchy === 'object') {
+        let changed = false;
+        Object.keys(data.hierarchy).forEach(c => {
+          if (!DEFAULT_PRELOAD.hierarchy[c]) {
+            DEFAULT_PRELOAD.hierarchy[c] = {};
+            changed = true;
+          }
+          Object.assign(DEFAULT_PRELOAD.hierarchy[c], data.hierarchy[c]);
+        });
+        if (changed) {
+          localStorage.setItem('gpon_custom_hierarchy', JSON.stringify(DEFAULT_PRELOAD.hierarchy));
+          initDropdowns();
+        }
+      }
+    }
+  } catch (e) {}
+}
+
+async function syncHierarchyToServer(hierarchy) {
+  try {
+    await fetch(`${serverUrl}/api/upload-hierarchy`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hierarchy: hierarchy })
+    });
+  } catch (e) {
+    console.log('Server not reachable for hierarchy upload sync');
+  }
 }
 
 function updateSyncUI() {

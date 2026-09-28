@@ -230,6 +230,45 @@ def delete_user(username: str):
     return {"status": "success", "message": f"User {username} deleted."}
 
 # ====================
+# NETWORK HIERARCHY API
+# ====================
+
+@app.get("/api/hierarchy")
+def get_hierarchy():
+    hierarchy_file = os.path.join(BASE_DIR, "custom_hierarchy.json")
+    if os.path.exists(hierarchy_file):
+        try:
+            import json
+            with open(hierarchy_file, "r", encoding="utf-8") as f:
+                return {"hierarchy": json.load(f)}
+        except Exception:
+            pass
+    default_hierarchy = {
+        "Thrissur North": {
+            "Mulamkunnathukavu": {
+                "THN156 OLT53 Mulamkunnathukavu": ["P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8"]
+            }
+        },
+        "Thathamangalm": {
+            "Kollengode": {
+                "TMM/25/OLT-08-KOLLEMGODE": ["P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8"]
+            }
+        }
+    }
+    return {"hierarchy": default_hierarchy}
+
+@app.post("/api/upload-hierarchy")
+def upload_hierarchy(payload: dict):
+    hierarchy_file = os.path.join(BASE_DIR, "custom_hierarchy.json")
+    try:
+        import json
+        with open(hierarchy_file, "w", encoding="utf-8") as f:
+            json.dump(payload.get("hierarchy", payload), f, indent=2)
+        return {"status": "success", "message": "Server network hierarchy updated successfully."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ====================
 # SYNC & DATA API
 # ====================
 

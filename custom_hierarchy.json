@@ -1,0 +1,40 @@
+{
+  "Thrissur North": {
+    "Mulamkunnathukavu": {
+      "THN156 OLT53 Mulamkunnathukavu": [
+        "P1",
+        "P2",
+        "P3",
+        "P4",
+        "P5",
+        "P6",
+        "P7",
+        "P8"
+      ],
+      "THN-156-OLT-53- Mulamkunnathukavu": [
+        "P1",
+        "P2",
+        "P3",
+        "P4",
+        "P5",
+        "P6",
+        "P7",
+        "P8"
+      ]
+    }
+  },
+  "Thathamangalm": {
+    "Kollengode": {
+      "TMM/25/OLT-08-KOLLEMGODE": [
+        "P1",
+        "P2",
+        "P3",
+        "P4",
+        "P5",
+        "P6",
+        "P7",
+        "P8"
+      ]
+    }
+  }
+}
