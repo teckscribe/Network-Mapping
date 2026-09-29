@@ -2776,7 +2776,7 @@ def admin_dashboard(response: Response):
               </div>
             </div>
 
-            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:18px;">
+            <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin-bottom:18px;">
               <div>
                 <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">Port Number</label>
                 <input type="text" id="edit-rec-port" style="width:100%;" placeholder="e.g. P1 or P1, P2">
@@ -2784,6 +2784,20 @@ def admin_dashboard(response: Response):
               <div>
                 <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">Enclosure #</label>
                 <input type="text" id="edit-rec-enc" style="width:100%;" placeholder="e.g. E15">
+              </div>
+              <div>
+                <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">Splitter ID</label>
+                <input type="text" id="edit-rec-splitter" list="splitter-id-options" style="width:100%;" placeholder="e.g. S1">
+                <datalist id="splitter-id-options">
+                  <option value="S1">
+                  <option value="S2">
+                  <option value="S3">
+                  <option value="S4">
+                  <option value="S5">
+                  <option value="S6">
+                  <option value="S7">
+                  <option value="S8">
+                </datalist>
               </div>
             </div>
 
@@ -3425,6 +3439,7 @@ def admin_dashboard(response: Response):
           if (q) {
             filtered = cachedRecords.filter(r => 
               (r.enclosure_id || '').toLowerCase().includes(q) ||
+              (r.splitter_id || '').toLowerCase().includes(q) ||
               (r.kseb_post_number || '').toLowerCase().includes(q) ||
               (r.landmark || '').toLowerCase().includes(q) ||
               (r.surveyor_name || '').toLowerCase().includes(q) ||
@@ -3475,10 +3490,12 @@ def admin_dashboard(response: Response):
               actionHtml = `<td style="display:none;"></td>`;
             }
 
+            const splitterBadge = r.splitter_id ? `<span style="background:#e0f2fe; color:#0369a1; padding:2px 5px; border-radius:4px; font-weight:700; font-size:0.75rem; margin-left:4px;">${escapeHtml(r.splitter_id)}</span>` : '';
+
             tr.innerHTML = `
               <td style="color:#64748b; font-family:monospace; font-size:0.8rem;">${idx + 1}</td>
               <td style="font-family:monospace; font-size:0.8rem; color:#64748b;">${timeDisplay || '-'}</td>
-              <td><strong style="color:#0284c7;">${r.enclosure_id || '-'}</strong></td>
+              <td><strong style="color:#0284c7;">${r.enclosure_id || '-'}</strong>${splitterBadge}</td>
               <td><span style="background:#f1f5f9; color:#475569; padding:2px 6px; border-radius:4px; font-size:0.75rem; font-weight:600;">${r.region || 'Thrissur'}</span></td>
               <td><strong>${r.center || '-'}</strong> / ${r.rt_room || '-'}</td>
               <td>${r.olt_name || '-'} [${r.port_number || '-'}]</td>
@@ -3540,6 +3557,7 @@ def admin_dashboard(response: Response):
           setVal('edit-rec-acs', r.acs_subscriber_id || '');
           setVal('edit-rec-port', r.port_number || '');
           setVal('edit-rec-enc', r.enclosure_number || '');
+          setVal('edit-rec-splitter', r.splitter_id || '');
 
           const modal = document.getElementById('edit-survey-modal');
           if (modal) {
@@ -3569,7 +3587,8 @@ def admin_dashboard(response: Response):
             adl_subscriber_id: document.getElementById('edit-rec-adl').value.trim(),
             acs_subscriber_id: document.getElementById('edit-rec-acs').value.trim(),
             port_number: document.getElementById('edit-rec-port').value.trim(),
-            enclosure_number: document.getElementById('edit-rec-enc').value.trim()
+            enclosure_number: document.getElementById('edit-rec-enc').value.trim(),
+            splitter_id: document.getElementById('edit-rec-splitter').value.trim()
           };
 
           try {
