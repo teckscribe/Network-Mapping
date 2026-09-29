@@ -9,6 +9,9 @@ import datetime
 import time
 import random
 import secrets
+import hashlib
+import hmac
+import base64
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -21,7 +24,7 @@ import zipfile
 import shutil
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from fastapi import FastAPI, HTTPException, status, UploadFile, File, Response
+from fastapi import FastAPI, HTTPException, status, UploadFile, File, Response, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -67,6 +70,155 @@ SMTP_TLS = os.getenv("SMTP_TLS", "true").lower() in ("true", "1", "yes")
 PASSWORD_RESET_OTPS = {}
 OTP_EXPIRY_SECONDS = 600  # 10 minutes
 
+# ==========================================
+# SECURE PASSWORD HASHING (PBKDF2-SHA256)
+# ==========================================
+# Format: "pbkdf2$<iterations>$<hex_salt>$<hex_hash>"
+# Zero external dependencies — uses Python built-in hashlib.
+HASH_ITERATIONS = 260000  # OWASP 2023 recommended minimum for PBKDF2-SHA256
+
+def hash_password(plaintext: str) -> str:
+    """Hash a plaintext password using PBKDF2-SHA256 with random salt."""
+    salt = secrets.token_bytes(16)
+    dk = hashlib.pbkdf2_hmac('sha256', plaintext.encode('utf-8'), salt, HASH_ITERATIONS)
+    return f"pbkdf2${HASH_ITERATIONS}${salt.hex()}${dk.hex()}"
+
+def verify_password(plaintext: str, stored: str) -> bool:
+    """Verify a plaintext password against a stored hash. Also accepts legacy plaintext match."""
+    if not stored:
+        return False
+    if stored.startswith("pbkdf2$"):
+        # Hashed password
+        try:
+            _, iters_str, salt_hex, hash_hex = stored.split("$", 3)
+            iters = int(iters_str)
+            salt = bytes.fromhex(salt_hex)
+            expected = bytes.fromhex(hash_hex)
+            dk = hashlib.pbkdf2_hmac('sha256', plaintext.encode('utf-8'), salt, iters)
+            return secrets.compare_digest(dk, expected)
+        except (ValueError, TypeError):
+            return False
+    else:
+        # Legacy plaintext comparison (for migration period)
+        return plaintext == stored
+
+def is_hashed(password_str: str) -> bool:
+    """Check if a password string is already hashed."""
+    return bool(password_str and password_str.startswith("pbkdf2$"))
+
+# ==========================================
+# STATELESS HMAC-SHA256 SESSION TOKENS
+# ==========================================
+# Cryptographically signed tokens that survive server restarts.
+# Zero external dependencies — uses Python built-in hmac, hashlib, base64.
+SECRET_KEY_FILE = os.path.join(BASE_DIR, ".secret_key")
+
+def get_secret_key() -> bytes:
+    key_env = os.getenv("SECRET_KEY")
+    if key_env:
+        return key_env.encode('utf-8')
+    if os.path.exists(SECRET_KEY_FILE):
+        try:
+            with open(SECRET_KEY_FILE, "rb") as f:
+                k = f.read().strip()
+                if k:
+                    return k
+        except Exception:
+            pass
+    new_key = secrets.token_bytes(32)
+    try:
+        with open(SECRET_KEY_FILE, "wb") as f:
+            f.write(new_key)
+    except Exception:
+        pass
+    return new_key
+
+SESSION_EXPIRY_SECONDS = 86400 * 7  # 7-day token validity
+
+def create_session_token(username: str, role: str) -> str:
+    """Create an HMAC-SHA256 signed session token."""
+    payload = {
+        "sub": username,
+        "role": role,
+        "exp": int(time.time()) + SESSION_EXPIRY_SECONDS
+    }
+    payload_json = json.dumps(payload, separators=(',', ':')).encode('utf-8')
+    payload_b64 = base64.urlsafe_b64encode(payload_json).decode('utf-8').rstrip('=')
+    sig = hmac.new(get_secret_key(), payload_b64.encode('utf-8'), hashlib.sha256).digest()
+    sig_b64 = base64.urlsafe_b64encode(sig).decode('utf-8').rstrip('=')
+    return f"{payload_b64}.{sig_b64}"
+
+def validate_session_token(token: str) -> Optional[dict]:
+    """Validate an HMAC-SHA256 signed session token. Returns dict or None."""
+    if not token or "." not in token:
+        return None
+    try:
+        parts = token.split(".", 1)
+        if len(parts) != 2:
+            return None
+        payload_b64, sig_b64 = parts
+
+        # Verify HMAC signature in constant time
+        expected_sig = hmac.new(get_secret_key(), payload_b64.encode('utf-8'), hashlib.sha256).digest()
+        pad_sig = 4 - (len(sig_b64) % 4)
+        sig_b64_padded = sig_b64 + ("=" * pad_sig) if pad_sig != 4 else sig_b64
+        actual_sig = base64.urlsafe_b64decode(sig_b64_padded.encode('utf-8'))
+        if not secrets.compare_digest(expected_sig, actual_sig):
+            return None
+
+        # Decode payload
+        pad_p = 4 - (len(payload_b64) % 4)
+        payload_b64_padded = payload_b64 + ("=" * pad_p) if pad_p != 4 else payload_b64
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64_padded.encode('utf-8')).decode('utf-8'))
+
+        if time.time() > payload.get("exp", 0):
+            return None
+
+        return {"username": payload.get("sub", ""), "role": payload.get("role", "field_technician")}
+    except Exception:
+        return None
+
+def get_current_session(authorization: Optional[str] = Header(None)) -> Optional[dict]:
+    """FastAPI dependency: extracts and validates Bearer token from Authorization header."""
+    if not authorization:
+        return None
+    token = authorization.replace("Bearer ", "").strip() if authorization.startswith("Bearer ") else authorization.strip()
+    return validate_session_token(token)
+
+def require_admin_auth(authorization: Optional[str] = Header(None)) -> dict:
+    """FastAPI dependency: requires a valid session with super_admin role."""
+    session = get_current_session(authorization)
+    if not session:
+        raise HTTPException(status_code=401, detail="Authentication required. Please log in.")
+    if session["role"] != "super_admin":
+        raise HTTPException(status_code=403, detail="Super Admin privileges required for this action.")
+    return session
+
+def require_any_auth(authorization: Optional[str] = Header(None)) -> dict:
+    """FastAPI dependency: requires any valid session (any authenticated user)."""
+    session = get_current_session(authorization)
+    if not session:
+        raise HTTPException(status_code=401, detail="Authentication required. Please log in.")
+    return session
+
+# ==========================================
+# IN-MEMORY RATE LIMITING (SLIDING WINDOW)
+# ==========================================
+LOGIN_ATTEMPTS = {}
+OTP_REQUEST_ATTEMPTS = {}
+
+def check_rate_limit(store: dict, key: str, max_attempts: int, window_seconds: int) -> bool:
+    """Returns True if within rate limit, False if exceeded."""
+    now = time.time()
+    timestamps = [t for t in store.get(key, []) if now - t < window_seconds]
+    if len(timestamps) >= max_attempts:
+        store[key] = timestamps
+        return False
+    timestamps.append(now)
+    store[key] = timestamps
+    return True
+
+
 VALID_ROLES = {
     "super_admin": "Super Admin",
     "rcsm": "RCSM",
@@ -87,6 +239,7 @@ def normalize_role(role: str) -> str:
     return "field_technician"
 
 BANNED_SAMPLE_USERS = {"rcsm_thrissur", "acso_thrissur", "thrissur_agent", "tmm_agent"}
+
 
 def save_users_to_json(conn=None):
     """Persists current SQLite users to users_config.json so git pulls never wipe user credentials."""
@@ -254,11 +407,21 @@ def init_db():
         cur.execute("""
         INSERT INTO users (username, password, full_name, email, assigned_center, assigned_region, role, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, ("admin", "admin123", "Central Super Administrator", "admin@gpon.local", "ALL", "ALL", "super_admin", now))
+        """, ("admin", hash_password("admin123"), "Central Super Administrator", "admin@gpon.local", "ALL", "ALL", "super_admin", now))
 
     # Normalize existing legacy roles in SQLite table
     cur.execute("UPDATE users SET role = 'super_admin' WHERE role = 'admin'")
     cur.execute("UPDATE users SET role = 'field_technician' WHERE role = 'field_agent'")
+
+    # 4. Auto-upgrade all unhashed passwords in SQLite to secure PBKDF2-SHA256
+    cur.execute("SELECT username, password FROM users")
+    upgraded_count = 0
+    for u_name, u_pwd in cur.fetchall():
+        if u_pwd and not is_hashed(u_pwd):
+            cur.execute("UPDATE users SET password = ? WHERE username = ?", (hash_password(u_pwd.strip()), u_name))
+            upgraded_count += 1
+    if upgraded_count > 0:
+        print(f"[Security] Auto-upgraded {upgraded_count} user password(s) to PBKDF2-SHA256 hashes.")
 
     # Normalize existing user centers against uploaded Node Master Excel
     hier_data = load_hierarchy_data()
@@ -543,16 +706,30 @@ class OLTDeleteModel(BaseModel):
 # ====================
 
 @app.post("/api/login")
-def login(req: LoginRequest):
+def login(req: LoginRequest, request: Request):
+    client_ip = request.client.host if request.client else "unknown"
+    if not check_rate_limit(LOGIN_ATTEMPTS, client_ip, max_attempts=15, window_seconds=60):
+        raise HTTPException(status_code=429, detail="Too many login attempts. Please wait 1 minute before trying again.")
+
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
-    cur.execute("SELECT * FROM users WHERE username = ? AND password = ?", (req.username.strip(), req.password.strip()))
+    cur.execute("SELECT * FROM users WHERE username = ?", (req.username.strip(),))
     user = cur.fetchone()
-    conn.close()
 
-    if not user:
+    if not user or not verify_password(req.password.strip(), user["password"]):
+        conn.close()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
+
+    # Auto-upgrade: if password is still plaintext, hash it now (seamless migration)
+    if not is_hashed(user["password"]):
+        hashed = hash_password(req.password.strip())
+        cur.execute("UPDATE users SET password = ? WHERE username = ?", (hashed, user["username"]))
+        conn.commit()
+        print(f"[Auth] Auto-upgraded password hash for user: {user['username']}")
+        save_users_to_json(conn)
+
+    conn.close()
 
     raw_center = user["assigned_center"] or "ALL"
     raw_region = user["assigned_region"] or "Thrissur"
@@ -561,8 +738,13 @@ def login(req: LoginRequest):
 
     user_role = normalize_role(user["role"])
     user_email = (user["email"] or "").strip() if "email" in user.keys() and user["email"] else ""
+
+    # Issue session token
+    token = create_session_token(user["username"], user_role)
+
     return {
         "status": "success",
+        "token": token,
         "user": {
             "username": user["username"],
             "full_name": user["full_name"],
@@ -611,7 +793,7 @@ def get_user_profile(username: str):
     }
 
 @app.get("/api/users")
-def get_users():
+def get_users(session: dict = Depends(require_admin_auth)):
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
@@ -634,7 +816,7 @@ def get_users():
     return {"users": users}
 
 @app.post("/api/users")
-def create_user(u: UserCreateModel):
+def create_user(u: UserCreateModel, session: dict = Depends(require_admin_auth)):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     now = datetime.datetime.now().isoformat()
@@ -661,9 +843,12 @@ def create_user(u: UserCreateModel):
     cur.execute("SELECT password FROM users WHERE username = ?", (u.username.strip(),))
     existing_row = cur.fetchone()
     if existing_row and not (u.password or "").strip():
+        # Keep existing password (already hashed or plaintext)
         password_to_store = existing_row[0]
     else:
-        password_to_store = (u.password or "").strip() or "1234"
+        # Hash the new password before storing
+        raw_pwd = (u.password or "").strip() or "1234"
+        password_to_store = hash_password(raw_pwd)
 
     try:
         cur.execute("""
@@ -770,7 +955,12 @@ GPON Network Mapping Team
         return False
 
 @app.post("/api/request-password-reset-otp")
-def request_password_reset_otp(req: RequestResetOtpPayload):
+def request_password_reset_otp(req: RequestResetOtpPayload, request: Request):
+    client_ip = request.client.host if request.client else "unknown"
+    rate_key = f"{client_ip}_{req.username_or_email.strip().lower()}"
+    if not check_rate_limit(OTP_REQUEST_ATTEMPTS, rate_key, max_attempts=5, window_seconds=300):
+        raise HTTPException(status_code=429, detail="Too many OTP requests. Please wait 5 minutes before requesting again.")
+
     identifier = req.username_or_email.strip()
     if not identifier:
         raise HTTPException(status_code=400, detail="Please enter your username or registered email address.")
@@ -857,10 +1047,10 @@ def verify_password_reset_otp(req: VerifyResetOtpPayload):
         remaining = 5 - otp_record["attempts"]
         raise HTTPException(status_code=400, detail=f"Incorrect OTP code. Please check your email and try again ({remaining} attempts remaining).")
 
-    # OTP is valid! Update password in SQLite
+    # OTP is valid! Update password in SQLite with secure hash
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    cur.execute("UPDATE users SET password = ? WHERE LOWER(TRIM(username)) = ?", (new_pwd, uname))
+    cur.execute("UPDATE users SET password = ? WHERE LOWER(TRIM(username)) = ?", (hash_password(new_pwd), uname))
     conn.commit()
     conn.close()
 
@@ -876,13 +1066,20 @@ def verify_password_reset_otp(req: VerifyResetOtpPayload):
     }
 
 @app.post("/api/change-password")
-def change_password(req: ChangePasswordRequest):
+def change_password(req: ChangePasswordRequest, session: dict = Depends(require_any_auth)):
     uname = req.username.strip()
     email_in = req.email.strip().lower()
     new_pwd = req.new_password.strip()
 
     if not uname or not email_in or not new_pwd:
         raise HTTPException(status_code=400, detail="Username, registered email address, and new password are required.")
+
+    if len(new_pwd) < 4:
+        raise HTTPException(status_code=400, detail="Password / PIN must be at least 4 characters long.")
+
+    # Only super_admin or the account owner can change password
+    if session["username"].lower() != uname.lower() and session["role"] != "super_admin":
+        raise HTTPException(status_code=403, detail="Permission Denied: You can only change your own password.")
 
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -903,7 +1100,7 @@ def change_password(req: ChangePasswordRequest):
         conn.close()
         raise HTTPException(status_code=400, detail="The entered email address does not match the registered email for this account.")
 
-    cur.execute("UPDATE users SET password = ? WHERE username = ?", (new_pwd, user["username"]))
+    cur.execute("UPDATE users SET password = ? WHERE username = ?", (hash_password(new_pwd), user["username"]))
     conn.commit()
     conn.close()
 
@@ -911,7 +1108,7 @@ def change_password(req: ChangePasswordRequest):
     return {"status": "success", "message": "Password updated successfully! You can now log in with your new password / PIN."}
 
 @app.delete("/api/users/{username}")
-def delete_user(username: str):
+def delete_user(username: str, session: dict = Depends(require_admin_auth)):
     if username == "admin":
         raise HTTPException(status_code=400, detail="Cannot delete default admin user.")
     conn = sqlite3.connect(DB_PATH)
@@ -923,14 +1120,14 @@ def delete_user(username: str):
     return {"status": "success", "message": f"User {username} deleted."}
 
 @app.get("/api/config/users")
-def export_users_config():
+def export_users_config(session: dict = Depends(require_admin_auth)):
     save_users_to_json()
     if os.path.exists(USERS_CONFIG_PATH):
         return FileResponse(USERS_CONFIG_PATH, media_type="application/json", filename="users_config.json")
     raise HTTPException(status_code=404, detail="Configuration not found")
 
 @app.post("/api/config/users")
-async def import_users_config(file: UploadFile = File(...)):
+async def import_users_config(file: UploadFile = File(...), session: dict = Depends(require_admin_auth)):
     try:
         contents = await file.read()
         raw_list = json.loads(contents.decode('utf-8'))
@@ -968,7 +1165,7 @@ def get_hierarchy():
     return {"hierarchy": default_hierarchy}
 
 @app.post("/api/upload-hierarchy")
-def upload_hierarchy(payload: dict):
+def upload_hierarchy(payload: dict, session: dict = Depends(require_admin_auth)):
     try:
         incoming = payload.get("hierarchy", payload)
         existing = load_hierarchy_data()
@@ -1005,7 +1202,7 @@ def upload_hierarchy(payload: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/upload-hierarchy-excel")
-async def upload_hierarchy_excel(file: UploadFile = File(...)):
+async def upload_hierarchy_excel(file: UploadFile = File(...), session: dict = Depends(require_admin_auth)):
     if not (file.filename.lower().endswith(".xlsx") or file.filename.lower().endswith(".xls") or file.filename.lower().endswith(".csv")):
         raise HTTPException(status_code=400, detail="Only Excel (.xlsx/.xls) or CSV files are supported.")
     
@@ -1147,7 +1344,7 @@ async def upload_hierarchy_excel(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Failed to parse Excel: {str(e)}")
 
 @app.post("/api/hierarchy/olt")
-def save_or_edit_olt(payload: OLTEditModel):
+def save_or_edit_olt(payload: OLTEditModel, session: dict = Depends(require_admin_auth)):
     hierarchy = load_hierarchy_data()
     
     # If old keys provided, remove old location (for rename/move)
@@ -1202,7 +1399,7 @@ def save_or_edit_olt(payload: OLTEditModel):
     return {"status": "success", "message": f"Node '{olt}' saved successfully!", "hierarchy": hierarchy}
 
 @app.delete("/api/hierarchy/olt")
-def delete_olt(payload: OLTDeleteModel):
+def delete_olt(payload: OLTDeleteModel, session: dict = Depends(require_admin_auth)):
     hierarchy = load_hierarchy_data()
     c = payload.center.strip()
     rt = payload.rt_room.strip()
@@ -1228,7 +1425,7 @@ def delete_olt(payload: OLTDeleteModel):
     raise HTTPException(status_code=404, detail="Node not found in hierarchy.")
 
 @app.post("/api/hierarchy/bulk-delete")
-def bulk_delete_olts(payload: dict):
+def bulk_delete_olts(payload: dict, session: dict = Depends(require_admin_auth)):
     """Delete multiple Nodes at once. Expects {"items": [{"center":..., "rt_room":..., "olt_name":...}, ...]}"""
     hierarchy = load_hierarchy_data()
     items = payload.get("items", [])
@@ -1257,7 +1454,7 @@ def bulk_delete_olts(payload: dict):
     return {"status": "success", "message": f"Deleted {deleted_count} Node(s) successfully.", "deleted": deleted_count}
 
 @app.delete("/api/hierarchy/clear")
-def clear_hierarchy():
+def clear_hierarchy(session: dict = Depends(require_admin_auth)):
     save_hierarchy_data({})
     return {"status": "success", "message": "All hierarchy data cleared."}
 
@@ -1400,7 +1597,7 @@ def get_all_records(center: Optional[str] = None, region: Optional[str] = None):
     return {"records": rows, "count": len(rows)}
 
 @app.delete("/api/records/{client_uuid}")
-def delete_record(client_uuid: str):
+def delete_record(client_uuid: str, session: dict = Depends(require_admin_auth)):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute("DELETE FROM survey_records WHERE client_uuid = ?", (client_uuid,))
@@ -1518,7 +1715,7 @@ def export_data_zip():
     )
 
 @app.post("/api/upload-survey-excel")
-async def upload_survey_excel(file: UploadFile = File(...)):
+async def upload_survey_excel(file: UploadFile = File(...), session: dict = Depends(require_admin_auth)):
     """Imports survey records from an Excel (.xlsx/.xls) or CSV file directly into SQLite in-memory."""
     if not (file.filename.lower().endswith(".xlsx") or file.filename.lower().endswith(".xls") or file.filename.lower().endswith(".csv")):
         raise HTTPException(status_code=400, detail="Only Excel (.xlsx/.xls) or CSV files are supported.")
@@ -1730,7 +1927,7 @@ def get_data_folders_summary():
     }
 
 @app.post("/api/resync-data-folders")
-def resync_data_folders():
+def resync_data_folders(session: dict = Depends(require_admin_auth)):
     """Optimizes server storage and recounts SQLite records."""
     ensure_directories_and_migrate()
     conn = sqlite3.connect(DB_PATH)
@@ -2335,6 +2532,7 @@ def admin_dashboard():
 
               localStorage.setItem('gpon_admin_user', JSON.stringify(data.user));
               localStorage.setItem('gpon_logged_in_user', JSON.stringify(data.user));
+              if (data.token) localStorage.setItem('gpon_auth_token', data.token);
               currentAdmin = data.user;
               checkAdminAuth();
               initAdminData();
@@ -2350,8 +2548,23 @@ def admin_dashboard():
 
         function adminLogout() {
           localStorage.removeItem('gpon_admin_user');
+          localStorage.removeItem('gpon_auth_token');
           currentAdmin = null;
           showAdminLoginModal();
+        }
+
+        function authFetch(url, options = {}) {
+          const token = localStorage.getItem('gpon_auth_token') || '';
+          const headers = options.headers ? { ...options.headers } : {};
+          if (token) {
+            headers['Authorization'] = 'Bearer ' + token;
+          }
+          return fetch(url, { ...options, headers }).then(res => {
+            if (res.status === 401) {
+              adminLogout();
+            }
+            return res;
+          });
         }
 
         function applyAdminRoleUI(role) {
@@ -2449,7 +2662,7 @@ def admin_dashboard():
           if (params.length > 0) url += '?' + params.join('&');
 
           try {
-            const res = await fetch(url);
+            const res = await authFetch(url);
             const data = await res.json();
             cachedRecords = data.records || [];
             updateFeedFilterDropdowns();
@@ -2935,7 +3148,7 @@ def admin_dashboard():
           if (!confirmed) return;
 
           try {
-            const res = await fetch(`/api/records/${uuid}`, { method: 'DELETE' });
+            const res = await authFetch(`/api/records/${uuid}`, { method: 'DELETE' });
             if (res.ok) {
               fetchData();
             } else {
@@ -2950,7 +3163,7 @@ def admin_dashboard():
         // Tab 2: User Access Management (4 Tiers)
         async function fetchUsers() {
           try {
-            const res = await fetch('/api/users');
+            const res = await authFetch('/api/users');
             const data = await res.json();
             const tbody = document.getElementById('users-table-body');
             tbody.innerHTML = '';
@@ -3091,7 +3304,7 @@ def admin_dashboard():
           };
 
           try {
-            const res = await fetch('/api/users', {
+            const res = await authFetch('/api/users', {
               method: 'POST',
               headers: {'Content-Type': 'application/json'},
               body: JSON.stringify(u)
@@ -3117,7 +3330,7 @@ def admin_dashboard():
             '#dc2626'
           );
           if (!confirmed) return;
-          await fetch('/api/users/' + u, { method: 'DELETE' });
+          await authFetch('/api/users/' + u, { method: 'DELETE' });
           fetchUsers();
         }
 
@@ -3127,7 +3340,7 @@ def admin_dashboard():
           const formData = new FormData();
           formData.append('file', file);
           try {
-            const res = await fetch('/api/config/users', { method: 'POST', body: formData });
+            const res = await authFetch('/api/config/users', { method: 'POST', body: formData });
             const data = await res.json();
             alert(data.message || 'Users restored successfully!');
             fetchUsers();
@@ -3140,7 +3353,7 @@ def admin_dashboard():
         // Tab 3: Network Hierarchy
         async function fetchHierarchy() {
           try {
-            const res = await fetch('/api/hierarchy');
+            const res = await authFetch('/api/hierarchy');
             const data = await res.json();
             const hier = (data && data.hierarchy) ? data.hierarchy : data;
             cachedHierarchy = hier;
@@ -3354,7 +3567,7 @@ def admin_dashboard():
             old_olt_name: document.getElementById('modal-old-olt').value.trim() || null
           };
           try {
-            const res = await fetch('/api/hierarchy/olt', {
+            const res = await authFetch('/api/hierarchy/olt', {
               method: 'POST',
               headers: {'Content-Type': 'application/json'},
               body: JSON.stringify(payload)
@@ -3384,7 +3597,7 @@ def admin_dashboard():
           if (!confirmed) return;
 
           try {
-            const res = await fetch('/api/hierarchy/olt', {
+            const res = await authFetch('/api/hierarchy/olt', {
               method: 'DELETE',
               headers: {'Content-Type': 'application/json'},
               body: JSON.stringify({ center: c, rt_room: rt, olt_name: olt })
@@ -3421,7 +3634,7 @@ def admin_dashboard():
           });
 
           try {
-            const res = await fetch('/api/hierarchy/bulk-delete', {
+            const res = await authFetch('/api/hierarchy/bulk-delete', {
               method: 'POST',
               headers: {'Content-Type': 'application/json'},
               body: JSON.stringify({ items: items })
@@ -3452,7 +3665,7 @@ def admin_dashboard():
           formData.append('file', file);
 
           try {
-            const res = await fetch('/api/upload-hierarchy-excel', {
+            const res = await authFetch('/api/upload-hierarchy-excel', {
               method: 'POST',
               body: formData
             });
@@ -3495,7 +3708,7 @@ def admin_dashboard():
           formData.append('file', file);
 
           try {
-            const res = await fetch('/api/upload-survey-excel', {
+            const res = await authFetch('/api/upload-survey-excel', {
               method: 'POST',
               body: formData
             });
@@ -3517,7 +3730,7 @@ def admin_dashboard():
         // Tab 4: Dynamic Region & Center Folders
         async function fetchFoldersSummary() {
           try {
-            const res = await fetch('/api/data-folders-summary');
+            const res = await authFetch('/api/data-folders-summary');
             const data = await res.json();
             
             document.getElementById('folder-stat-regions').innerText = data.total_regions || 0;
@@ -3601,7 +3814,7 @@ def admin_dashboard():
 
         async function resyncFoldersAction() {
           try {
-            const res = await fetch('/api/resync-data-folders', { method: 'POST' });
+            const res = await authFetch('/api/resync-data-folders', { method: 'POST' });
             const data = await res.json();
             alert(data.message || 'Storage optimized and counts refreshed!');
             fetchFoldersSummary();

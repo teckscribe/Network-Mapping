@@ -147,15 +147,19 @@ async function handleLogin(e) {
 
     if (res.ok) {
       const data = await res.json();
+      if (data.token) {
+        localStorage.setItem('gpon_auth_token', data.token);
+      }
       if (remember) {
         localStorage.setItem('gpon_remember_creds', 'true');
         localStorage.setItem('gpon_remembered_username', u);
-        localStorage.setItem('gpon_remembered_password', p);
       } else {
         localStorage.removeItem('gpon_remember_creds');
         localStorage.removeItem('gpon_remembered_username');
-        localStorage.removeItem('gpon_remembered_password');
       }
+      // Purge any legacy plaintext passwords stored previously
+      localStorage.removeItem('gpon_remembered_password');
+
       setCurrentUser(data.user);
       showToast(`Welcome, ${data.user.full_name}!`);
       return;
@@ -173,8 +177,8 @@ async function handleLogin(e) {
     if (remember) {
       localStorage.setItem('gpon_remember_creds', 'true');
       localStorage.setItem('gpon_remembered_username', u);
-      localStorage.setItem('gpon_remembered_password', p);
     }
+    localStorage.removeItem('gpon_remembered_password');
     setCurrentUser(offlineUsers[u]);
     showToast(`Offline Login: Welcome, ${offlineUsers[u].full_name}!`);
   } else {
@@ -200,6 +204,7 @@ function logout() {
   if (confirm('Log out from survey account?')) {
     currentUser = null;
     localStorage.removeItem('gpon_logged_in_user');
+    localStorage.removeItem('gpon_auth_token');
     updateUserBar();
     document.getElementById('login-overlay').style.display = 'flex';
   }
@@ -1958,9 +1963,13 @@ async function refreshCurrentUserProfile() {
 
 async function syncHierarchyToServer(hierarchy) {
   try {
+    const token = localStorage.getItem('gpon_auth_token') || '';
+    const headers = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+
     const res = await fetch(`${serverUrl}/api/upload-hierarchy`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: headers,
       body: JSON.stringify({ hierarchy: hierarchy })
     });
     if (res.ok) {
@@ -2057,9 +2066,13 @@ async function syncWithServer(silent = false) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 8000);
     
+    const syncToken = localStorage.getItem('gpon_auth_token') || '';
+    const syncHeaders = { 'Content-Type': 'application/json' };
+    if (syncToken) syncHeaders['Authorization'] = 'Bearer ' + syncToken;
+
     const res = await fetch(`${serverUrl}/api/sync`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: syncHeaders,
       body: JSON.stringify({
         device_id: deviceId,
         records: formattedRecords
@@ -2152,27 +2165,21 @@ document.addEventListener('DOMContentLoaded', () => {
     submitBtnEl.innerHTML = '<span>➕</span> Submit';
   }
 
-  // Pre-fill / Restore credentials if remembered
+  // Pre-fill username if remembered
   const isRemembered = localStorage.getItem('gpon_remember_creds') === 'true';
   const savedU = localStorage.getItem('gpon_remembered_username') || '';
-  const savedP = localStorage.getItem('gpon_remembered_password') || '';
   const uInput = document.getElementById('login-username');
-  const pInput = document.getElementById('login-password');
   const rCheckbox = document.getElementById('login-remember-me');
   if (uInput && savedU) uInput.value = savedU;
-  if (pInput && savedP) pInput.value = savedP;
   if (rCheckbox && localStorage.getItem('gpon_remember_creds') !== null) {
     rCheckbox.checked = isRemembered;
   }
+  // Purge any legacy plaintext passwords stored previously
+  localStorage.removeItem('gpon_remembered_password');
 
   // Check Login State
   if (!currentUser) {
-    if (isRemembered && savedU && savedP) {
-      // Auto-restore saved session seamlessly
-      handleLogin();
-    } else {
-      document.getElementById('login-overlay').style.display = 'flex';
-    }
+    document.getElementById('login-overlay').style.display = 'flex';
   } else {
     document.getElementById('login-overlay').style.display = 'none';
     updateUserBar();

@@ -46,4 +46,6 @@ Thumbs.db
 ehthumbs.db
 desktop.ini
 ~$*
-*.tmp
+# Environment and secret files
+.env
+.secret_key
