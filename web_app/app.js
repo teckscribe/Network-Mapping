@@ -1205,18 +1205,184 @@ function onOLTChange() {
   onOLTTypeChange();
 }
 
+// --- Multi-Port Checkbox Selection Management ---
+let currentAvailablePorts = [];
+
+function togglePortDropdown(e) {
+  if (e) {
+    e.stopPropagation();
+    e.preventDefault();
+  }
+  const panel = document.getElementById('port-dropdown-panel');
+  const trigger = document.getElementById('btn-port-picker');
+  if (!panel) return;
+  
+  const olt = oltSelect ? oltSelect.value : '';
+  if (!olt) {
+    showToast('⚠️ Please select a Node Name first!', false);
+    if (oltSelect) oltSelect.focus();
+    return;
+  }
+
+  const isHidden = (panel.style.display === 'none' || panel.style.display === '');
+  if (isHidden) {
+    panel.style.display = 'block';
+    if (trigger) trigger.classList.add('active');
+  } else {
+    panel.style.display = 'none';
+    if (trigger) trigger.classList.remove('active');
+  }
+}
+
+function closePortDropdown() {
+  const panel = document.getElementById('port-dropdown-panel');
+  const trigger = document.getElementById('btn-port-picker');
+  if (panel) panel.style.display = 'none';
+  if (trigger) trigger.classList.remove('active');
+}
+
+function renderPortCheckboxes(ports, selectedPorts = []) {
+  currentAvailablePorts = Array.isArray(ports) ? ports : [];
+  const grid = document.getElementById('port-checkbox-grid');
+  if (!grid) return;
+
+  grid.innerHTML = '';
+
+  if (!currentAvailablePorts.length) {
+    grid.innerHTML = '<div style="grid-column: 1/-1; text-align:center; color:#94a3b8; font-size:0.8rem; padding:10px;">Select Node to view ports</div>';
+    syncPortSelection([]);
+    return;
+  }
+
+  currentAvailablePorts.forEach(p => {
+    const isChecked = selectedPorts.includes(p);
+    const tile = document.createElement('label');
+    tile.className = 'port-checkbox-tile' + (isChecked ? ' checked' : '');
+    tile.dataset.port = p;
+    tile.innerHTML = `
+      <input type="checkbox" value="${escapeHtml(p)}" ${isChecked ? 'checked' : ''} onchange="onPortCheckboxChange(this, event)">
+      <span>${escapeHtml(p)}</span>
+    `;
+    grid.appendChild(tile);
+  });
+
+  syncPortSelection(selectedPorts);
+}
+
+function onPortCheckboxChange(checkbox, event) {
+  if (event) event.stopPropagation();
+  const tile = checkbox.closest('.port-checkbox-tile');
+  if (tile) {
+    if (checkbox.checked) {
+      tile.classList.add('checked');
+    } else {
+      tile.classList.remove('checked');
+    }
+  }
+  updateSelectedPortsFromCheckboxes();
+}
+
+function selectAllPorts(selectAll) {
+  const grid = document.getElementById('port-checkbox-grid');
+  if (!grid) return;
+  const checkboxes = grid.querySelectorAll('input[type="checkbox"]');
+  checkboxes.forEach(cb => {
+    cb.checked = !!selectAll;
+    const tile = cb.closest('.port-checkbox-tile');
+    if (tile) {
+      if (selectAll) tile.classList.add('checked');
+      else tile.classList.remove('checked');
+    }
+  });
+  updateSelectedPortsFromCheckboxes();
+}
+
+function getSelectedPortsArray() {
+  const grid = document.getElementById('port-checkbox-grid');
+  if (!grid) return [];
+  const checked = grid.querySelectorAll('input[type="checkbox"]:checked');
+  const vals = Array.from(checked).map(cb => cb.value);
+  vals.sort((a, b) => {
+    const numA = parseInt(a.replace(/\D/g, ''), 10) || 0;
+    const numB = parseInt(b.replace(/\D/g, ''), 10) || 0;
+    return numA - numB;
+  });
+  return vals;
+}
+
+function updateSelectedPortsFromCheckboxes() {
+  const selected = getSelectedPortsArray();
+  syncPortSelection(selected);
+}
+
+function syncPortSelection(selected) {
+  const labelEl = document.getElementById('port-picker-label');
+  const badgeEl = document.getElementById('selected-ports-count-badge');
+  const hiddenInput = document.getElementById('port-select');
+
+  const commaStr = selected.join(', ');
+
+  if (hiddenInput) {
+    hiddenInput.value = commaStr;
+  }
+
+  if (selected.length === 0) {
+    if (labelEl) {
+      const olt = oltSelect ? oltSelect.value : '';
+      labelEl.innerText = olt ? '-- Select Port(s) --' : '-- Select Node First --';
+      labelEl.className = 'port-picker-placeholder';
+    }
+    if (badgeEl) badgeEl.style.display = 'none';
+  } else if (selected.length === 1) {
+    if (labelEl) {
+      labelEl.innerText = selected[0];
+      labelEl.className = 'port-picker-selected';
+    }
+    if (badgeEl) {
+      badgeEl.innerText = '1 port';
+      badgeEl.style.display = 'inline-block';
+    }
+  } else {
+    if (labelEl) {
+      labelEl.innerText = commaStr;
+      labelEl.className = 'port-picker-selected';
+    }
+    if (badgeEl) {
+      badgeEl.innerText = `${selected.length} ports`;
+      badgeEl.style.display = 'inline-block';
+    }
+  }
+
+  // Trigger cascade updates
+  updateAvailableEnclosures();
+  updateAvailableSplitters();
+  updateEnclosureId();
+}
+
+function setSelectedPorts(portsArray) {
+  const grid = document.getElementById('port-checkbox-grid');
+  if (!grid) return;
+  const checkboxes = grid.querySelectorAll('input[type="checkbox"]');
+  checkboxes.forEach(cb => {
+    const shouldCheck = portsArray.includes(cb.value);
+    cb.checked = shouldCheck;
+    const tile = cb.closest('.port-checkbox-tile');
+    if (tile) {
+      if (shouldCheck) tile.classList.add('checked');
+      else tile.classList.remove('checked');
+    }
+  });
+  syncPortSelection(portsArray);
+}
+
 function onOLTTypeChange() {
   const c = centerSelect ? centerSelect.value : '';
   const rt = rtRoomSelect ? rtRoomSelect.value : '';
   const olt = oltSelect ? oltSelect.value : '';
 
-  portSelect.innerHTML = '';
-
-  // Empty default placeholder
-  const portDefOpt = document.createElement('option');
-  portDefOpt.value = '';
-  portDefOpt.innerText = olt ? '-- Select Port --' : '-- Select Node First --';
-  portSelect.appendChild(portDefOpt);
+  // Get current selected ports if any, to keep if valid for the new node
+  const prevVal = portSelect ? portSelect.value : '';
+  const prevSelected = prevVal ? prevVal.split(',').map(s => s.trim()).filter(Boolean) : [];
 
   if (olt) {
     const entry = findNodeEntry(c, rt, olt);
@@ -1232,15 +1398,11 @@ function onOLTTypeChange() {
         : (oType === '16P' ? Array.from({length: 16}, (_, i) => `P${i + 1}`) : (oType === '32P' ? Array.from({length: 32}, (_, i) => `P${i + 1}`) : Array.from({length: 8}, (_, i) => `P${i + 1}`)));
     }
 
-    ports.forEach(p => {
-      const opt = document.createElement('option');
-      opt.value = p;
-      opt.innerText = p;
-      portSelect.appendChild(opt);
-    });
+    const validPrev = prevSelected.filter(p => ports.includes(p));
+    renderPortCheckboxes(ports, validPrev);
+  } else {
+    renderPortCheckboxes([]);
   }
-
-  updateAvailableEnclosures();
 }
 
 // Excel Hierarchy Upload (Center, RT Room, Technology, OLT/Node Name)
@@ -1340,10 +1502,20 @@ centerSelect.addEventListener('change', () => { onCenterChange(); fetchSurveyedP
 rtRoomSelect.addEventListener('change', onRTRoomChange);
 oltSelect.addEventListener('change', onOLTChange);
 if (oltTypeSelect) oltTypeSelect.addEventListener('change', onOLTTypeChange);
-portSelect.addEventListener('change', () => { updateAvailableEnclosures(); updateAvailableSplitters(); });
+if (portSelect) portSelect.addEventListener('change', () => { updateAvailableEnclosures(); updateAvailableSplitters(); });
 enclosureSelect.addEventListener('change', () => { updateEnclosureId(); updateAvailableSplitters(); handleSplitterSelectionChange(); });
 splitterRatioSelect.addEventListener('change', updateSplitterColorOptions);
 splitterIdSelect.addEventListener('change', handleSplitterSelectionChange);
+
+// Close port dropdown panel on tap/click outside
+document.addEventListener('click', (e) => {
+  const panel = document.getElementById('port-dropdown-panel');
+  const trigger = document.getElementById('btn-port-picker');
+  if (!panel || panel.style.display === 'none') return;
+  if (!panel.contains(e.target) && (!trigger || !trigger.contains(e.target))) {
+    closePortDropdown();
+  }
+});
 
 // High-Precision GNSS / GPS Geolocation Engine (Multi-Sample Satellite Convergence)
 function captureGPS() {
@@ -1675,7 +1847,7 @@ function saveRecord() {
   const mandatoryDropdowns = [
     { el: rtRoomSelect, label: 'RT Room' },
     { el: oltSelect, label: 'Node Name' },
-    { el: portSelect, label: 'Port Number' },
+    { el: portSelect, label: 'Port Number', triggerEl: document.getElementById('btn-port-picker') },
     { el: enclosureSelect, label: 'Enclosure #' },
     { el: splitterRatioSelect, label: 'Splitter Ratio' },
     { el: splitterIdSelect, label: 'Splitter ID' }
@@ -1683,12 +1855,13 @@ function saveRecord() {
   for (const dd of mandatoryDropdowns) {
     if (!dd.el || !dd.el.value) {
       showToast(`⚠️ ${dd.label} is mandatory! Please select a value.`, false);
-      if (dd.el) {
-        dd.el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        dd.el.focus();
-        dd.el.style.borderColor = '#ef4444';
-        dd.el.style.boxShadow = '0 0 0 3px rgba(239,68,68,0.2)';
-        setTimeout(() => { dd.el.style.borderColor = ''; dd.el.style.boxShadow = ''; }, 2500);
+      const targetEl = dd.triggerEl || dd.el;
+      if (targetEl) {
+        targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        targetEl.focus();
+        targetEl.style.borderColor = '#ef4444';
+        targetEl.style.boxShadow = '0 0 0 3px rgba(239,68,68,0.2)';
+        setTimeout(() => { targetEl.style.borderColor = ''; targetEl.style.boxShadow = ''; }, 2500);
       }
       return;
     }
@@ -1903,7 +2076,9 @@ function showSubmitConfirmModal(entry, isAcsoUpdate = false) {
 
   const encId = entry["Enclosure ID"] || '-';
   const splitInfo = `${entry["Splitter ID"] || '-'} (${entry["Splitter Ratio"] || '-'})`;
-  const nodeInfo = `${entry["OLT/Node  Name"] || '-'} [Port ${entry["Port Number"] || '-'}]`;
+  const portStr = entry["Port Number"] || '-';
+  const portLabel = (portStr && portStr.includes(',')) ? 'Ports' : 'Port';
+  const nodeInfo = `${entry["OLT/Node  Name"] || '-'} [${portLabel} ${portStr}]`;
   const centerInfo = entry["Center"] || '-';
   const custCount = entry["No: Of Customer Connected"] || 0;
   const timeStr = entry["Date & Time"] || '';

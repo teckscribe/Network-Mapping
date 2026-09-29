@@ -14,7 +14,7 @@
 
   <!-- Local Offline Vendor Styles -->
   <link rel="stylesheet" href="vendor/leaflet.css">
-  <link rel="stylesheet" href="style.css?v=42">
+  <link rel="stylesheet" href="style.css?v=43">
   <script>
     // Synchronous Pre-Render Auth Check: Prevents Flash of Unauthenticated Content (FOUC)
     // If user is already logged in with a valid session, hide login modal before first paint.
@@ -114,9 +114,36 @@
             </select>
           </div>
 
-          <div class="gs-cell-group col-full">
-            <label class="gs-cell-label" for="port-select">Port Number <span style="color:#ef4444; font-weight:700;">*</span></label>
-            <select id="port-select" class="gs-select"></select>
+          <div class="gs-cell-group col-full" style="position: relative;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:2px;">
+              <label class="gs-cell-label" for="btn-port-picker" style="margin:0;">Port Number <span style="color:#ef4444; font-weight:700;">*</span></label>
+              <span id="selected-ports-count-badge" style="display:none; font-size:0.75rem; background:#e0f2fe; color:#0369a1; font-weight:700; padding:1px 8px; border-radius:12px; border:1px solid #bae6fd;">0 selected</span>
+            </div>
+            
+            <!-- Hidden input maintaining #port-select for 100% backwards compatibility with validation & storage -->
+            <input type="hidden" id="port-select" value="">
+
+            <!-- Multi-Select Trigger Button -->
+            <button type="button" id="btn-port-picker" class="gs-select port-picker-trigger" onclick="togglePortDropdown(event)">
+              <span id="port-picker-label" class="port-picker-placeholder">-- Select Port(s) --</span>
+              <span class="port-picker-arrow">▼</span>
+            </button>
+
+            <!-- Dropdown Multi-Select Panel with Checkboxes -->
+            <div id="port-dropdown-panel" class="port-dropdown-panel" style="display:none;">
+              <div class="port-dropdown-header">
+                <span style="font-size:0.8rem; font-weight:700; color:#1f2937;">Select Port(s):</span>
+                <div style="display:flex; gap:8px; align-items:center;">
+                  <button type="button" class="btn-port-action" onclick="selectAllPorts(true)">Select All</button>
+                  <span style="color:#cbd5e1;">|</span>
+                  <button type="button" class="btn-port-action" onclick="selectAllPorts(false)">Clear</button>
+                  <button type="button" class="btn-port-done" onclick="closePortDropdown()">Done ✓</button>
+                </div>
+              </div>
+              <div id="port-checkbox-grid" class="port-checkbox-grid">
+                <!-- Checkboxes dynamically generated based on OLT ports -->
+              </div>
+            </div>
           </div>
 
           <div class="gs-cell-group col-full">
@@ -394,6 +421,6 @@
   <script src="vendor/leaflet.js"></script>
   <script src="vendor/xlsx.full.min.js"></script>
   <script src="preload_data.js"></script>
-  <script src="app.js?v=42"></script>
+  <script src="app.js?v=43"></script>
 </body>
 </html>
