@@ -373,7 +373,16 @@ def init_db():
     user_cols = [c[1] for c in cur.fetchall()]
     if "email" not in user_cols:
         cur.execute("ALTER TABLE users ADD COLUMN email TEXT DEFAULT ''")
+    if "assigned_region" not in user_cols:
+        cur.execute("ALTER TABLE users ADD COLUMN assigned_region TEXT DEFAULT 'Thrissur'")
+    if "role" not in user_cols:
+        cur.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'field_technician'")
+    if "created_at" not in user_cols:
+        cur.execute("ALTER TABLE users ADD COLUMN created_at TEXT")
     cur.execute("UPDATE users SET email = '' WHERE email IS NULL")
+    cur.execute("UPDATE users SET assigned_region = 'Thrissur' WHERE assigned_region IS NULL OR assigned_region = ''")
+    cur.execute("UPDATE users SET role = 'field_technician' WHERE role IS NULL OR role = ''")
+    conn.commit()
 
     cur.execute("PRAGMA table_info(survey_records)")
     cols = [c[1] for c in cur.fetchall()]
@@ -804,13 +813,13 @@ def get_users(session: dict = Depends(require_admin_auth)):
             "username": u["username"],
             "full_name": u["full_name"],
             "email": u["email"] or "",
-            "assigned_center": u["assigned_center"],
+            "assigned_center": u["assigned_center"] or "ALL",
             "assigned_centers": [c.strip() for c in (u["assigned_center"] or "").split(",") if c.strip()],
-            "assigned_region": u["assigned_region"],
+            "assigned_region": u["assigned_region"] or "Thrissur",
             "assigned_regions": [r.strip() for r in (u["assigned_region"] or "Thrissur").split(",") if r.strip()],
             "role": normalize_role(u["role"]),
             "role_label": VALID_ROLES.get(normalize_role(u["role"]), "Field Technician"),
-            "created_at": u["created_at"]
+            "created_at": u["created_at"] or ""
         } for u in cur.fetchall()
     ]
     conn.close()
@@ -2296,7 +2305,7 @@ def admin_dashboard():
           </div>
           <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
             <button type="button" onclick="openAddUserModal()" class="btn btn-green" style="font-size:0.85rem; padding:8px 16px; font-weight:700; box-shadow:0 1px 3px rgba(0,0,0,0.1);">➕ Add User</button>
-            <a href="/api/config/users" download="users_config.json" class="btn" style="background:#0284c7; font-size:0.8rem; padding:7px 12px;">📥 Backup JSON</a>
+            <button type="button" onclick="downloadUsersBackup()" class="btn" style="background:#0284c7; font-size:0.8rem; padding:7px 12px;">📥 Backup JSON</button>
             <button type="button" onclick="document.getElementById('import-users-file').click()" class="btn btn-outline" style="font-size:0.8rem; padding:7px 12px;">📤 Restore JSON</button>
             <input type="file" id="import-users-file" accept=".json" style="display:none;" onchange="importUsersConfig(event)">
           </div>
@@ -2600,6 +2609,16 @@ def admin_dashboard():
         let fullHierarchyRows = [];
         let cachedHierarchy = {};
 
+        function escapeHtml(str) {
+          if (str === null || str === undefined) return '';
+          return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+        }
+
         // Normalization
         function normalizeAdminRole(r) {
           if (!r) return 'field_technician';
@@ -2612,16 +2631,17 @@ def admin_dashboard():
 
         // Check authentication & apply permissions
         function checkAdminAuth() {
+          let token = localStorage.getItem('gpon_auth_token');
           let userStr = localStorage.getItem('gpon_admin_user') || localStorage.getItem('gpon_logged_in_user');
-          if (!userStr) {
-            showAdminLoginModal();
+          if (!userStr || !token) {
+            adminLogout();
             return false;
           }
 
           try {
             currentAdmin = JSON.parse(userStr);
           } catch(e) {
-            showAdminLoginModal();
+            adminLogout();
             return false;
           }
 
@@ -2631,7 +2651,7 @@ def admin_dashboard():
           if (role === 'field_technician' || role === 'acso') {
             document.getElementById('access-denied-modal').style.display = 'flex';
             document.getElementById('access-denied-msg').innerHTML = 
-              `Your account <strong>${currentAdmin.username}</strong> is registered as <strong>${role === 'acso' ? 'ACSO' : 'Field Technician'}</strong>.<br>The Admin Portal is reserved for Super Admins and RCSMs.`;
+              `Your account <strong>${escapeHtml(currentAdmin.username)}</strong> is registered as <strong>${role === 'acso' ? 'ACSO' : 'Field Technician'}</strong>.<br>The Admin Portal is reserved for Super Admins and RCSMs.`;
             return false;
           }
 
@@ -2690,6 +2710,7 @@ def admin_dashboard():
 
         function adminLogout() {
           localStorage.removeItem('gpon_admin_user');
+          localStorage.removeItem('gpon_logged_in_user');
           localStorage.removeItem('gpon_auth_token');
           currentAdmin = null;
           showAdminLoginModal();
@@ -2702,7 +2723,8 @@ def admin_dashboard():
             headers['Authorization'] = 'Bearer ' + token;
           }
           return fetch(url, { ...options, headers }).then(res => {
-            if (res.status === 401) {
+            if (res.status === 401 || res.status === 403) {
+              console.warn('[Admin Auth] Session unauthenticated or token expired, redirecting to login');
               adminLogout();
             }
             return res;
@@ -3303,12 +3325,25 @@ def admin_dashboard():
         }
 
         // Tab 2: User Access Management (4 Tiers)
+        let cachedUsersList = [];
+
         async function fetchUsers() {
+          const tbody = document.getElementById('users-table-body');
           try {
             const res = await authFetch('/api/users');
+            if (!res.ok) {
+              const err = await res.json().catch(() => ({}));
+              tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; padding:20px; color:#dc2626; font-weight:600;">⚠️ Failed to load user credentials: ${err.detail || res.statusText} (${res.status}). <button class="btn btn-danger" style="margin-left:10px; padding:4px 10px; font-size:0.75rem;" onclick="adminLogout()">Sign In Again</button></td></tr>`;
+              return;
+            }
             const data = await res.json();
-            const tbody = document.getElementById('users-table-body');
+            cachedUsersList = (data && data.users) ? data.users : [];
             tbody.innerHTML = '';
+
+            if (cachedUsersList.length === 0) {
+              tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:20px; color:#64748b;">No users found in database. Click "+ Add User" above to create one.</td></tr>';
+              return;
+            }
 
             const roleBadges = {
               'super_admin': '<span class="role-tag-super_admin">👑 Super Admin</span>',
@@ -3317,17 +3352,17 @@ def admin_dashboard():
               'field_technician': '<span class="role-tag-field_technician">👷 Field Tech</span>'
             };
 
-            data.users.forEach(u => {
+            cachedUsersList.forEach((u, idx) => {
               const tr = document.createElement('tr');
               const roleClean = normalizeAdminRole(u.role);
-              const badgeHtml = roleBadges[roleClean] || `<span class="tag">${u.role}</span>`;
-              const emailDisplay = u.email ? `<span style="font-family:monospace; font-size:0.8rem; color:#0369a1;">${u.email}</span>` : '<span style="color:#94a3b8; font-style:italic; font-size:0.78rem;">No Email</span>';
+              const badgeHtml = roleBadges[roleClean] || `<span class="tag">${escapeHtml(u.role)}</span>`;
+              const emailDisplay = u.email ? `<span style="font-family:monospace; font-size:0.8rem; color:#0369a1;">${escapeHtml(u.email)}</span>` : '<span style="color:#94a3b8; font-style:italic; font-size:0.78rem;">No Email</span>';
               
               tr.innerHTML = `
-                <td><strong>${u.username}</strong></td>
-                <td>${u.full_name}</td>
+                <td><strong>${escapeHtml(u.username)}</strong></td>
+                <td>${escapeHtml(u.full_name || u.username)}</td>
                 <td>${emailDisplay}</td>
-                <td><span style="background:#f1f5f9; padding:2px 8px; border-radius:4px; font-weight:600; font-size:0.8rem;">${u.assigned_region || 'Thrissur'}</span></td>
+                <td><span style="background:#f1f5f9; padding:2px 8px; border-radius:4px; font-weight:600; font-size:0.8rem;">${escapeHtml(u.assigned_region || 'Thrissur')}</span></td>
                 <td>
                   ${(() => {
                     const centers = (u.assigned_center || 'ALL').split(',').map(s => s.trim()).filter(Boolean);
@@ -3335,25 +3370,58 @@ def admin_dashboard():
                       return '<span class="tag" style="background:#059669;">ALL (Network)</span>';
                     }
                     if (centers.length === 1) {
-                      return `<span class="tag" style="background:#0284c7;">${centers[0]}</span>`;
+                      return `<span class="tag" style="background:#0284c7;">${escapeHtml(centers[0])}</span>`;
                     }
                     if (centers.length <= 2) {
-                      return centers.map(c => `<span class="tag" style="background:#0284c7; margin-right:3px;">${c}</span>`).join('');
+                      return centers.map(c => `<span class="tag" style="background:#0284c7; margin-right:3px;">${escapeHtml(c)}</span>`).join('');
                     }
-                    return `<span class="tag" style="background:#0284c7;" title="${centers.join(', ')}">🏢 ${centers.length} Centers Charge</span>`;
+                    return `<span class="tag" style="background:#0284c7;" title="${escapeHtml(centers.join(', '))}">🏢 ${centers.length} Centers Charge</span>`;
                   })()}
                 </td>
                 <td>${badgeHtml}</td>
-                <td style="color:#64748b; font-size:0.8rem; font-family:monospace;">${(u.created_at || '').slice(0, 19).replace('T', ' ')}</td>
+                <td style="color:#64748b; font-size:0.8rem; font-family:monospace;">${escapeHtml((u.created_at || '').slice(0, 19).replace('T', ' '))}</td>
                 <td style="text-align:center; white-space:nowrap;">
-                  <button class="btn btn-outline" style="padding:3px 8px; font-size:0.75rem; margin-right:4px;" onclick="openEditUserModal('${u.username}', '${encodeURIComponent(u.full_name)}', '${encodeURIComponent(u.email || '')}', '${encodeURIComponent(u.assigned_center)}', '${encodeURIComponent(u.assigned_region || 'Thrissur')}', '${roleClean}')">✏️ Edit</button>
-                  ${u.username !== 'admin' ? `<button class="btn btn-danger" style="padding:3px 8px; font-size:0.75rem;" onclick="deleteUser('${u.username}')">🗑️</button>` : '<span style="color:#94a3b8; font-size:0.75rem;">Root</span>'}
+                  <button class="btn btn-outline" style="padding:3px 8px; font-size:0.75rem; margin-right:4px;" onclick="editUserByIndex(${idx})">✏️ Edit</button>
+                  ${u.username !== 'admin' ? `<button class="btn btn-danger" style="padding:3px 8px; font-size:0.75rem;" onclick="deleteUserByIndex(${idx})">🗑️</button>` : '<span style="color:#94a3b8; font-size:0.75rem;">Root</span>'}
                 </td>
               `;
               tbody.appendChild(tr);
             });
           } catch(e) {
-            console.error(e);
+            console.error('Error in fetchUsers:', e);
+            tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; padding:20px; color:#dc2626;">Error loading user list: ${escapeHtml(e.message)}</td></tr>`;
+          }
+        }
+
+        function editUserByIndex(idx) {
+          const u = cachedUsersList[idx];
+          if (!u) return;
+          openEditUserModal(u.username, u.full_name, u.email || '', u.assigned_center || 'ALL', u.assigned_region || 'Thrissur', normalizeAdminRole(u.role));
+        }
+
+        function deleteUserByIndex(idx) {
+          const u = cachedUsersList[idx];
+          if (!u) return;
+          deleteUser(u.username);
+        }
+
+        async function downloadUsersBackup() {
+          try {
+            const res = await authFetch('/api/config/users');
+            if (!res.ok) {
+              alert('Failed to download users backup. Error code: ' + res.status);
+              return;
+            }
+            const blob = await res.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'users_config.json';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+          } catch(e) {
+            alert('Download failed: ' + e.message);
           }
         }
 
@@ -3376,12 +3444,8 @@ def admin_dashboard():
           document.getElementById('user-modal').style.display = 'flex';
         }
 
-        function openEditUserModal(username, encName, encEmail, encCenter, encRegion, role) {
-          const c = decodeURIComponent(encCenter);
-          const reg = decodeURIComponent(encRegion);
-          const email = decodeURIComponent(encEmail || '');
-
-          document.getElementById('user-modal-title').innerHTML = `✏️ Edit User: ${username}`;
+        function openEditUserModal(username, fullName, email, center, region, role) {
+          document.getElementById('user-modal-title').innerHTML = `✏️ Edit User: ${escapeHtml(username)}`;
           document.getElementById('modal-new-user').value = username;
           document.getElementById('modal-new-user').setAttribute('readonly', 'true');
           document.getElementById('modal-new-user').style.background = '#f1f5f9';
@@ -3390,12 +3454,12 @@ def admin_dashboard():
           document.getElementById('modal-new-pass').removeAttribute('required');
           const passReq = document.getElementById('modal-pass-required');
           if (passReq) passReq.style.display = 'none';
-          document.getElementById('modal-new-name').value = decodeURIComponent(encName);
-          document.getElementById('modal-new-email').value = email;
+          document.getElementById('modal-new-name').value = fullName || username;
+          document.getElementById('modal-new-email').value = email || '';
 
-          populateUserRegionAndCenterDropdowns(reg, c);
+          populateUserRegionAndCenterDropdowns(region || 'Thrissur', center || 'ALL');
 
-          document.getElementById('modal-new-role').value = role;
+          document.getElementById('modal-new-role').value = role || 'field_technician';
           document.getElementById('btn-modal-save-user').innerHTML = '💾 Update User';
           document.getElementById('user-modal').style.display = 'flex';
         }
