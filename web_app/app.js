@@ -1580,7 +1580,6 @@ function showSubmitConfirmModal(entry) {
   const detailsEl = document.getElementById('submit-confirm-details');
   if (!modal || !detailsEl) return;
 
-  const postNo = entry["KSEB Post Number"] || '-';
   const encId = entry["Enclosure ID"] || '-';
   const splitInfo = `${entry["Splitter ID"] || '-'} (${entry["Splitter Ratio"] || '-'})`;
   const nodeInfo = `${entry["OLT/Node  Name"] || '-'} [Port ${entry["Port Number"] || '-'}]`;
@@ -1596,12 +1595,8 @@ function showSubmitConfirmModal(entry) {
 
   detailsEl.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-      <span style="color:#64748b;">KSEB Post No:</span>
-      <strong style="color:#0f172a; font-size:1.05rem;">${postNo}</strong>
-    </div>
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
       <span style="color:#64748b;">Enclosure ID:</span>
-      <strong style="color:#0284c7; font-family:monospace; font-size:0.95rem;">${encId}</strong>
+      <strong style="color:#0284c7; font-family:monospace; font-size:1.05rem;">${encId}</strong>
     </div>
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
       <span style="color:#64748b;">Splitter ID:</span>
