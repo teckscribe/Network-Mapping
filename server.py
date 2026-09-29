@@ -711,6 +711,47 @@ class OLTDeleteModel(BaseModel):
     rt_room: str
     olt_name: str
 
+class UpdateSurveyRecordModel(BaseModel):
+    kseb_post_number: Optional[str] = None
+    landmark: Optional[str] = None
+    lat_long: Optional[str] = None
+    customers_connected: Optional[int] = 0
+    splitter_lead_color: Optional[str] = None
+    splitter_ratio: Optional[str] = None
+    adl_subscriber_id: Optional[str] = None
+    acs_subscriber_id: Optional[str] = None
+    port_number: Optional[str] = None
+    enclosure_number: Optional[str] = None
+    enclosure_id: Optional[str] = None
+    splitter_id: Optional[str] = None
+
+def compute_server_enclosure_id(olt_name: str, port: str, enclosure: str) -> str:
+    if not olt_name:
+        return ""
+    s = olt_name.strip()
+    m = re.search(r'([A-Za-z]{2,5})[\/\-_ ]*(\d+)[\/\-_ ]*(?:[A-Za-z]{2,5}[\/\-_ ]*)?(?:8\s*PORT\s+)?OLT[\/\-_ ]*0*(\d+)', s, re.I)
+    if m:
+        pref = m.group(1).upper()
+        site = m.group(2)
+        olt_num = m.group(3).zfill(2)
+        olt_code = f"{pref}{site}OLT{olt_num}"
+    elif re.search(r'OLT[- ]*HEADEND', s, re.I):
+        m2 = re.search(r'([A-Za-z]{2,5})[\/\-_ ]*(\d+)', s, re.I)
+        m_num = re.search(r'HEADEND\s*(\d+)', s, re.I)
+        olt_num = m_num.group(1).zfill(2) if m_num else "01"
+        pref = m2.group(1).upper() if m2 else "OLT"
+        site = m2.group(2) if m2 else "01"
+        olt_code = f"{pref}{site}OLT{olt_num}"
+    elif re.search(r'AMALA[- ]*P1', s, re.I):
+        m3 = re.search(r'([A-Za-z]{2,5})[\/\-_ ]*(\d+)', s, re.I)
+        olt_code = f"{m3.group(1).upper()}{m3.group(2)}OLT01" if m3 else "THN77OLT01"
+    else:
+        olt_code = re.sub(r'[^A-Za-z0-9]', '', s).upper()[:12]
+
+    port_code = re.sub(r'\s+', '', (port or "P1").strip().upper())
+    enc_code = (enclosure or "E1").strip().upper()
+    return f"{olt_code}{port_code}{enc_code}"
+
 # ====================
 # AUTHENTICATION API
 # ====================
@@ -1747,6 +1788,58 @@ def get_all_records(center: Optional[str] = None, region: Optional[str] = None):
     conn.close()
     return {"records": rows, "count": len(rows)}
 
+@app.put("/api/records/{client_uuid}")
+def update_survey_record(client_uuid: str, record: UpdateSurveyRecordModel, session: dict = Depends(require_admin_auth)):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT client_uuid, olt_name, port_number, enclosure_number, enclosure_id, splitter_id FROM survey_records WHERE client_uuid = ?", (client_uuid,))
+    existing = cur.fetchone()
+    if not existing:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Survey record not found.")
+
+    olt_name = existing[1] or ""
+    new_port = record.port_number if record.port_number is not None else existing[2]
+    new_enc_no = record.enclosure_number if record.enclosure_number is not None else existing[3]
+    
+    new_enc_id = record.enclosure_id
+    if not new_enc_id and olt_name:
+        new_enc_id = compute_server_enclosure_id(olt_name, new_port, new_enc_no)
+
+    cur.execute("""
+        UPDATE survey_records SET
+            kseb_post_number = COALESCE(?, kseb_post_number),
+            landmark = COALESCE(?, landmark),
+            lat_long = COALESCE(?, lat_long),
+            customers_connected = COALESCE(?, customers_connected),
+            splitter_lead_color = COALESCE(?, splitter_lead_color),
+            splitter_ratio = COALESCE(?, splitter_ratio),
+            adl_subscriber_id = COALESCE(?, adl_subscriber_id),
+            acs_subscriber_id = COALESCE(?, acs_subscriber_id),
+            port_number = COALESCE(?, port_number),
+            enclosure_number = COALESCE(?, enclosure_number),
+            enclosure_id = COALESCE(?, enclosure_id),
+            splitter_id = COALESCE(?, splitter_id)
+        WHERE client_uuid = ?
+    """, (
+        record.kseb_post_number,
+        record.landmark,
+        record.lat_long,
+        record.customers_connected,
+        record.splitter_lead_color,
+        record.splitter_ratio,
+        record.adl_subscriber_id,
+        record.acs_subscriber_id,
+        record.port_number,
+        record.enclosure_number,
+        new_enc_id,
+        record.splitter_id,
+        client_uuid
+    ))
+    conn.commit()
+    conn.close()
+    return {"status": "success", "message": "Record updated successfully."}
+
 @app.delete("/api/records/{client_uuid}")
 def delete_record(client_uuid: str, session: dict = Depends(require_admin_auth)):
     conn = sqlite3.connect(DB_PATH)
@@ -2584,6 +2677,115 @@ def admin_dashboard():
               <button type="submit" class="btn btn-green">💾 Save Node</button>
             </div>
           </form>
+      <!-- Edit Survey Record Modal (Super Admin) -->
+      <div id="edit-survey-modal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(15,23,42,0.65); backdrop-filter:blur(3px); z-index:10000; justify-content:center; align-items:center; padding:16px;">
+        <div style="background:white; border-radius:12px; padding:24px; max-width:640px; width:100%; box-shadow:0 20px 25px -5px rgba(0,0,0,0.25); max-height:90vh; overflow-y:auto; border:1px solid #cbd5e1;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; border-bottom:1px solid #e2e8f0; padding-bottom:10px;">
+            <h3 style="margin:0; color:#0284c7; display:flex; align-items:center; gap:8px;">
+              <span>✏️</span> Edit Survey Record
+            </h3>
+            <button type="button" onclick="closeEditSurveyRecordModal()" style="background:none; border:none; font-size:1.4rem; color:#64748b; cursor:pointer; line-height:1;">&times;</button>
+          </div>
+          <form onsubmit="saveEditedSurveyRecord(event)">
+            <input type="hidden" id="edit-rec-uuid">
+
+            <!-- Read-only Context Box -->
+            <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:10px 14px; margin-bottom:14px; font-size:0.83rem; color:#334155; line-height:1.6;">
+              <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:6px;">
+                <span><strong>Enclosure ID:</strong> <span id="edit-rec-enclosure-id" style="color:#0284c7; font-weight:700; font-family:monospace;"></span></span>
+                <span><strong>Splitter:</strong> <span id="edit-rec-splitter-id" style="font-weight:700; color:#0f172a;"></span></span>
+              </div>
+              <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:6px; color:#64748b;">
+                <span><strong>Center / RT:</strong> <span id="edit-rec-center-rt"></span></span>
+                <span><strong>Node & Port:</strong> <span id="edit-rec-node-port"></span></span>
+              </div>
+            </div>
+
+            <!-- Editable Fields -->
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
+              <div>
+                <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">KSEB Post Number <span style="color:#ef4444;">*</span></label>
+                <input type="text" id="edit-rec-post" required style="width:100%;" placeholder="e.g. OL/33/L/17/9">
+              </div>
+              <div>
+                <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">Landmark</label>
+                <input type="text" id="edit-rec-landmark" style="width:100%;" placeholder="e.g. Near High School">
+              </div>
+            </div>
+
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
+              <div>
+                <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">GPS Coordinates (Lat, Long)</label>
+                <input type="text" id="edit-rec-coords" style="width:100%;" placeholder="e.g. 10.779166, 76.384416">
+              </div>
+              <div>
+                <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">Connected Customers</label>
+                <input type="number" id="edit-rec-cust" min="0" style="width:100%;" value="0">
+              </div>
+            </div>
+
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
+              <div>
+                <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">Splitter Ratio</label>
+                <select id="edit-rec-ratio" style="width:100%;">
+                  <option value="1:2">1:2</option>
+                  <option value="1:4">1:4</option>
+                  <option value="1:8">1:8</option>
+                  <option value="1:16">1:16</option>
+                  <option value="1:32">1:32</option>
+                </select>
+              </div>
+              <div>
+                <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">Splitter Out Colour Code</label>
+                <select id="edit-rec-color" style="width:100%;">
+                  <option value="">-- None / Select --</option>
+                  <option value="Out 1 - Blue">Out 1 - Blue</option>
+                  <option value="Out 2 - Orange">Out 2 - Orange</option>
+                  <option value="Out 3 - Green">Out 3 - Green</option>
+                  <option value="Out 4 - Brown">Out 4 - Brown</option>
+                  <option value="Out 5 - Slate">Out 5 - Slate</option>
+                  <option value="Out 6 - White">Out 6 - White</option>
+                  <option value="Out 7 - Red">Out 7 - Red</option>
+                  <option value="Out 8 - Black">Out 8 - Black</option>
+                  <option value="Out 9 - Yellow">Out 9 - Yellow</option>
+                  <option value="Out 10 - Violet">Out 10 - Violet</option>
+                  <option value="Out 11 - Rose">Out 11 - Rose</option>
+                  <option value="Out 12 - Aqua">Out 12 - Aqua</option>
+                  <option value="Out 13 - Blue">Out 13 - Blue</option>
+                  <option value="Out 14 - Orange">Out 14 - Orange</option>
+                  <option value="Out 15 - Green">Out 15 - Green</option>
+                  <option value="Out 16 - Brown">Out 16 - Brown</option>
+                </select>
+              </div>
+            </div>
+
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
+              <div>
+                <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">ADL Subscriber ID</label>
+                <input type="text" id="edit-rec-adl" style="width:100%;" placeholder="e.g. ADL12345">
+              </div>
+              <div>
+                <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">ACS Subscriber ID</label>
+                <input type="text" id="edit-rec-acs" style="width:100%;" placeholder="e.g. ACS67890">
+              </div>
+            </div>
+
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:18px;">
+              <div>
+                <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">Port Number</label>
+                <input type="text" id="edit-rec-port" style="width:100%;" placeholder="e.g. P1 or P1, P2">
+              </div>
+              <div>
+                <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">Enclosure #</label>
+                <input type="text" id="edit-rec-enc" style="width:100%;" placeholder="e.g. E15">
+              </div>
+            </div>
+
+            <div style="display:flex; justify-content:flex-end; gap:8px; border-top:1px solid #e2e8f0; padding-top:14px;">
+              <button type="button" class="btn btn-outline" onclick="closeEditSurveyRecordModal()">Cancel</button>
+              <button type="submit" class="btn btn-green">💾 Save Changes</button>
+            </div>
+          </form>
         </div>
       </div>
 
@@ -3260,6 +3462,7 @@ def admin_dashboard():
             let actionHtml = '';
             if (isSuperAdmin) {
               actionHtml = `<td style="text-align:center; white-space:nowrap;">
+                <button class="btn btn-outline" style="padding:3px 7px; font-size:0.75rem; margin-right:4px; color:#0284c7; border-color:#0284c7;" onclick="openEditSurveyRecordModal('${r.client_uuid}')" title="Edit Record">✏️</button>
                 <button class="btn btn-danger" style="padding:3px 7px; font-size:0.75rem;" onclick="deleteSurveyRecord('${r.client_uuid}')" title="Delete Record">🗑️</button>
               </td>`;
             } else {
@@ -3295,6 +3498,75 @@ def admin_dashboard():
             window.location.href = `/api/export-center-excel?center=${encodeURIComponent(center)}&region=${encodeURIComponent(region)}`;
           } else {
             window.location.href = '/api/export-excel';
+          }
+        }
+
+        function openEditSurveyRecordModal(uuid) {
+          const r = cachedRecords.find(item => item.client_uuid === uuid);
+          if (!r) {
+            alert('Record not found.');
+            return;
+          }
+          document.getElementById('edit-rec-uuid').value = r.client_uuid;
+          document.getElementById('edit-rec-enclosure-id').innerText = r.enclosure_id || '-';
+          document.getElementById('edit-rec-splitter-id').innerText = `${r.splitter_id || '-'} (${r.splitter_ratio || '-'})`;
+          document.getElementById('edit-rec-center-rt').innerText = `${r.center || '-'} / ${r.rt_room || '-'}`;
+          document.getElementById('edit-rec-node-port').innerText = `${r.olt_name || '-'} [${r.port_number || '-'}]`;
+
+          document.getElementById('edit-rec-post').value = r.kseb_post_number || '';
+          document.getElementById('edit-rec-landmark').value = r.landmark || '';
+          document.getElementById('edit-rec-coords').value = r.lat_long || '';
+          document.getElementById('edit-rec-cust').value = (r.customers_connected !== undefined) ? r.customers_connected : 0;
+          document.getElementById('edit-rec-ratio').value = r.splitter_ratio || '1:8';
+          document.getElementById('edit-rec-color').value = r.splitter_lead_color || '';
+          document.getElementById('edit-rec-adl').value = r.adl_subscriber_id || '';
+          document.getElementById('edit-rec-acs').value = r.acs_subscriber_id || '';
+          document.getElementById('edit-rec-port').value = r.port_number || '';
+          document.getElementById('edit-rec-enc').value = r.enclosure_number || '';
+
+          const modal = document.getElementById('edit-survey-modal');
+          if (modal) modal.style.display = 'flex';
+        }
+
+        function closeEditSurveyRecordModal() {
+          const modal = document.getElementById('edit-survey-modal');
+          if (modal) modal.style.display = 'none';
+        }
+
+        async function saveEditedSurveyRecord(e) {
+          e.preventDefault();
+          const uuid = document.getElementById('edit-rec-uuid').value;
+          if (!uuid) return;
+
+          const payload = {
+            kseb_post_number: document.getElementById('edit-rec-post').value.trim(),
+            landmark: document.getElementById('edit-rec-landmark').value.trim(),
+            lat_long: document.getElementById('edit-rec-coords').value.trim(),
+            customers_connected: parseInt(document.getElementById('edit-rec-cust').value, 10) || 0,
+            splitter_ratio: document.getElementById('edit-rec-ratio').value,
+            splitter_lead_color: document.getElementById('edit-rec-color').value,
+            adl_subscriber_id: document.getElementById('edit-rec-adl').value.trim(),
+            acs_subscriber_id: document.getElementById('edit-rec-acs').value.trim(),
+            port_number: document.getElementById('edit-rec-port').value.trim(),
+            enclosure_number: document.getElementById('edit-rec-enc').value.trim()
+          };
+
+          try {
+            const res = await authFetch(`/api/records/${uuid}`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+            if (res.ok) {
+              closeEditSurveyRecordModal();
+              fetchData();
+              alert('✅ Survey record updated successfully!');
+            } else {
+              const err = await res.json().catch(() => ({}));
+              alert('Error updating record: ' + (err.detail || 'Server error'));
+            }
+          } catch(err) {
+            alert('Network error: ' + err.message);
           }
         }
 
