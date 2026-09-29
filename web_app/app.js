@@ -745,12 +745,19 @@ function initDropdowns(preserveSelection = false) {
     centerSelect.disabled = false;
   }
 
-  centers.forEach(c => {
+  if (centers.length === 0) {
     const opt = document.createElement('option');
-    opt.value = c;
-    opt.innerText = c;
+    opt.value = '';
+    opt.innerText = '-- No Centers Configured (Upload Node Master) --';
     centerSelect.appendChild(opt);
-  });
+  } else {
+    centers.forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c;
+      opt.innerText = c;
+      centerSelect.appendChild(opt);
+    });
+  }
 
   if (prevCenter && centers.includes(prevCenter)) {
     centerSelect.value = prevCenter;
