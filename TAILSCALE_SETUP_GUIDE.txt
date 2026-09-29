@@ -1,0 +1,190 @@
+================================================================================
+TAILSCALE & TAILSCALE FUNNEL SETUP GUIDE FOR UBUNTU
+================================================================================
+Target Server Application Port: 9001 (FastAPI gpon-server)
+Public HTTPS Feature: Tailscale Funnel (Zero Router Ports, 100% Free SSL)
+
+--------------------------------------------------------------------------------
+1. OVERVIEW & HOW IT WORKS
+--------------------------------------------------------------------------------
+Tailscale Funnel routes public internet traffic (from field surveyors on 4G/5G)
+through Tailscale's secure relay network directly to port 9001 on your local
+Ubuntu machine.
+
+No router configuration or port forwarding is required. Tailscale automatically
+issues and renews a genuine Let's Encrypt SSL/HTTPS certificate, enabling full
+GPS and Camera access in Android Chrome and iOS Safari without warnings.
+
+Field Surveyor App : https://<machine-name>.<tailnet-name>.ts.net/
+Admin Portal       : https://<machine-name>.<tailnet-name>.ts.net/admin
+
+
+--------------------------------------------------------------------------------
+2. PREREQUISITES
+--------------------------------------------------------------------------------
+1. An Ubuntu desktop or server (Ubuntu 20.04, 22.04, or 24.04 LTS).
+2. Your survey application running locally on port 9001:
+     sudo systemctl status gpon-server
+3. A free Tailscale account:
+     Sign up at: https://tailscale.com (using Google, Microsoft, GitHub, or Apple)
+
+
+--------------------------------------------------------------------------------
+3. STEP-BY-STEP INSTALLATION & CONFIGURATION
+--------------------------------------------------------------------------------
+
+STEP 3.1: Install Tailscale on Ubuntu
+------------------------------------
+Open the Ubuntu terminal and run the official 1-line installation script:
+
+curl -fsSL https://tailscale.com/install.sh | sh
+
+This command:
+- Configures the official Tailscale package repository.
+- Installs the tailscale CLI and tailscaled background daemon.
+- Enables and starts the background service automatically.
+
+
+STEP 3.2: Connect and Authenticate Ubuntu with Tailscale
+-------------------------------------------------------
+In your Ubuntu terminal, run:
+
+sudo tailscale up
+
+The terminal will print a unique web link:
+  To authenticate, visit:
+       https://login.tailscale.com/a/xxxxxx
+
+Actions:
+1. Copy the link and open it in any web browser.
+2. Sign in with your Tailscale account credentials.
+3. Click "Connect / Authorize".
+4. The terminal will display: "Success."
+
+Verify the connection anytime:
+tailscale status
+
+
+STEP 3.3: Enable MagicDNS & HTTPS Certificates (One-Time Setup)
+---------------------------------------------------------------
+By default, Tailscale operates as a private VPN. To make your URL public with
+valid HTTPS:
+
+1. Open Tailscale Admin DNS settings:
+   https://login.tailscale.com/admin/dns
+2. Ensure MagicDNS is turned ON.
+3. Under "HTTPS Certificates", toggle the switch to "Enabled".
+
+
+STEP 3.4: Enable Funnel in Access Control Policy (ACL)
+-----------------------------------------------------
+1. Open Tailscale Access Controls:
+   https://login.tailscale.com/admin/acls
+2. Look for the "nodeAttrs" section (or add it if not already present):
+
+   "nodeAttrs": [
+       {
+           "target": ["autogroup:member"],
+           "attr": ["funnel"]
+       }
+   ]
+
+3. Click "Save" at the bottom right.
+
+
+STEP 3.5: Start Tailscale Funnel on Port 9001
+---------------------------------------------
+In your Ubuntu terminal, run:
+
+tailscale funnel --bg 9001
+
+Note: The --bg parameter keeps the tunnel running in the background even if you
+close the terminal or disconnect AnyDesk/SSH.
+
+If this is your first time starting Funnel, the terminal may prompt:
+  Funnel is not enabled on your tailnet.
+  To enable, visit:
+       https://login.tailscale.com/f/funnel?node=xxxxxx
+
+If shown:
+1. Open the URL in your browser and click "Enable Funnel".
+2. Run the command again:
+   tailscale funnel --bg 9001
+
+Success Output:
+------------------------------------------------------------
+Success.
+Available on the internet:
+
+https://<your-machine-name>.<your-tailnet-name>.ts.net/
+|-- proxy http://127.0.0.1:9001
+
+Funnel started and running in the background.
+------------------------------------------------------------
+
+
+--------------------------------------------------------------------------------
+4. VERIFYING PUBLIC INTERNET ACCESS
+--------------------------------------------------------------------------------
+On any phone or computer using mobile 4G/5G data (without Tailscale installed):
+
+1. Field Surveyor Web App:
+   https://<your-machine-name>.<your-tailnet-name>.ts.net/
+   - Prompts for GPS location permission -> Tap "Allow".
+   - In Chrome, tap Menu (three dots) -> "Install app" or "Add to Home Screen".
+
+2. Central Management Portal:
+   https://<your-machine-name>.<your-tailnet-name>.ts.net/admin
+   - Log in with Super Admin credentials.
+
+
+--------------------------------------------------------------------------------
+5. CUSTOMIZING YOUR URL (OPTIONAL)
+--------------------------------------------------------------------------------
+You can customize both the machine name and your tailnet name to make the link
+easy to remember:
+
+A. Change Machine Name (e.g. from "psms" to "survey"):
+   1. Visit: https://login.tailscale.com/admin/machines
+   2. Click the three dots (...) next to your Ubuntu machine -> "Edit machine name..."
+   3. Enter "survey" and click "Update name".
+
+B. Change Tailnet Name (e.g. from "tail9503fc" to "keralafiber"):
+   1. Visit: https://login.tailscale.com/admin/dns
+   2. Next to "Tailnet name", click "Rename tailnet..."
+   3. Enter your desired organization name (e.g. "keralafiber") and save.
+
+Your public URL will instantly update to:
+   https://survey.keralafiber.ts.net/
+   https://survey.keralafiber.ts.net/admin
+
+
+--------------------------------------------------------------------------------
+6. COMMAND CHEAT SHEET
+--------------------------------------------------------------------------------
+Check Funnel Status:
+  tailscale funnel status
+
+Turn OFF Funnel:
+  tailscale funnel --https=443 off
+
+Restart Tailscale Background Service:
+  sudo systemctl restart tailscaled
+
+Check Tailscale Service Status:
+  sudo systemctl status tailscaled
+
+View Tailscale Logs:
+  journalctl -u tailscaled -e
+
+Check Local Tailscale IPv4 Address:
+  tailscale ip -4
+
+
+--------------------------------------------------------------------------------
+7. AUTO-START ON REBOOT (PERSISTENCE)
+--------------------------------------------------------------------------------
+Tailscale is managed by systemd (tailscaled.service). It will automatically
+start on system boot, recover from power outages, and restore the background
+Funnel proxy to port 9001 without manual intervention.
+================================================================================
