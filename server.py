@@ -2183,7 +2183,10 @@ def resync_data_folders(session: dict = Depends(require_admin_auth)):
 
 # Central Office Web Dashboard
 @app.get("/admin", response_class=HTMLResponse)
-def admin_dashboard():
+def admin_dashboard(response: Response):
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
     return """
     <!DOCTYPE html>
     <html lang="en">
