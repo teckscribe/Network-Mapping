@@ -18,6 +18,10 @@ GPS and Camera access in Android Chrome and iOS Safari without warnings.
 Field Surveyor App : https://<machine-name>.<tailnet-name>.ts.net/
 Admin Portal       : https://<machine-name>.<tailnet-name>.ts.net/admin
 
+Active Production Example:
+Field App    : https://network-mapping.tail1add79.ts.net/
+Admin Portal : https://network-mapping.tail1add79.ts.net/admin
+
 
 --------------------------------------------------------------------------------
 2. PREREQUISITES
@@ -78,25 +82,38 @@ valid HTTPS:
 
 STEP 3.4: Enable Funnel in Access Control Policy (ACL)
 -----------------------------------------------------
-1. Open Tailscale Access Controls:
+1. Open Tailscale Access Controls (JSON editor):
    https://login.tailscale.com/admin/acls
-2. Look for the "nodeAttrs" section (or add it if not already present):
 
-   "nodeAttrs": [
-       {
-           "target": ["autogroup:member"],
-           "attr": ["funnel"]
-       }
-   ]
+2. IMPORTANT: Tailscale requires a valid, complete JSON object enclosed in
+   curly braces { ... } including the default "acls" rules.
+   
+   Ensure your JSON editor contains this complete structure:
 
-3. Click "Save" at the bottom right.
+{
+  "acls": [
+    {
+      "action": "accept",
+      "src": ["*"],
+      "dst": ["*:*"]
+    }
+  ],
+  "nodeAttrs": [
+    {
+      "target": ["autogroup:member"],
+      "attr": ["funnel"]
+    }
+  ]
+}
+
+3. Click "Save" at the bottom right. A green checkmark confirms it is saved.
 
 
 STEP 3.5: Start Tailscale Funnel on Port 9001
 ---------------------------------------------
 In your Ubuntu terminal, run:
 
-tailscale funnel --bg 9001
+sudo tailscale funnel --bg 9001
 
 Note: The --bg parameter keeps the tunnel running in the background even if you
 close the terminal or disconnect AnyDesk/SSH.
@@ -109,17 +126,17 @@ If this is your first time starting Funnel, the terminal may prompt:
 If shown:
 1. Open the URL in your browser and click "Enable Funnel".
 2. Run the command again:
-   tailscale funnel --bg 9001
+   sudo tailscale funnel --bg 9001
 
 Success Output:
 ------------------------------------------------------------
-Success.
 Available on the internet:
 
-https://<your-machine-name>.<your-tailnet-name>.ts.net/
+https://network-mapping.tail1add79.ts.net/
 |-- proxy http://127.0.0.1:9001
 
 Funnel started and running in the background.
+To disable the proxy, run: tailscale funnel --https=443 off
 ------------------------------------------------------------
 
 
@@ -129,12 +146,12 @@ Funnel started and running in the background.
 On any phone or computer using mobile 4G/5G data (without Tailscale installed):
 
 1. Field Surveyor Web App:
-   https://<your-machine-name>.<your-tailnet-name>.ts.net/
+   https://network-mapping.tail1add79.ts.net/
    - Prompts for GPS location permission -> Tap "Allow".
    - In Chrome, tap Menu (three dots) -> "Install app" or "Add to Home Screen".
 
 2. Central Management Portal:
-   https://<your-machine-name>.<your-tailnet-name>.ts.net/admin
+   https://network-mapping.tail1add79.ts.net/admin
    - Log in with Super Admin credentials.
 
 
@@ -144,12 +161,12 @@ On any phone or computer using mobile 4G/5G data (without Tailscale installed):
 You can customize both the machine name and your tailnet name to make the link
 easy to remember:
 
-A. Change Machine Name (e.g. from "psms" to "survey"):
+A. Change Machine Name (e.g. to "survey"):
    1. Visit: https://login.tailscale.com/admin/machines
    2. Click the three dots (...) next to your Ubuntu machine -> "Edit machine name..."
    3. Enter "survey" and click "Update name".
 
-B. Change Tailnet Name (e.g. from "tail9503fc" to "keralafiber"):
+B. Change Tailnet Name (e.g. to "keralafiber"):
    1. Visit: https://login.tailscale.com/admin/dns
    2. Next to "Tailnet name", click "Rename tailnet..."
    3. Enter your desired organization name (e.g. "keralafiber") and save.
@@ -166,7 +183,10 @@ Check Funnel Status:
   tailscale funnel status
 
 Turn OFF Funnel:
-  tailscale funnel --https=443 off
+  sudo tailscale funnel --https=443 off
+
+Restart Funnel:
+  sudo tailscale funnel --bg 9001
 
 Restart Tailscale Background Service:
   sudo systemctl restart tailscaled
