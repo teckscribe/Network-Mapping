@@ -33,9 +33,17 @@ Key Safety Features:
 --------------------------------------------------------------------------------
 2. STEP-BY-STEP SETUP INSTRUCTIONS
 --------------------------------------------------------------------------------
+TERMINAL CONTEXT GUIDE:
+- [ANY TERMINAL]     : You can run this command from the main home terminal
+                       (psms@psms:~$) or anywhere on your system.
+- [PROJECT TERMINAL] : You must run this command inside your project folder
+                       (psms@psms:~/Network-Mapping$).
+
 
 STEP 2.1: Install Required Tools on Ubuntu
 ------------------------------------------
+[Where to enter: ANY TERMINAL]
+
 Open your Ubuntu terminal and run:
 
 sudo apt update
@@ -44,6 +52,8 @@ sudo apt install -y rclone sqlite3
 
 STEP 2.2: Connect Rclone to Your Google Drive (One-Time Setup)
 --------------------------------------------------------------
+[Where to enter: ANY TERMINAL]
+
 Run the interactive configuration wizard:
 
 rclone config
@@ -100,7 +110,9 @@ Setup complete! Rclone is now securely linked to your Google Drive.
 
 STEP 2.3: Verify the Google Drive Connection
 --------------------------------------------
-In your Ubuntu terminal, run:
+[Where to enter: ANY TERMINAL]
+
+In your terminal, run:
 
 rclone lsd gdrive:
 
@@ -110,7 +122,9 @@ is 100% operational!
 
 STEP 2.4: Pull Latest Code & Set Permissions on the Backup Script
 ------------------------------------------------------------------
-Run in your Ubuntu terminal:
+[Where to enter: PROJECT TERMINAL (cd /home/psms/Network-Mapping)]
+
+Switch to your project folder, pull the latest code, and make the script executable:
 
 cd /home/psms/Network-Mapping
 git stash
@@ -120,6 +134,8 @@ chmod +x /home/psms/Network-Mapping/backup_to_gdrive.sh
 
 STEP 2.5: Test Run the Backup Manually
 --------------------------------------
+[Where to enter: PROJECT TERMINAL or ANY TERMINAL]
+
 Execute the backup script once to confirm everything works:
 
 /home/psms/Network-Mapping/backup_to_gdrive.sh
@@ -143,15 +159,18 @@ You will see a new folder named "GPON_Backups" with your backup archive inside!
 --------------------------------------------------------------------------------
 3. SCHEDULING AUTOMATIC BACKUPS (CRON)
 --------------------------------------------------------------------------------
-Ubuntu uses "cron" to run tasks automatically in the background at specific intervals.
+[Where to enter: ANY TERMINAL (Main terminal or Project terminal - works identically)]
 
-To open your personal schedule table, run:
+Ubuntu uses "cron" as a system-wide background scheduler for your user account.
+It does not matter which directory your terminal is currently in.
+
+To open your schedule table, run:
 
 crontab -e
 
 (If it asks you to choose an editor, select "1" for nano).
 
-Scroll to the bottom of the file and add YOUR CHOSEN INTERVAL from the options below:
+Scroll to the bottom of the file and paste YOUR CHOSEN INTERVAL line from below:
 
 OPTION A: Every 2 Hours (Recommended for active field survey days)
 -----------------------------------------------------------------
@@ -177,13 +196,15 @@ Save and Exit nano:
 - Press:  Ctrl + O  then  Enter  (to save)
 - Press:  Ctrl + X  (to exit)
 
-Verify that the cron schedule is active:
+Verify that the cron schedule is active [ANY TERMINAL]:
 crontab -l
 
 
 --------------------------------------------------------------------------------
 4. HOW TO MONITOR & CHECK BACKUP LOGS
 --------------------------------------------------------------------------------
+[Where to enter: ANY TERMINAL]
+
 Every time the backup runs, it logs details to /home/psms/Network-Mapping/backup.log.
 
 To view the latest backup logs anytime:
@@ -196,6 +217,8 @@ rclone ls gdrive:GPON_Backups
 --------------------------------------------------------------------------------
 5. DISASTER RECOVERY: HOW TO RESTORE FROM GOOGLE DRIVE
 --------------------------------------------------------------------------------
+[Where to enter: ANY TERMINAL]
+
 If your Ubuntu desktop is ever formatted, replaced, or damaged:
 
 1. List available cloud backups:
