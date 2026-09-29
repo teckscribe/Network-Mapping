@@ -514,6 +514,12 @@ function showToast(msg, isSuccess = true) {
   }, 2500);
 }
 
+// HTML Escape utility to prevent XSS in record table rendering
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+}
+
 // Update Enclosure ID Preview
 function updateEnclosureId() {
   const olt = oltSelect.value;
@@ -1144,8 +1150,8 @@ function captureGPS() {
       updateMapPosition(currentLat, currentLon, currentAccuracy);
     }
 
-    // Stop early if excellent satellite accuracy (< 5m) is achieved or 5+ samples converged
-    if (acc <= 4.5 || sampleCount >= 6) {
+    // Stop early if excellent satellite accuracy (< 3m) is achieved or 10+ samples converged
+    if (acc <= 3.0 || sampleCount >= 10) {
       finalizeGPS(gpsBtn, 'High precision satellite fix locked!');
     }
   };
@@ -1165,22 +1171,22 @@ function captureGPS() {
       onLocationError,
       {
         enableHighAccuracy: true,
-        timeout: 10000,
+        timeout: 15000,
         maximumAge: 0
       }
     );
   } catch (e) {
     navigator.geolocation.getCurrentPosition(onLocationSuccess, onLocationError, {
       enableHighAccuracy: true,
-      timeout: 10000,
+      timeout: 15000,
       maximumAge: 0
     });
   }
 
-  // Settle time limit: After 6 seconds, lock the best fix obtained so far
+  // Settle time limit: After 12 seconds, lock the best fix obtained so far
   gpsWatchTimer = setTimeout(() => {
     finalizeGPS(gpsBtn, bestAccuracy <= 15 ? 'GPS locked at best available satellite accuracy' : null);
-  }, 6000);
+  }, 12000);
 }
 
 function finalizeGPS(btn, successMsg = null) {
@@ -1671,19 +1677,19 @@ function renderSheetTable() {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td class="gs-row-num">${idx + 1}</td>
-      <td style="font-family: monospace; font-size: 0.75rem; color:#5f6368;">${timeDisplay}</td>
-      <td class="gs-id-cell">${r["Enclosure ID"] || '-'}</td>
-      <td><strong>${r["KSEB Post Number"] || '-'}</strong></td>
-      <td>${r["Land Mark"] || '-'}</td>
-      <td>${r["Center"] || '-'}</td>
-      <td>${r["RT Room"] || '-'}</td>
-      <td>${r["OLT/Node  Name"] || '-'} [${r["Port Number"] || '-'}]</td>
-      <td style="font-family: monospace; font-size: 0.75rem;">${r["Lat /Long"] || '-'}</td>
-      <td>${r["Splitter Ratio"] || '-'}</td>
+      <td style="font-family: monospace; font-size: 0.75rem; color:#5f6368;">${escapeHtml(timeDisplay)}</td>
+      <td class="gs-id-cell">${escapeHtml(r["Enclosure ID"]) || '-'}</td>
+      <td><strong>${escapeHtml(r["KSEB Post Number"]) || '-'}</strong></td>
+      <td>${escapeHtml(r["Land Mark"]) || '-'}</td>
+      <td>${escapeHtml(r["Center"]) || '-'}</td>
+      <td>${escapeHtml(r["RT Room"]) || '-'}</td>
+      <td>${escapeHtml(r["OLT/Node  Name"]) || '-'} [${escapeHtml(r["Port Number"]) || '-'}]</td>
+      <td style="font-family: monospace; font-size: 0.75rem;">${escapeHtml(r["Lat /Long"]) || '-'}</td>
+      <td>${escapeHtml(r["Splitter Ratio"]) || '-'}</td>
       <td style="text-align:center;">${r["No: Of Customer Connected"] || 0}</td>
-      <td><span style="background:#e8f0fe; color:#1a73e8; padding:2px 6px; border-radius:4px; font-size:0.75rem; font-weight:600;">${colorDisplay}</span></td>
-      <td style="font-family: monospace; font-size: 0.75rem;">${adlDisplay}</td>
-      <td style="font-family: monospace; font-size: 0.75rem;">${acsDisplay}</td>
+      <td><span style="background:#e8f0fe; color:#1a73e8; padding:2px 6px; border-radius:4px; font-size:0.75rem; font-weight:600;">${escapeHtml(colorDisplay)}</span></td>
+      <td style="font-family: monospace; font-size: 0.75rem;">${escapeHtml(adlDisplay)}</td>
+      <td style="font-family: monospace; font-size: 0.75rem;">${escapeHtml(acsDisplay)}</td>
       <td>${syncTag}</td>
       <td style="text-align:center;"><button class="btn-del-cell" onclick="deleteRecord(${idx})" title="Delete Row">🗑️</button></td>
     `;
@@ -1831,9 +1837,9 @@ function openRecordsModal() {
       item.className = 'record-item';
       item.innerHTML = `
         <div class="record-item-main">
-          <div class="record-title">${r["Enclosure ID"]} — ${r["KSEB Post Number"]} ${syncBadge}</div>
-          <div class="record-sub">${r["OLT/Node  Name"]} | Port: ${r["Port Number"]} | Ratio: ${r["Splitter Ratio"]}</div>
-          <div class="record-sub">GPS: ${r["Lat /Long"] || 'No GPS'} | Cust: ${r["No: Of Customer Connected"]}</div>
+          <div class="record-title">${escapeHtml(r["Enclosure ID"])} — ${escapeHtml(r["KSEB Post Number"])} ${syncBadge}</div>
+          <div class="record-sub">${escapeHtml(r["OLT/Node  Name"])} | Port: ${escapeHtml(r["Port Number"])} | Ratio: ${escapeHtml(r["Splitter Ratio"])}</div>
+          <div class="record-sub">GPS: ${escapeHtml(r["Lat /Long"]) || 'No GPS'} | Cust: ${r["No: Of Customer Connected"]}</div>
         </div>
         <button class="record-del" onclick="deleteRecord(${realIndex})">✕</button>
       `;
@@ -2095,8 +2101,8 @@ async function syncWithServer(silent = false) {
   }
 }
 
-function triggerManualSync() {
-  checkServerConnection();
+async function triggerManualSync() {
+  await checkServerConnection();
   refreshCurrentUserProfile();
   syncWithServer(false);
 }

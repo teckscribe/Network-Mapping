@@ -8,6 +8,7 @@ import sqlite3
 import datetime
 import time
 import random
+import secrets
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -795,8 +796,8 @@ def request_password_reset_otp(req: RequestResetOtpPayload):
             detail=f"Account '{user['username']}' does not have a registered email address on file. Please contact your Super Administrator."
         )
 
-    # Generate 6-digit OTP
-    otp_code = f"{random.randint(100000, 999999)}"
+    # Generate cryptographically secure 6-digit OTP
+    otp_code = f"{secrets.randbelow(900000) + 100000}"
     now = time.time()
 
     PASSWORD_RESET_OTPS[user["username"].lower()] = {
