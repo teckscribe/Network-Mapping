@@ -160,7 +160,7 @@
           <div class="gs-cell-group col-full">
             <label class="gs-cell-label">GPS Coordinates (Lat, Long) <span style="color:#ef4444; font-weight:700;">*</span></label>
             <div class="gs-gps-bar">
-              <input type="text" id="manual-coords-input" class="gs-input" placeholder="e.g. 10.606650, 76.214490 (Mandatory)" onchange="onManualCoordsChange(this.value)">
+              <input type="text" id="manual-coords-input" class="gs-input" placeholder="e.g. 10.606650, 76.214490 (or paste from Excel)" onchange="onManualCoordsChange(this.value)" oninput="onManualCoordsChange(this.value)">
               <button class="btn-gps-sheet" type="button" onclick="captureGPS()">🎯 GPS</button>
             </div>
             <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px; margin-bottom: 6px; flex-wrap: wrap; gap: 6px;">

@@ -699,21 +699,38 @@ const mapContainer = document.getElementById('map-container');
 const mapToggleBtn = document.getElementById('map-toggle-btn');
 const recordsBadge = document.getElementById('records-count-badge');
 
+function parseCoordinates(val) {
+  if (!val || typeof val !== 'string') return null;
+  const clean = val.trim();
+  if (!clean) return null;
+  // Match two decimal floats in the string (supports commas, tabs from Excel, spaces, semicolons, etc.)
+  const matches = clean.match(/[-+]?[0-9]*\.?[0-9]+/g);
+  if (matches && matches.length >= 2) {
+    const lat = parseFloat(matches[0]);
+    const lon = parseFloat(matches[1]);
+    if (!isNaN(lat) && !isNaN(lon) && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180 && (lat !== 0 || lon !== 0)) {
+      return { lat, lon, formatted: `${lat.toFixed(6)}, ${lon.toFixed(6)}` };
+    }
+  }
+  return null;
+}
+
 function onManualCoordsChange(val) {
   if (!val) return;
-  const parts = val.split(',');
-  if (parts.length === 2) {
-    const lat = parseFloat(parts[0].trim());
-    const lon = parseFloat(parts[1].trim());
-    if (!isNaN(lat) && !isNaN(lon)) {
-      currentLat = lat;
-      currentLon = lon;
-      gpsAccText.innerHTML = '<span style="color:#0284c7; font-weight:600;">Manual Coordinate Entry</span>';
-      if (mapInstance) {
-        updateMapPosition(currentLat, currentLon, null);
-      }
-      showToast('Coordinates updated');
+  const parsed = parseCoordinates(val);
+  if (parsed) {
+    currentLat = parsed.lat;
+    currentLon = parsed.lon;
+    if (manualCoordsInput && manualCoordsInput.value !== parsed.formatted) {
+      manualCoordsInput.value = parsed.formatted;
     }
+    if (gpsAccText) {
+      gpsAccText.innerHTML = '<span style="color:#0284c7; font-weight:600;">📍 Coordinates Entered Manually / Pasted from Excel</span>';
+    }
+    if (mapInstance) {
+      updateMapPosition(currentLat, currentLon, null);
+    }
+    showToast(`Coordinates updated: ${parsed.formatted}`);
   }
 }
 
@@ -1915,13 +1932,19 @@ function saveRecord() {
   let latLongStr = '';
   if (currentLat && currentLon) {
     latLongStr = `${currentLat.toFixed(6)}, ${currentLon.toFixed(6)}`;
-  } else if (manualCoordsInput && manualCoordsInput.value && manualCoordsInput.value.includes(',')) {
-    latLongStr = manualCoordsInput.value.trim();
+  } else if (manualCoordsInput && manualCoordsInput.value) {
+    const parsed = parseCoordinates(manualCoordsInput.value);
+    if (parsed) {
+      currentLat = parsed.lat;
+      currentLon = parsed.lon;
+      latLongStr = parsed.formatted;
+      manualCoordsInput.value = parsed.formatted;
+    }
   }
 
   // Mandatory GPS Enforcement: Network mapping strictly requires coordinates for every surveyed pole
-  if (!latLongStr || !latLongStr.includes(',')) {
-    showToast('⚠️ GPS location is mandatory! Tap [🎯 GPS] to capture coordinates.', false);
+  if (!latLongStr) {
+    showToast('⚠️ GPS location is mandatory! Paste coordinates from Excel or tap [🎯 GPS].', false);
     const gpsBtn = document.querySelector('.btn-gps-sheet');
     if (gpsBtn) {
       gpsBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -1933,13 +1956,6 @@ function saveRecord() {
       manualCoordsInput.style.borderColor = '#ef4444';
       setTimeout(() => { if (manualCoordsInput) manualCoordsInput.style.borderColor = ''; }, 2500);
     }
-    return;
-  }
-
-  const coordsParts = latLongStr.split(',').map(s => parseFloat(s.trim()));
-  if (coordsParts.length < 2 || isNaN(coordsParts[0]) || isNaN(coordsParts[1]) || coordsParts[0] === 0 || coordsParts[1] === 0) {
-    showToast('⚠️ Invalid coordinates! Please tap [🎯 GPS] to capture a valid satellite fix.', false);
-    if (manualCoordsInput) manualCoordsInput.focus();
     return;
   }
 
