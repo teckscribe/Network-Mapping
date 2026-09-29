@@ -172,7 +172,11 @@ crontab -e
 
 Scroll to the bottom of the file and paste YOUR CHOSEN INTERVAL line from below:
 
-OPTION A: Every 2 Hours (Recommended for active field survey days)
+OPTION 0: Every 30 Minutes (High Frequency - Real-time Field Protection)
+-------------------------------------------------------------------------
+*/30 * * * * /home/psms/Network-Mapping/backup_to_gdrive.sh >/dev/null 2>&1
+
+OPTION A: Every 2 Hours (Recommended for standard survey days)
 -----------------------------------------------------------------
 0 */2 * * * /home/psms/Network-Mapping/backup_to_gdrive.sh >/dev/null 2>&1
 
