@@ -2,15 +2,16 @@
 AUTOMATED GOOGLE DRIVE DATABASE BACKUP GUIDE FOR UBUNTU
 ================================================================================
 Application: GPON Network Mapping & Survey Platform
-Database: SQLite (gpon_survey_data.db) + users_config.json + custom_hierarchy.json
-Tool Used: Rclone (Official, Open-Source Cloud Sync Tool) + Cron Scheduler
+Project Folder: /home/psms/Network-Mapping
+Database: SQLite (/home/psms/Network-Mapping/gpon_survey_data.db)
+Backup Tool: Rclone (Official Google Drive Cloud Sync Tool) + Cron Scheduler
 
 --------------------------------------------------------------------------------
 1. OVERVIEW & SAFETY ARCHITECTURE
 --------------------------------------------------------------------------------
-This solution backs up your live survey database directly to your Google Drive
-automatically at whatever interval you specify (e.g., every 2 hours, every 6
-hours, or once daily).
+This solution automatically backs up your live survey database directly to your
+Google Drive at whatever interval you specify (e.g. every 2 hours, every 4
+hours, or daily).
 
 Key Safety Features:
 1. Zero Data Corruption (Hot SQLite Snapshot):
@@ -54,10 +55,10 @@ Follow these exact interactive prompts:
 
 2. "name>"
    Type:  gdrive  (and press Enter)
-   (IMPORTANT: Use "gdrive" in lowercase, as the script looks for this name).
+   (IMPORTANT: Use "gdrive" in lowercase, as the script looks for this exact name).
 
 3. "Storage>"
-   Type:  drive  (or look for the number for "Google Drive", typically 18 or 20)
+   Type:  drive  (or enter the number corresponding to "Google Drive")
    Press Enter.
 
 4. "client_id>"
@@ -107,18 +108,21 @@ If it connects and prints your Google Drive folders without any error, the link
 is 100% operational!
 
 
-STEP 2.4: Enable Execution Permissions on the Backup Script
-------------------------------------------------------------
-Run in terminal:
+STEP 2.4: Pull Latest Code & Set Permissions on the Backup Script
+------------------------------------------------------------------
+Run in your Ubuntu terminal:
 
-chmod +x ~/Network-Mapping/backup_to_gdrive.sh
+cd /home/psms/Network-Mapping
+git stash
+git pull origin main
+chmod +x /home/psms/Network-Mapping/backup_to_gdrive.sh
 
 
 STEP 2.5: Test Run the Backup Manually
 --------------------------------------
-Run the script once to confirm everything works:
+Execute the backup script once to confirm everything works:
 
-~/Network-Mapping/backup_to_gdrive.sh
+/home/psms/Network-Mapping/backup_to_gdrive.sh
 
 You will see output similar to:
 ------------------------------------------------------------
@@ -139,7 +143,7 @@ You will see a new folder named "GPON_Backups" with your backup archive inside!
 --------------------------------------------------------------------------------
 3. SCHEDULING AUTOMATIC BACKUPS (CRON)
 --------------------------------------------------------------------------------
-Ubuntu uses "cron" to run tasks automatically at specific intervals.
+Ubuntu uses "cron" to run tasks automatically in the background at specific intervals.
 
 To open your personal schedule table, run:
 
@@ -147,8 +151,7 @@ crontab -e
 
 (If it asks you to choose an editor, select "1" for nano).
 
-Scroll to the bottom of the file and add YOUR CHOSEN INTERVAL from the options
-below:
+Scroll to the bottom of the file and add YOUR CHOSEN INTERVAL from the options below:
 
 OPTION A: Every 2 Hours (Recommended for active field survey days)
 -----------------------------------------------------------------
@@ -174,17 +177,17 @@ Save and Exit nano:
 - Press:  Ctrl + O  then  Enter  (to save)
 - Press:  Ctrl + X  (to exit)
 
-Verify that the cron schedule is saved:
+Verify that the cron schedule is active:
 crontab -l
 
 
 --------------------------------------------------------------------------------
 4. HOW TO MONITOR & CHECK BACKUP LOGS
 --------------------------------------------------------------------------------
-Every time the backup runs, it logs details to ~/Network-Mapping/backup.log.
+Every time the backup runs, it logs details to /home/psms/Network-Mapping/backup.log.
 
 To view the latest backup logs anytime:
-tail -n 30 ~/Network-Mapping/backup.log
+tail -n 30 /home/psms/Network-Mapping/backup.log
 
 To view all files currently stored in your Google Drive backup folder:
 rclone ls gdrive:GPON_Backups
@@ -199,20 +202,20 @@ If your Ubuntu desktop is ever formatted, replaced, or damaged:
    rclone ls gdrive:GPON_Backups
 
 2. Download your chosen backup archive:
-   mkdir -p ~/restore_temp
-   rclone copy gdrive:GPON_Backups/gpon_backup_YYYY-MM-DD_HH-MM-SS.tar.gz ~/restore_temp/
+   mkdir -p /home/psms/restore_temp
+   rclone copy gdrive:GPON_Backups/gpon_backup_YYYY-MM-DD_HH-MM-SS.tar.gz /home/psms/restore_temp/
 
 3. Extract the archive:
-   cd ~/restore_temp
+   cd /home/psms/restore_temp
    tar -xzf gpon_backup_YYYY-MM-DD_HH-MM-SS.tar.gz
 
 4. Stop the server service:
    sudo systemctl stop gpon-server
 
 5. Restore the files into your project folder:
-   cp snapshot_*.db ~/Network-Mapping/gpon_survey_data.db
-   cp users_config.json ~/Network-Mapping/users_config.json
-   cp custom_hierarchy.json ~/Network-Mapping/custom_hierarchy.json
+   cp snapshot_*.db /home/psms/Network-Mapping/gpon_survey_data.db
+   cp users_config.json /home/psms/Network-Mapping/users_config.json
+   cp custom_hierarchy.json /home/psms/Network-Mapping/custom_hierarchy.json
 
 6. Restart the server service:
    sudo systemctl start gpon-server
