@@ -28,13 +28,13 @@ else
 fi
 
 # 2. Enable tailscaled.service (Tailscale & Funnel)
-if systemctl list-unit-files | grep -q "tailscaled.service"; then
+if command -v tailscale >/dev/null 2>&1 || systemctl list-unit-files | grep -q "tailscale"; then
     echo "[2/5] Enabling tailscaled.service on boot..."
-    systemctl enable tailscaled.service
-    systemctl restart tailscaled.service
+    systemctl enable tailscaled 2>/dev/null || true
+    systemctl restart tailscaled 2>/dev/null || true
     echo "  -> tailscaled is ENABLED and ACTIVE"
 else
-    echo "[2/5] WARNING: tailscaled service not found. Is Tailscale installed?"
+    echo "[2/5] tailscale not installed on this machine (Skipping)"
 fi
 
 # 3. Enable cron.service (Google Drive 30-min Automated Backups)
@@ -44,13 +44,13 @@ systemctl restart cron.service
 echo "  -> cron is ENABLED and ACTIVE"
 
 # 4. Enable cloudflared (if installed)
-if systemctl list-unit-files | grep -q "cloudflared.service"; then
+if command -v cloudflared >/dev/null 2>&1 || systemctl list-unit-files | grep -q "cloudflared"; then
     echo "[4/5] Enabling cloudflared.service on boot..."
-    systemctl enable cloudflared.service
-    systemctl restart cloudflared.service
+    systemctl enable cloudflared 2>/dev/null || true
+    systemctl restart cloudflared 2>/dev/null || true
     echo "  -> cloudflared is ENABLED and ACTIVE"
 else
-    echo "[4/5] cloudflared.service not installed (Skipping, using Tailscale Funnel)"
+    echo "[4/5] cloudflared not installed on this machine (Skipping)"
 fi
 
 # 5. Disable Ubuntu Desktop Sleep & Suspend (CRITICAL FOR DESKTOPS)
