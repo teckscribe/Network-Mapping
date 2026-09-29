@@ -32,7 +32,21 @@ let serverConnectionChecked = false;
 let lastKnownHierarchyVersion = parseInt(localStorage.getItem('gpon_hierarchy_version') || '0', 10);
 
 // User Session & Authentication
-let currentUser = JSON.parse(localStorage.getItem('gpon_logged_in_user') || 'null');
+function getStoredUser() {
+  try {
+    const raw = localStorage.getItem('gpon_logged_in_user');
+    if (!raw || raw === 'null' || raw === 'undefined' || raw === '{}') return null;
+    const u = JSON.parse(raw);
+    if (u && typeof u === 'object' && u.username && typeof u.username === 'string' && u.username.trim().length > 0) {
+      return u;
+    }
+  } catch (e) {
+    console.warn('Invalid user session in localStorage:', e);
+  }
+  localStorage.removeItem('gpon_logged_in_user');
+  return null;
+}
+let currentUser = getStoredUser();
 
 // Network-Wide Surveyed Points Map (for duplicate checking, field locks, and ACSO supervisor updates)
 let networkSurveyedPoints = {};
@@ -290,7 +304,8 @@ function quickLogin(u, p) {
 function setCurrentUser(user) {
   currentUser = user;
   localStorage.setItem('gpon_logged_in_user', JSON.stringify(user));
-  document.getElementById('login-overlay').style.display = 'none';
+  const overlay = document.getElementById('login-overlay');
+  if (overlay) overlay.style.setProperty('display', 'none', 'important');
   updateUserBar();
   initDropdowns();
   fetchSurveyedPoints();
@@ -303,8 +318,11 @@ function logout() {
     localStorage.removeItem('gpon_logged_in_user');
     localStorage.removeItem('gpon_auth_token');
     localStorage.removeItem('gpon_network_surveyed_points');
+    const foucStyle = document.getElementById('fouc-prevention');
+    if (foucStyle) foucStyle.remove();
     updateUserBar();
-    document.getElementById('login-overlay').style.display = 'flex';
+    const overlay = document.getElementById('login-overlay');
+    if (overlay) overlay.style.setProperty('display', 'flex', 'important');
   }
 }
 
@@ -2473,10 +2491,10 @@ window.addEventListener('offline', () => {
   updateSyncUI();
 });
 
-// Init on DOM ready
-document.addEventListener('DOMContentLoaded', () => {
+// Init App Lifecycle
+function bootApp() {
   // Ensure Submit button label is strictly set to 'Submit'
-  const submitBtnEl = document.querySelector('.btn-add-row');
+  const submitBtnEl = document.getElementById('btn-save-record') || document.querySelector('.btn-add-row');
   if (submitBtnEl) {
     submitBtnEl.innerHTML = '<span>➕</span> Submit';
   }
@@ -2494,40 +2512,52 @@ document.addEventListener('DOMContentLoaded', () => {
   localStorage.removeItem('gpon_remembered_password');
 
   // Check Login State
+  const loginOverlay = document.getElementById('login-overlay');
+  const userBar = document.getElementById('user-bar');
   if (!currentUser) {
-    document.getElementById('login-overlay').style.display = 'flex';
+    const foucStyle = document.getElementById('fouc-prevention');
+    if (foucStyle) foucStyle.remove();
+    if (loginOverlay) loginOverlay.style.setProperty('display', 'flex', 'important');
+    if (userBar) userBar.style.display = 'none';
   } else {
-    document.getElementById('login-overlay').style.display = 'none';
+    if (loginOverlay) loginOverlay.style.setProperty('display', 'none', 'important');
     updateUserBar();
     refreshCurrentUserProfile();
+    initDropdowns();
+    fetchSurveyedPoints();
   }
 
-  initDropdowns();
   updateRecordsBadge();
   updateSyncUI();
   checkServerConnection();
-  // GPS is strictly manual / on-demand: only triggered when surveyor taps the "📍 GPS" button
-  
-  // Smart Lightweight Heartbeat: Periodic background check (every 20 seconds, active tab only)
-  setInterval(() => {
-    // If phone is locked or surveyor switched apps, pause heartbeat to save phone battery & data
-    if (document.visibilityState !== 'visible') return;
+}
 
-    checkServerConnection();
-    if (isServerReachable && records.some(r => r.sync_status !== 'synced')) {
-      syncWithServer(true);
-    }
-  }, 20000); // Check every 20 seconds
+// Ensure bootApp executes regardless of whether DOMContentLoaded already fired
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', bootApp);
+} else {
+  bootApp();
+}
 
-  // Live auto-refresh when surveyor returns to the app
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') {
-      checkServerConnection();
-      refreshCurrentUserProfile();
-    }
-  });
-  window.addEventListener('focus', () => {
+// Smart Lightweight Heartbeat: Periodic background check (every 20 seconds, active tab only)
+setInterval(() => {
+  // If phone is locked or surveyor switched apps, pause heartbeat to save phone battery & data
+  if (document.visibilityState !== 'visible') return;
+
+  checkServerConnection();
+  if (isServerReachable && records.some(r => r.sync_status !== 'synced')) {
+    syncWithServer(true);
+  }
+}, 20000);
+
+// Live auto-refresh when surveyor returns to the app
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
     checkServerConnection();
     refreshCurrentUserProfile();
-  });
+  }
+});
+window.addEventListener('focus', () => {
+  checkServerConnection();
+  refreshCurrentUserProfile();
 });

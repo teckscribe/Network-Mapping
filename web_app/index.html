@@ -14,7 +14,23 @@
 
   <!-- Local Offline Vendor Styles -->
   <link rel="stylesheet" href="vendor/leaflet.css">
-  <link rel="stylesheet" href="style.css?v=41">
+  <link rel="stylesheet" href="style.css?v=42">
+  <script>
+    // Synchronous Pre-Render Auth Check: Prevents Flash of Unauthenticated Content (FOUC)
+    // If user is already logged in with a valid session, hide login modal before first paint.
+    // If not logged in, login modal stays strictly visible covering the screen on frame 0.
+    try {
+      var _rawUser = localStorage.getItem('gpon_logged_in_user');
+      if (_rawUser && _rawUser !== 'null' && _rawUser !== 'undefined' && _rawUser !== '{}') {
+        var _parsedUser = JSON.parse(_rawUser);
+        if (_parsedUser && _parsedUser.username) {
+          document.write('<style id="fouc-prevention">#login-overlay { display: none !important; } #user-bar { display: flex !important; }</style>');
+        } else {
+          localStorage.removeItem('gpon_logged_in_user');
+        }
+      }
+    } catch (e) {}
+  </script>
 </head>
 <body>
 
@@ -35,12 +51,12 @@
     </div>
   </div>
 
-  <!-- User & Center Ribbon -->
-  <div class="gs-ribbon" id="user-bar">
+  <!-- User & Center Ribbon (Hidden by default until authenticated) -->
+  <div class="gs-ribbon" id="user-bar" style="display: none;">
     <div class="gs-user-badge" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-      <span>👤 <strong id="logged-user-name">Field Surveyor</strong></span>
-      <span class="gs-role-badge role-field_technician" id="logged-user-role">Field Technician</span>
-      <span class="gs-center-tag" id="logged-user-center">THRISSUR NORTH</span>
+      <span>👤 <strong id="logged-user-name">---</strong></span>
+      <span class="gs-role-badge" id="logged-user-role">---</span>
+      <span class="gs-center-tag" id="logged-user-center">---</span>
     </div>
     <div style="display:flex; align-items:center; gap:10px;">
       <a id="admin-nav-link" href="/admin" class="btn-link" style="display:none; color:#0284c7; font-weight:700; text-decoration:none;">📊 Dashboard</a>
@@ -48,6 +64,7 @@
       <button class="btn-link" onclick="logout()">Sign Out</button>
     </div>
   </div>
+
 
   <!-- Main Content Container -->
   <div class="main-content">
@@ -252,7 +269,7 @@
   </div>
 
   <!-- Login Modal / Screen Overlay -->
-  <div id="login-overlay" class="login-overlay" style="display: none;">
+  <div id="login-overlay" class="login-overlay" style="display: flex;">
     <div class="login-card">
       <div style="font-size: 2rem; text-align: center; margin-bottom: 6px; color: #0f9d58;">田</div>
       <h2 style="text-align: center; margin: 0 0 4px; font-size: 1.25rem; font-weight: 500;">Field Surveyor Sign In</h2>
@@ -377,6 +394,6 @@
   <script src="vendor/leaflet.js"></script>
   <script src="vendor/xlsx.full.min.js"></script>
   <script src="preload_data.js"></script>
-  <script src="app.js?v=41"></script>
+  <script src="app.js?v=42"></script>
 </body>
 </html>
