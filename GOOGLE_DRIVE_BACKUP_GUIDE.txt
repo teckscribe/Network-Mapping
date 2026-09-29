@@ -1,0 +1,221 @@
+================================================================================
+AUTOMATED GOOGLE DRIVE DATABASE BACKUP GUIDE FOR UBUNTU
+================================================================================
+Application: GPON Network Mapping & Survey Platform
+Database: SQLite (gpon_survey_data.db) + users_config.json + custom_hierarchy.json
+Tool Used: Rclone (Official, Open-Source Cloud Sync Tool) + Cron Scheduler
+
+--------------------------------------------------------------------------------
+1. OVERVIEW & SAFETY ARCHITECTURE
+--------------------------------------------------------------------------------
+This solution backs up your live survey database directly to your Google Drive
+automatically at whatever interval you specify (e.g., every 2 hours, every 6
+hours, or once daily).
+
+Key Safety Features:
+1. Zero Data Corruption (Hot SQLite Snapshot):
+   The script uses SQLite's official online backup API ("sqlite3 ... .backup")
+   to create a 100% clean, uncorrupted database snapshot without stopping the
+   gpon-server service or interrupting field surveyors.
+2. Complete System Bundle:
+   Packages the SQLite database, user accounts (users_config.json), and node
+   master hierarchy (custom_hierarchy.json) into a compressed archive:
+     gpon_backup_YYYY-MM-DD_HH-MM-SS.tar.gz
+3. Automatic Cloud Upload:
+   Uploads the archive directly into a dedicated "GPON_Backups" folder in your
+   Google Drive.
+4. Auto-Pruning & Retention:
+   Keeps 7 days of local backups on your Ubuntu desktop and automatically prunes
+   Google Drive backups older than 30 days to save cloud storage.
+
+
+--------------------------------------------------------------------------------
+2. STEP-BY-STEP SETUP INSTRUCTIONS
+--------------------------------------------------------------------------------
+
+STEP 2.1: Install Required Tools on Ubuntu
+------------------------------------------
+Open your Ubuntu terminal and run:
+
+sudo apt update
+sudo apt install -y rclone sqlite3
+
+
+STEP 2.2: Connect Rclone to Your Google Drive (One-Time Setup)
+--------------------------------------------------------------
+Run the interactive configuration wizard:
+
+rclone config
+
+Follow these exact interactive prompts:
+
+1. "No remotes found, make a new one?"
+   Type:  n  (and press Enter)
+
+2. "name>"
+   Type:  gdrive  (and press Enter)
+   (IMPORTANT: Use "gdrive" in lowercase, as the script looks for this name).
+
+3. "Storage>"
+   Type:  drive  (or look for the number for "Google Drive", typically 18 or 20)
+   Press Enter.
+
+4. "client_id>"
+   Leave blank (Press Enter).
+
+5. "client_secret>"
+   Leave blank (Press Enter).
+
+6. "scope>"
+   Choose full access:
+   Type:  1  (Full access all files, except Application Data Folder)
+   Press Enter.
+
+7. "service_account_file>"
+   Leave blank (Press Enter).
+
+8. "Edit advanced config?"
+   Type:  n  (Press Enter).
+
+9. "Use web browser to automatically authenticate rclone with remote?"
+   Type:  y  (Press Enter).
+
+   --> A web browser window will automatically pop up on your Ubuntu screen.
+   --> Choose your Google Account.
+   --> Click "Allow" to grant Rclone permission to access your Google Drive.
+   --> The browser will display: "Success! All done. Please go back to rclone."
+
+10. "Configure this as a Shared Drive (Team Drive)?"
+    Type:  n  (Press Enter).
+
+11. "Keep this "gdrive" remote?"
+    Type:  y  (Press Enter).
+
+12. "q) Quit config"
+    Type:  q  (Press Enter).
+
+Setup complete! Rclone is now securely linked to your Google Drive.
+
+
+STEP 2.3: Verify the Google Drive Connection
+--------------------------------------------
+In your Ubuntu terminal, run:
+
+rclone lsd gdrive:
+
+If it connects and prints your Google Drive folders without any error, the link
+is 100% operational!
+
+
+STEP 2.4: Enable Execution Permissions on the Backup Script
+------------------------------------------------------------
+Run in terminal:
+
+chmod +x ~/Network-Mapping/backup_to_gdrive.sh
+
+
+STEP 2.5: Test Run the Backup Manually
+--------------------------------------
+Run the script once to confirm everything works:
+
+~/Network-Mapping/backup_to_gdrive.sh
+
+You will see output similar to:
+------------------------------------------------------------
+[2026-09-29 14:30:00] === Starting Scheduled Backup ===
+[2026-09-29 14:30:00] Creating safe SQLite live snapshot...
+[2026-09-29 14:30:01] Compressing backup archive: gpon_backup_2026-09-29_14-30-00.tar.gz...
+[2026-09-29 14:30:02] Archive created successfully (48K).
+[2026-09-29 14:30:02] Uploading gpon_backup_2026-09-29_14-30-00.tar.gz to Google Drive (gdrive:GPON_Backups)...
+[2026-09-29 14:30:06] Upload completed successfully!
+[2026-09-29 14:30:06] Pruning remote backups older than 30 days...
+[2026-09-29 14:30:07] === Backup Finished Successfully ===
+------------------------------------------------------------
+
+Open your Google Drive in a web browser:
+You will see a new folder named "GPON_Backups" with your backup archive inside!
+
+
+--------------------------------------------------------------------------------
+3. SCHEDULING AUTOMATIC BACKUPS (CRON)
+--------------------------------------------------------------------------------
+Ubuntu uses "cron" to run tasks automatically at specific intervals.
+
+To open your personal schedule table, run:
+
+crontab -e
+
+(If it asks you to choose an editor, select "1" for nano).
+
+Scroll to the bottom of the file and add YOUR CHOSEN INTERVAL from the options
+below:
+
+OPTION A: Every 2 Hours (Recommended for active field survey days)
+-----------------------------------------------------------------
+0 */2 * * * /home/psms/Network-Mapping/backup_to_gdrive.sh >/dev/null 2>&1
+
+OPTION B: Every 4 Hours
+-----------------------
+0 */4 * * * /home/psms/Network-Mapping/backup_to_gdrive.sh >/dev/null 2>&1
+
+OPTION C: Every 6 Hours (4 times a day: 12 AM, 6 AM, 12 PM, 6 PM)
+-------------------------------------------------------------------
+0 */6 * * * /home/psms/Network-Mapping/backup_to_gdrive.sh >/dev/null 2>&1
+
+OPTION D: Daily at 8:00 PM (After field survey work ends)
+----------------------------------------------------------
+0 20 * * * /home/psms/Network-Mapping/backup_to_gdrive.sh >/dev/null 2>&1
+
+OPTION E: Daily at Midnight (12:00 AM)
+--------------------------------------
+0 0 * * * /home/psms/Network-Mapping/backup_to_gdrive.sh >/dev/null 2>&1
+
+Save and Exit nano:
+- Press:  Ctrl + O  then  Enter  (to save)
+- Press:  Ctrl + X  (to exit)
+
+Verify that the cron schedule is saved:
+crontab -l
+
+
+--------------------------------------------------------------------------------
+4. HOW TO MONITOR & CHECK BACKUP LOGS
+--------------------------------------------------------------------------------
+Every time the backup runs, it logs details to ~/Network-Mapping/backup.log.
+
+To view the latest backup logs anytime:
+tail -n 30 ~/Network-Mapping/backup.log
+
+To view all files currently stored in your Google Drive backup folder:
+rclone ls gdrive:GPON_Backups
+
+
+--------------------------------------------------------------------------------
+5. DISASTER RECOVERY: HOW TO RESTORE FROM GOOGLE DRIVE
+--------------------------------------------------------------------------------
+If your Ubuntu desktop is ever formatted, replaced, or damaged:
+
+1. List available cloud backups:
+   rclone ls gdrive:GPON_Backups
+
+2. Download your chosen backup archive:
+   mkdir -p ~/restore_temp
+   rclone copy gdrive:GPON_Backups/gpon_backup_YYYY-MM-DD_HH-MM-SS.tar.gz ~/restore_temp/
+
+3. Extract the archive:
+   cd ~/restore_temp
+   tar -xzf gpon_backup_YYYY-MM-DD_HH-MM-SS.tar.gz
+
+4. Stop the server service:
+   sudo systemctl stop gpon-server
+
+5. Restore the files into your project folder:
+   cp snapshot_*.db ~/Network-Mapping/gpon_survey_data.db
+   cp users_config.json ~/Network-Mapping/users_config.json
+   cp custom_hierarchy.json ~/Network-Mapping/custom_hierarchy.json
+
+6. Restart the server service:
+   sudo systemctl start gpon-server
+
+All survey records, user logins, and node hierarchy are 100% restored!
+================================================================================
