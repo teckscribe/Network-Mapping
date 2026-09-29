@@ -29,8 +29,8 @@ def generate_enclosure_id(olt_name, port, enclosure):
             clean = re.sub(r'[\s\/\-_]', '', str(olt_name)).upper()
             olt_part = clean[:12]
 
-    port_part = str(port).strip().upper() if port else ""
-    enc_part = str(enclosure).strip().upper() if enclosure else ""
+    port_part = re.sub(r'[\s,]+', '', str(port).strip().upper()) if port else ""
+    enc_part = re.sub(r'[\s,]+', '', str(enclosure).strip().upper()) if enclosure else ""
     
     return f"{olt_part}{port_part}{enc_part}"
 

@@ -7,12 +7,12 @@
 set -euo pipefail
 
 # Configuration
-APP_DIR="$HOME/Network-Mapping"
+APP_DIR="${PROJECT_DIR:-$HOME/Network-Mapping}"
 DB_FILE="$APP_DIR/gpon_survey_data.db"
 USERS_CONFIG="$APP_DIR/users_config.json"
 HIERARCHY_CONFIG="$APP_DIR/custom_hierarchy.json"
 
-BACKUP_LOCAL_DIR="$HOME/gpon_backups"
+BACKUP_LOCAL_DIR="${BACKUP_DIR:-$HOME/gpon_backups}"
 LOG_FILE="$APP_DIR/backup.log"
 RCLONE_REMOTE="gdrive:GPON_Backups"
 
@@ -32,7 +32,14 @@ log "=== Starting Scheduled Backup ==="
 # 1. Hot SQLite Backup (Safe online snapshot with zero corruption & zero downtime)
 if [ -f "$DB_FILE" ]; then
     log "Creating safe SQLite live snapshot..."
-    sqlite3 "$DB_FILE" ".backup '$TEMP_SNAPSHOT'"
+    python3 -c "
+import sqlite3
+src = sqlite3.connect('$DB_FILE', timeout=30.0)
+dst = sqlite3.connect('$TEMP_SNAPSHOT')
+src.backup(dst)
+dst.close()
+src.close()
+"
 else
     log "WARNING: Database file $DB_FILE not found!"
     exit 1

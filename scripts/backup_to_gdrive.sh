@@ -1,81 +1,90 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# GPON Network Mapping - Automated Google Drive Backup Script
-# Safe online backup of live SQLite database with WAL consistency + Gzip compression
+# Automated Google Drive Backup Script for GPON Network Mapping
+# Uses SQLite Online Backup + Tar Compression + Rclone
 # ==============================================================================
 
 set -euo pipefail
 
 # Configuration
-PROJECT_DIR="/home/psms/Network-Mapping"
-DB_PATH="${PROJECT_DIR}/gpon_survey_data.db"
-USERS_JSON="${PROJECT_DIR}/users_config.json"
-BACKUP_DIR="/home/psms/backups"
-RCLONE_REMOTE="gdrive:GPON_Backups"
-TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-BACKUP_DB="${BACKUP_DIR}/gpon_db_${TIMESTAMP}.db"
-LOG_FILE="${BACKUP_DIR}/backup.log"
+APP_DIR="${PROJECT_DIR:-$HOME/Network-Mapping}"
+DB_FILE="$APP_DIR/gpon_survey_data.db"
+USERS_CONFIG="$APP_DIR/users_config.json"
+HIERARCHY_CONFIG="$APP_DIR/custom_hierarchy.json"
 
-# Ensure local backup directory exists
-mkdir -p "${BACKUP_DIR}"
+BACKUP_LOCAL_DIR="${BACKUP_DIR:-$HOME/gpon_backups}"
+LOG_FILE="$APP_DIR/backup.log"
+RCLONE_REMOTE="gdrive:GPON_Backups"
+
+TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+TEMP_SNAPSHOT="$BACKUP_LOCAL_DIR/snapshot_$TIMESTAMP.db"
+ARCHIVE_NAME="gpon_backup_$TIMESTAMP.tar.gz"
+ARCHIVE_PATH="$BACKUP_LOCAL_DIR/$ARCHIVE_NAME"
+
+mkdir -p "$BACKUP_LOCAL_DIR"
 
 log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "${LOG_FILE}"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
 }
 
-log "=== Starting GPON Backup ==="
+log "=== Starting Scheduled Backup ==="
 
-# 1. Verify source database exists
-if [ ! -f "${DB_PATH}" ]; then
-    log "ERROR: Database file ${DB_PATH} not found!"
-    exit 1
-fi
-
-# 2. Perform atomic, live-safe SQLite online backup (handles WAL mode cleanly)
-log "Performing online SQLite backup to ${BACKUP_DB}..."
-python3 -c "
+# 1. Hot SQLite Backup (Safe online snapshot with zero corruption & zero downtime)
+if [ -f "$DB_FILE" ]; then
+    log "Creating safe SQLite live snapshot..."
+    python3 -c "
 import sqlite3
-src = sqlite3.connect('${DB_PATH}', timeout=30.0)
-dst = sqlite3.connect('${BACKUP_DB}')
+src = sqlite3.connect('$DB_FILE', timeout=30.0)
+dst = sqlite3.connect('$TEMP_SNAPSHOT')
 src.backup(dst)
 dst.close()
 src.close()
 "
-
-# 3. Also backup users_config.json if it exists
-if [ -f "${USERS_JSON}" ]; then
-    cp "${USERS_JSON}" "${BACKUP_DIR}/users_config_${TIMESTAMP}.json"
-fi
-
-# 4. Compress the backup with gzip
-log "Compressing backup file..."
-gzip -f "${BACKUP_DB}"
-COMPRESSED_FILE="${BACKUP_DB}.gz"
-log "Backup archive created: ${COMPRESSED_FILE} ($(du -h "${COMPRESSED_FILE}" | cut -f1))"
-
-# 5. Check if rclone is installed and configured
-if command -v rclone &> /dev/null; then
-    if rclone listremotes | grep -q "^gdrive:"; then
-        log "Uploading backup to Google Drive (${RCLONE_REMOTE})..."
-        rclone copy "${COMPRESSED_FILE}" "${RCLONE_REMOTE}/" --log-file="${LOG_FILE}" --log-level NOTICE
-        if [ -f "${BACKUP_DIR}/users_config_${TIMESTAMP}.json" ]; then
-            rclone copy "${BACKUP_DIR}/users_config_${TIMESTAMP}.json" "${RCLONE_REMOTE}/"
-        fi
-        log "Google Drive upload completed successfully!"
-
-        # Prune remote backups older than 30 days
-        log "Pruning Google Drive backups older than 30 days..."
-        rclone delete --min-age 30d "${RCLONE_REMOTE}/" || true
-    else
-        log "WARNING: rclone remote 'gdrive:' not configured. Run 'rclone config' to link Google Drive."
-    fi
 else
-    log "WARNING: rclone is not installed. Run 'sudo apt install rclone' to enable Google Drive sync."
+    log "WARNING: Database file $DB_FILE not found!"
+    exit 1
 fi
 
-# 6. Local Retention Policy: Keep only the last 7 days of local backups
-log "Cleaning local backups older than 7 days..."
-find "${BACKUP_DIR}" -name "gpon_db_*.db.gz" -mtime +7 -delete
-find "${BACKUP_DIR}" -name "users_config_*.json" -mtime +7 -delete
+# 2. Package database, user configuration, and node hierarchy into compressed tarball
+log "Compressing backup archive: $ARCHIVE_NAME..."
+TAR_FILES=("-C" "$BACKUP_LOCAL_DIR" "snapshot_$TIMESTAMP.db")
+
+# Add users_config.json if it exists
+if [ -f "$USERS_CONFIG" ]; then
+    cp "$USERS_CONFIG" "$BACKUP_LOCAL_DIR/users_config.json"
+    TAR_FILES+=("-C" "$BACKUP_LOCAL_DIR" "users_config.json")
+fi
+
+# Add custom_hierarchy.json if it exists
+if [ -f "$HIERARCHY_CONFIG" ]; then
+    cp "$HIERARCHY_CONFIG" "$BACKUP_LOCAL_DIR/custom_hierarchy.json"
+    TAR_FILES+=("-C" "$BACKUP_LOCAL_DIR" "custom_hierarchy.json")
+fi
+
+tar -czf "$ARCHIVE_PATH" "${TAR_FILES[@]}"
+
+# Remove temporary uncompressed snapshot
+rm -f "$TEMP_SNAPSHOT"
+rm -f "$BACKUP_LOCAL_DIR/users_config.json" 2>/dev/null || true
+rm -f "$BACKUP_LOCAL_DIR/custom_hierarchy.json" 2>/dev/null || true
+
+ARCHIVE_SIZE=$(du -h "$ARCHIVE_PATH" | cut -f1)
+log "Archive created successfully ($ARCHIVE_SIZE)."
+
+# 3. Upload to Google Drive using Rclone
+if command -v rclone >/dev/null 2>&1; then
+    log "Uploading $ARCHIVE_NAME to Google Drive ($RCLONE_REMOTE)..."
+    rclone copy "$ARCHIVE_PATH" "$RCLONE_REMOTE"
+    log "Upload completed successfully!"
+
+    # 4. Retention policy: clean up Google Drive backups older than 30 days
+    log "Pruning remote backups older than 30 days..."
+    rclone delete --min-age 30d "$RCLONE_REMOTE" || true
+else
+    log "WARNING: rclone not installed or configured. Backup preserved locally at $ARCHIVE_PATH."
+fi
+
+# 5. Local cleanup: keep only last 7 days of local archives
+find "$BACKUP_LOCAL_DIR" -type f -name "gpon_backup_*.tar.gz" -mtime +7 -delete 2>/dev/null || true
 
 log "=== Backup Finished Successfully ==="

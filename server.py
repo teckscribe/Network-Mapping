@@ -24,7 +24,7 @@ import zipfile
 import shutil
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from fastapi import FastAPI, HTTPException, status, UploadFile, File, Response, Depends, Header, Request
+from fastapi import FastAPI, HTTPException, status, UploadFile, File, Response, Depends, Header, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -178,38 +178,71 @@ def validate_session_token(token: str) -> Optional[dict]:
     except Exception:
         return None
 
-def get_current_session(authorization: Optional[str] = Header(None)) -> Optional[dict]:
-    """FastAPI dependency: extracts and validates Bearer token from Authorization header."""
-    if not authorization:
+def get_current_session(authorization: Optional[str] = Header(None), token: Optional[str] = Query(None)) -> Optional[dict]:
+    """FastAPI dependency: extracts and validates Bearer token from Authorization header or ?token= query parameter."""
+    token_str = None
+    if authorization:
+        token_str = authorization.replace("Bearer ", "").strip() if authorization.startswith("Bearer ") else authorization.strip()
+    elif token:
+        token_str = token.strip()
+    if not token_str:
         return None
-    token = authorization.replace("Bearer ", "").strip() if authorization.startswith("Bearer ") else authorization.strip()
-    return validate_session_token(token)
+    return validate_session_token(token_str)
 
-def require_admin_auth(authorization: Optional[str] = Header(None)) -> dict:
+def require_admin_auth(session: Optional[dict] = Depends(get_current_session)) -> dict:
     """FastAPI dependency: requires a valid session with super_admin role."""
-    session = get_current_session(authorization)
     if not session:
         raise HTTPException(status_code=401, detail="Authentication required. Please log in.")
-    if session["role"] != "super_admin":
+    if session.get("role") != "super_admin":
         raise HTTPException(status_code=403, detail="Super Admin privileges required for this action.")
     return session
 
-def require_any_auth(authorization: Optional[str] = Header(None)) -> dict:
-    """FastAPI dependency: requires any valid session (any authenticated user)."""
-    session = get_current_session(authorization)
+def require_management_auth(session: Optional[dict] = Depends(get_current_session)) -> dict:
+    """FastAPI dependency: requires super_admin or rcsm role."""
+    if not session:
+        raise HTTPException(status_code=401, detail="Authentication required. Please log in.")
+    if session.get("role") not in ("super_admin", "rcsm"):
+        raise HTTPException(status_code=403, detail="Management access (Super Admin or RCSM) required.")
+    return session
+
+def require_export_auth(session: Optional[dict] = Depends(get_current_session)) -> dict:
+    """FastAPI dependency: requires valid authenticated session for center exports."""
+    if not session:
+        raise HTTPException(status_code=401, detail="Authentication required. Please log in.")
+    if session.get("role") not in ("super_admin", "admin", "supervisor", "rcsm", "acso", "field_technician"):
+        raise HTTPException(status_code=403, detail="Permission Denied: Invalid role for export.")
+    return session
+
+def require_any_auth(session: Optional[dict] = Depends(get_current_session)) -> dict:
+    """FastAPI dependency: requires any valid authenticated session."""
     if not session:
         raise HTTPException(status_code=401, detail="Authentication required. Please log in.")
     return session
 
 # ==========================================
-# IN-MEMORY RATE LIMITING (SLIDING WINDOW)
+# CLIENT IP & RATE LIMITING HELPERS
 # ==========================================
 LOGIN_ATTEMPTS = {}
 OTP_REQUEST_ATTEMPTS = {}
 
+def get_client_ip(request: Request) -> str:
+    """Extract real client IP address even when behind reverse proxies (Nginx, Cloudflare, Tailscale)."""
+    x_forwarded = request.headers.get("x-forwarded-for")
+    if x_forwarded:
+        return x_forwarded.split(",")[0].strip()
+    x_real = request.headers.get("x-real-ip")
+    if x_real:
+        return x_real.strip()
+    return request.client.host if request.client else "unknown"
+
 def check_rate_limit(store: dict, key: str, max_attempts: int, window_seconds: int) -> bool:
-    """Returns True if within rate limit, False if exceeded."""
+    """Returns True if within rate limit, False if exceeded. Evicts expired keys to prevent memory leak."""
     now = time.time()
+    if len(store) > 1000:
+        keys_to_del = [k for k, timestamps in store.items() if not timestamps or (now - timestamps[-1] >= window_seconds)]
+        for k in keys_to_del:
+            store.pop(k, None)
+
     timestamps = [t for t in store.get(key, []) if now - t < window_seconds]
     if len(timestamps) >= max_attempts:
         store[key] = timestamps
@@ -365,6 +398,18 @@ def init_db():
         assigned_region TEXT DEFAULT 'Thrissur',
         role TEXT DEFAULT 'field_technician',
         created_at TEXT
+    )
+    """)
+
+    # 3. Password Reset OTP Table (survives multi-worker Uvicorn and server restarts)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS password_reset_otps (
+        username TEXT PRIMARY KEY,
+        otp TEXT NOT NULL,
+        expires_at REAL NOT NULL,
+        attempts INTEGER DEFAULT 0,
+        email TEXT DEFAULT '',
+        full_name TEXT DEFAULT ''
     )
     """)
 
@@ -614,11 +659,11 @@ def ensure_directories_and_migrate():
         except Exception as e:
             print(f"[Init Warning] Could not clean up data/ folder: {e}")
 
-    # 3. Clean up temporary static .xlsx / .bak export files from BASE_DIR and Node Master
+    # 3. Clean up temporary static .bak export files from BASE_DIR and Node Master
     for dir_to_clean in [BASE_DIR, NODE_MASTER_DIR]:
         if os.path.exists(dir_to_clean):
             for fname in os.listdir(dir_to_clean):
-                if fname.endswith(".bak") or (fname.endswith(".xlsx") and any(k in fname.lower() for k in ["export", "template", "uploaded", "latest", "mapping", "olt"])):
+                if fname.endswith(".bak") or fname.startswith("temp_"):
                     try:
                         os.remove(os.path.join(dir_to_clean, fname))
                     except Exception:
@@ -633,7 +678,7 @@ app = FastAPI(title="GPON Field Survey Server")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -748,7 +793,7 @@ def compute_server_enclosure_id(olt_name: str, port: str, enclosure: str) -> str
     else:
         olt_code = re.sub(r'[^A-Za-z0-9]', '', s).upper()[:12]
 
-    port_code = re.sub(r'\s+', '', (port or "P1").strip().upper())
+    port_code = re.sub(r'[\s,]+', '', (port or "P1").strip().upper())
     enc_code = (enclosure or "E1").strip().upper()
     return f"{olt_code}{port_code}{enc_code}"
 
@@ -758,8 +803,9 @@ def compute_server_enclosure_id(olt_name: str, port: str, enclosure: str) -> str
 
 @app.post("/api/login")
 def login(req: LoginRequest, request: Request):
-    client_ip = request.client.host if request.client else "unknown"
-    if not check_rate_limit(LOGIN_ATTEMPTS, client_ip, max_attempts=15, window_seconds=60):
+    client_ip = get_client_ip(request)
+    rate_key = f"{client_ip}_{req.username.strip().lower()}"
+    if not check_rate_limit(LOGIN_ATTEMPTS, rate_key, max_attempts=15, window_seconds=60):
         raise HTTPException(status_code=429, detail="Too many login attempts. Please wait 1 minute before trying again.")
 
     conn = sqlite3.connect(DB_PATH)
@@ -816,10 +862,12 @@ def login(req: LoginRequest, request: Request):
     }
 
 @app.get("/api/user-profile")
-def get_user_profile(username: str):
-    uname = (username or "").strip()
+def get_user_profile(username: Optional[str] = None, session: dict = Depends(require_any_auth)):
+    uname = (username or session.get("username") or "").strip()
     if not uname:
         raise HTTPException(status_code=400, detail="Username is required")
+    if session.get("role") != "super_admin" and session.get("username", "").lower() != uname.lower():
+        raise HTTPException(status_code=403, detail="Permission Denied: You can only view your own user profile.")
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
@@ -1013,7 +1061,7 @@ GPON Network Mapping Team
 
 @app.post("/api/request-password-reset-otp")
 def request_password_reset_otp(req: RequestResetOtpPayload, request: Request):
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = get_client_ip(request)
     rate_key = f"{client_ip}_{req.username_or_email.strip().lower()}"
     if not check_rate_limit(OTP_REQUEST_ATTEMPTS, rate_key, max_attempts=5, window_seconds=300):
         raise HTTPException(status_code=429, detail="Too many OTP requests. Please wait 5 minutes before requesting again.")
@@ -1031,13 +1079,14 @@ def request_password_reset_otp(req: RequestResetOtpPayload, request: Request):
            OR LOWER(TRIM(email)) = LOWER(TRIM(?))
     """, (identifier, identifier))
     user = cur.fetchone()
-    conn.close()
 
     if not user:
+        conn.close()
         raise HTTPException(status_code=404, detail="No user account found matching that username or email address.")
 
     user_email = (user["email"] or "").strip().lower()
     if not user_email or "@" not in user_email:
+        conn.close()
         raise HTTPException(
             status_code=400,
             detail=f"Account '{user['username']}' does not have a registered email address on file. Please contact your Super Administrator."
@@ -1047,13 +1096,18 @@ def request_password_reset_otp(req: RequestResetOtpPayload, request: Request):
     otp_code = f"{secrets.randbelow(900000) + 100000}"
     now = time.time()
 
-    PASSWORD_RESET_OTPS[user["username"].lower()] = {
-        "otp": otp_code,
-        "expires_at": now + OTP_EXPIRY_SECONDS,
-        "attempts": 0,
-        "email": user_email,
-        "full_name": user["full_name"] or user["username"]
-    }
+    cur.execute("""
+        INSERT INTO password_reset_otps (username, otp, expires_at, attempts, email, full_name)
+        VALUES (?, ?, ?, 0, ?, ?)
+        ON CONFLICT(username) DO UPDATE SET
+            otp = excluded.otp,
+            expires_at = excluded.expires_at,
+            attempts = 0,
+            email = excluded.email,
+            full_name = excluded.full_name
+    """, (user["username"].lower(), otp_code, now + OTP_EXPIRY_SECONDS, user_email, user["full_name"] or user["username"]))
+    conn.commit()
+    conn.close()
 
     # Dispatch email
     sent = send_otp_email(user_email, user["full_name"] or user["username"], otp_code)
@@ -1087,32 +1141,41 @@ def verify_password_reset_otp(req: VerifyResetOtpPayload):
     if len(new_pwd) < 4:
         raise HTTPException(status_code=400, detail="Password / PIN must be at least 4 characters long.")
 
-    otp_record = PASSWORD_RESET_OTPS.get(uname)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM password_reset_otps WHERE username = ?", (uname,))
+    otp_record = cur.fetchone()
+
     if not otp_record:
+        conn.close()
         raise HTTPException(status_code=400, detail="No active password reset request found. Please request a new OTP.")
 
     if time.time() > otp_record["expires_at"]:
-        del PASSWORD_RESET_OTPS[uname]
+        cur.execute("DELETE FROM password_reset_otps WHERE username = ?", (uname,))
+        conn.commit()
+        conn.close()
         raise HTTPException(status_code=400, detail="The OTP has expired (valid for 10 minutes). Please request a new OTP.")
 
     if otp_record["attempts"] >= 5:
-        del PASSWORD_RESET_OTPS[uname]
+        cur.execute("DELETE FROM password_reset_otps WHERE username = ?", (uname,))
+        conn.commit()
+        conn.close()
         raise HTTPException(status_code=400, detail="Too many invalid OTP attempts. For security, this OTP was invalidated. Please request a new OTP.")
 
     if otp_record["otp"] != otp_in:
-        otp_record["attempts"] += 1
-        remaining = 5 - otp_record["attempts"]
+        new_attempts = otp_record["attempts"] + 1
+        cur.execute("UPDATE password_reset_otps SET attempts = ? WHERE username = ?", (new_attempts, uname))
+        conn.commit()
+        conn.close()
+        remaining = 5 - new_attempts
         raise HTTPException(status_code=400, detail=f"Incorrect OTP code. Please check your email and try again ({remaining} attempts remaining).")
 
     # OTP is valid! Update password in SQLite with secure hash
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
     cur.execute("UPDATE users SET password = ? WHERE LOWER(TRIM(username)) = ?", (hash_password(new_pwd), uname))
+    cur.execute("DELETE FROM password_reset_otps WHERE username = ?", (uname,))
     conn.commit()
     conn.close()
-
-    # Clear OTP
-    del PASSWORD_RESET_OTPS[uname]
 
     # Save to JSON config so git deployments preserve it
     save_users_to_json()
@@ -1569,7 +1632,7 @@ def health_check():
     }
 
 @app.get("/api/surveyed-points")
-def get_surveyed_points(center: Optional[str] = None):
+def get_surveyed_points(center: Optional[str] = None, session: dict = Depends(require_any_auth)):
     """
     Returns an index map of all surveyed enclosure/splitter points across the network.
     Used by mobile clients for duplicate detection, locking, and ACSO supervisor updates.
@@ -1632,7 +1695,7 @@ def get_surveyed_points(center: Optional[str] = None):
     }
 
 @app.post("/api/sync")
-def sync_records(payload: SyncPayload, authorization: Optional[str] = Header(None)):
+def sync_records(payload: SyncPayload, session: dict = Depends(require_any_auth)):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     now_str = datetime.datetime.now().isoformat()
@@ -1640,25 +1703,20 @@ def sync_records(payload: SyncPayload, authorization: Optional[str] = Header(Non
     updated_records = []
     skipped_duplicates = []
 
-    session = get_current_session(authorization)
-    caller_role = session.get("role") if session else None
+    auth_username = session.get("username", "")
+    auth_role = normalize_role(session.get("role", "field_technician"))
+    is_supervisor = auth_role in ("super_admin", "acso")
 
     for r in payload.records:
         try:
-            # 1. Determine effective role for this record
-            user_role = caller_role
-            if not user_role and r.surveyor_username:
-                cur.execute("SELECT role FROM users WHERE username = ?", (r.surveyor_username,))
-                urow = cur.fetchone()
-                if urow:
-                    user_role = urow[0]
-            clean_role = normalize_role(user_role or "field_technician")
-            is_supervisor = clean_role in ("super_admin", "acso")
+            # Enforce authenticated surveyor identity: field technicians cannot forge username
+            surveyor_user = r.surveyor_username if is_supervisor and r.surveyor_username else auth_username
+            surveyor_name = r.surveyor_name if is_supervisor and r.surveyor_name else (r.surveyor_name or auth_username)
 
             enc_id = (r.enclosure_id or "").strip()
             spl_id = (r.splitter_id or "").strip()
 
-            # 2. Check if (enclosure_id, splitter_id) already exists in database
+            # Check if (enclosure_id, splitter_id) already exists in database
             existing = None
             if enc_id and spl_id:
                 cur.execute("""
@@ -1709,7 +1767,7 @@ def sync_records(payload: SyncPayload, authorization: Optional[str] = Header(Non
                     r.splitter_ratio, r.customers_connected, r.splitter_lead_color,
                     r.adl_subscriber_id, r.acs_subscriber_id,
                     r.survey_date_time or (r.created_at[:19].replace('T', ' ') if r.created_at else now_str[:19].replace('T', ' ')),
-                    payload.device_id, r.surveyor_username, r.surveyor_name,
+                    payload.device_id, surveyor_user, surveyor_name,
                     r.created_at or now_str, now_str
                 ))
                 synced_uuids.append(r.client_uuid)
@@ -1735,7 +1793,7 @@ def sync_records(payload: SyncPayload, authorization: Optional[str] = Header(Non
                         r.splitter_ratio, r.customers_connected, r.splitter_lead_color,
                         r.adl_subscriber_id, r.acs_subscriber_id,
                         r.survey_date_time or now_str[:19].replace('T', ' '),
-                        payload.device_id, r.surveyor_username, r.surveyor_name, now_str,
+                        payload.device_id, surveyor_user, surveyor_name, now_str,
                         existing_uuid
                     ))
                     synced_uuids.append(r.client_uuid)
@@ -1776,10 +1834,32 @@ def sync_records(payload: SyncPayload, authorization: Optional[str] = Header(Non
 
 
 @app.get("/api/records")
-def get_all_records(center: Optional[str] = None, region: Optional[str] = None):
+def get_all_records(center: Optional[str] = None, region: Optional[str] = None, session: dict = Depends(require_management_auth)):
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
+
+    # Enforce jurisdiction boundaries for RCSM
+    user_role = session.get("role", "")
+    username = session.get("username", "")
+
+    if user_role == "rcsm":
+        cur.execute("SELECT assigned_center FROM users WHERE username = ?", (username,))
+        u_info = cur.fetchone()
+        if u_info and u_info[0] and u_info[0] != "ALL":
+            assigned_list = [c.strip().lower() for c in u_info[0].split(",") if c.strip()]
+            if center and center.strip() and center.strip().upper() != "ALL":
+                if center.strip().lower() not in assigned_list:
+                    conn.close()
+                    raise HTTPException(status_code=403, detail="Permission denied: Center is outside your assigned jurisdiction.")
+            else:
+                placeholders = ",".join(["?"] * len(assigned_list))
+                query = f"SELECT * FROM survey_records WHERE LOWER(TRIM(center)) IN ({placeholders}) ORDER BY rowid DESC"
+                cur.execute(query, tuple(assigned_list))
+                rows = [dict(r) for r in cur.fetchall()]
+                conn.close()
+                return {"records": rows, "count": len(rows)}
+
     query = "SELECT * FROM survey_records WHERE 1=1"
     params = []
     if center and center.strip() and center.strip().upper() != "ALL":
@@ -1859,7 +1939,7 @@ def delete_record(client_uuid: str, session: dict = Depends(require_admin_auth))
     return {"status": "success", "message": "Record deleted successfully."}
 
 @app.get("/api/export-excel")
-def export_server_excel():
+def export_server_excel(session: dict = Depends(require_management_auth)):
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
@@ -1879,12 +1959,31 @@ def export_server_excel():
     )
 
 @app.get("/api/export-center-excel")
-def export_center_excel(center: str, region: Optional[str] = None):
+def export_center_excel(center: str, region: Optional[str] = None, session: dict = Depends(require_export_auth)):
     """Exports and downloads an individual Center's survey Excel file streamed dynamically in-memory."""
     if not center or not center.strip():
         raise HTTPException(status_code=400, detail="Center name is required.")
     
     cent_clean = center.strip()
+    user_role = session.get("role", "")
+    username = session.get("username", "")
+
+    # For non-admin roles (RCSM, ACSO, Field Technician), verify requested center is within assigned jurisdiction
+    if user_role not in ("super_admin", "admin", "supervisor"):
+        conn_u = sqlite3.connect(DB_PATH)
+        cur_u = conn_u.cursor()
+        cur_u.execute("SELECT assigned_center FROM users WHERE username = ?", (username,))
+        urow = cur_u.fetchone()
+        conn_u.close()
+        if urow and urow[0] and urow[0] != "ALL":
+            assigned_centers = [c.strip().lower() for c in urow[0].split(",") if c.strip()]
+            if cent_clean.upper() == "ALL":
+                cent_clean = ",".join(assigned_centers)
+            else:
+                requested_centers = [c.strip().lower() for c in cent_clean.split(",") if c.strip()]
+                if not set(requested_centers).issubset(set(assigned_centers)):
+                    raise HTTPException(status_code=403, detail="Permission Denied: Center is outside your assigned jurisdiction.")
+
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
@@ -1914,7 +2013,7 @@ def export_center_excel(center: str, region: Optional[str] = None):
     )
 
 @app.get("/api/export-data-zip")
-def export_data_zip():
+def export_data_zip(session: dict = Depends(require_management_auth)):
     """Generates and downloads a ZIP archive of all region/center Excel files dynamically in-memory."""
     hierarchy = load_hierarchy_data()
     conn = sqlite3.connect(DB_PATH)
@@ -2056,7 +2155,7 @@ async def upload_survey_excel(file: UploadFile = File(...), session: dict = Depe
 
                 if not client_uuid:
                     if enclosure_id and survey_dt:
-                        client_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{enclosure_id}_{survey_dt}"))
+                        client_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{enclosure_id}_{splitter_id or 'S1'}_{survey_dt}"))
                     else:
                         client_uuid = str(uuid.uuid4())
 
@@ -2113,7 +2212,7 @@ async def upload_survey_excel(file: UploadFile = File(...), session: dict = Depe
     }
 
 @app.get("/api/data-folders-summary")
-def get_data_folders_summary():
+def get_data_folders_summary(session: dict = Depends(require_management_auth)):
     """Returns structured summary of region and center survey records with dynamic in-memory exports."""
     hierarchy = load_hierarchy_data()
     
@@ -2167,6 +2266,20 @@ def get_data_folders_summary():
             total_centers += 1
         result_regions[reg] = center_list
         
+    if session.get("role") == "rcsm":
+        user_center = (session.get("center") or "").strip().lower()
+        if user_center and user_center != "all":
+            allowed_centers = [c.strip() for c in user_center.split(",") if c.strip()]
+            filtered_regions = {}
+            filtered_centers_count = 0
+            for reg, clist in result_regions.items():
+                matched = [c for c in clist if c["center"].strip().lower() in allowed_centers]
+                if matched:
+                    filtered_regions[reg] = matched
+                    filtered_centers_count += len(matched)
+            result_regions = filtered_regions
+            total_centers = filtered_centers_count
+
     return {
         "status": "success",
         "data_storage": "SQLite Database (In-Memory Excel Streaming)",
@@ -2296,8 +2409,8 @@ def admin_dashboard(response: Response):
         <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
           <input type="file" id="top-survey-upload-input" accept=".xlsx, .xls, .csv" style="display:none;" onchange="uploadSurveyExcel(event)">
           <button id="btn-top-import" class="btn" style="background:#0f766e; color:white;" onclick="document.getElementById('top-survey-upload-input').click()">📤 Import Survey Excel</button>
-          <a href="/api/export-excel" class="btn btn-green">📊 Master Excel</a>
-          <a href="/api/export-data-zip" class="btn" style="background:#2563eb; color:white; text-decoration:none;">🗂️ All Centers (ZIP)</a>
+          <button id="btn-top-master-excel" class="btn btn-green" onclick="downloadWithAuth('/api/export-excel')">📊 Master Excel</button>
+          <button id="btn-top-zip-excel" class="btn" style="background:#2563eb; color:white;" onclick="downloadWithAuth('/api/export-data-zip')">🗂️ All Centers (ZIP)</button>
           <a href="/" class="btn btn-outline" target="_blank" title="Open Field Survey Web App">📱 Field App</a>
           <button onclick="fetchData()" class="btn btn-outline">🔄 Refresh</button>
           <button onclick="adminLogout()" class="btn btn-danger" style="padding:8px 12px;" title="Sign Out">🚪 Exit</button>
@@ -2614,7 +2727,7 @@ def admin_dashboard(response: Response):
             </p>
           </div>
           <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-            <a href="/api/export-data-zip" class="btn" style="background:#2563eb; color:white; font-size:0.85rem; text-decoration:none;">🗂️ Download All Centers (ZIP)</a>
+            <button onclick="downloadWithAuth('/api/export-data-zip')" class="btn" style="background:#2563eb; color:white; font-size:0.85rem;">🗂️ Download All Centers (ZIP)</button>
             <button id="btn-optimize-storage" onclick="resyncFoldersAction()" class="btn" style="background:#0f766e; color:white; font-size:0.85rem;">🧹 Optimize Storage & Recount</button>
           </div>
         </div>
@@ -2968,6 +3081,12 @@ def admin_dashboard(response: Response):
             }
             return res;
           });
+        }
+
+        function downloadWithAuth(url) {
+          const token = localStorage.getItem('gpon_auth_token') || '';
+          const separator = url.includes('?') ? '&' : '?';
+          window.location.href = `${url}${separator}token=${encodeURIComponent(token)}`;
         }
 
         function applyAdminRoleUI(role) {
@@ -3535,9 +3654,9 @@ def admin_dashboard(response: Response):
           const center = document.getElementById('feed-filter-center').value;
 
           if (center && center !== 'ALL') {
-            window.location.href = `/api/export-center-excel?center=${encodeURIComponent(center)}&region=${encodeURIComponent(region)}`;
+            downloadWithAuth(`/api/export-center-excel?center=${encodeURIComponent(center)}&region=${encodeURIComponent(region)}`);
           } else {
-            window.location.href = '/api/export-excel';
+            downloadWithAuth('/api/export-excel');
           }
         }
 
@@ -4302,11 +4421,11 @@ def admin_dashboard(response: Response):
                       </span>
                     </td>
                     <td>
-                      <a href="/api/export-center-excel?center=${encodeURIComponent(c.center)}&region=${encodeURIComponent(c.region)}" 
-                         class="btn btn-outline" 
-                         style="padding:4px 10px; font-size:0.75rem; text-decoration:none;">
+                      <button onclick="downloadWithAuth('/api/export-center-excel?center=${encodeURIComponent(c.center)}&region=${encodeURIComponent(c.region)}')" 
+                              class="btn btn-outline" 
+                              style="padding:4px 10px; font-size:0.75rem;">
                         📥 Download Excel
-                      </a>
+                      </button>
                     </td>
                   </tr>
                 `;

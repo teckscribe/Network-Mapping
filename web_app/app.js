@@ -2347,8 +2347,10 @@ async function exportToExcel() {
   // 2. Online Mode: Stream live central survey data from Ubuntu Server SQLite database
   if (isServerReachable) {
     try {
-      const exportUrl = `${serverUrl}/api/export-center-excel?center=${encodeURIComponent(targetCenter)}`;
-      const res = await fetch(exportUrl);
+      const authToken = localStorage.getItem('gpon_auth_token') || (currentUser && currentUser.token) || '';
+      const headers = authToken ? { 'Authorization': `Bearer ${authToken}` } : {};
+      const exportUrl = `${serverUrl}/api/export-center-excel?center=${encodeURIComponent(targetCenter)}${authToken ? `&token=${encodeURIComponent(authToken)}` : ''}`;
+      const res = await fetch(exportUrl, { headers });
       if (res.ok) {
         const blob = await res.blob();
         const url = window.URL.createObjectURL(blob);
@@ -2438,6 +2440,10 @@ async function exportToExcel() {
 function openRecordsModal() {
   const modal = document.getElementById('records-modal');
   const container = document.getElementById('records-list-container');
+  if (!modal || !container) {
+    console.warn('Records modal element not found in DOM');
+    return;
+  }
   container.innerHTML = '';
 
   if (records.length === 0) {
@@ -2449,13 +2455,14 @@ function openRecordsModal() {
       const syncBadge = isSynced 
         ? '<span style="color:#10b981; font-weight:bold; font-size:0.75rem;">[Synced ✓]</span>' 
         : '<span style="color:#f59e0b; font-weight:bold; font-size:0.75rem;">[Pending Sync ⏳]</span>';
+      const oltDisplay = r["OLT/Node  Name"] || r["OLT/Node Name"] || r.olt_name || '';
 
       const item = document.createElement('div');
       item.className = 'record-item';
       item.innerHTML = `
         <div class="record-item-main">
           <div class="record-title">${escapeHtml(r["Enclosure ID"])} — ${escapeHtml(r["KSEB Post Number"])} ${syncBadge}</div>
-          <div class="record-sub">${escapeHtml(r["OLT/Node  Name"])} | Port: ${escapeHtml(r["Port Number"])} | Ratio: ${escapeHtml(r["Splitter Ratio"])}</div>
+          <div class="record-sub">${escapeHtml(oltDisplay)} | Port: ${escapeHtml(r["Port Number"])} | Ratio: ${escapeHtml(r["Splitter Ratio"])}</div>
           <div class="record-sub">GPS: ${escapeHtml(r["Lat /Long"]) || 'No GPS'} | Cust: ${r["No: Of Customer Connected"]}</div>
         </div>
         <button class="record-del" onclick="deleteRecord(${realIndex})">✕</button>
@@ -2468,7 +2475,8 @@ function openRecordsModal() {
 }
 
 function closeRecordsModal() {
-  document.getElementById('records-modal').style.display = 'none';
+  const modal = document.getElementById('records-modal');
+  if (modal) modal.style.display = 'none';
 }
 
 function deleteRecord(index) {
@@ -2652,20 +2660,20 @@ async function syncWithServer(silent = false) {
   try {
     const formattedRecords = pendingRecords.map(r => ({
       client_uuid: r.client_uuid,
-      region: r.Region || 'Thrissur',
-      center: r.Center,
-      rt_room: r['RT Room'],
-      technology: r['GPON/FTTH/WDM'],
-      olt_name: r['OLT/Node  Name'],
-      port_number: r['Port Number'],
-      kseb_post_number: r['KSEB Post Number'],
-      landmark: r['Land Mark'],
-      enclosure_number: r['Enclosure Number'],
-      enclosure_id: r['Enclosure ID'],
-      lat_long: r['Lat /Long'],
-      splitter_id: r['Splitter ID'],
-      splitter_ratio: r['Splitter Ratio'],
-      customers_connected: r['No: Of Customer Connected'] || 0,
+      region: r.Region || r.region || 'Thrissur',
+      center: r.Center || r.center || '',
+      rt_room: r['RT Room'] || r.rt_room || '',
+      technology: r['GPON/FTTH/WDM'] || r.technology || 'GPON',
+      olt_name: r['OLT/Node  Name'] || r['OLT/Node Name'] || r.olt_name || '',
+      port_number: r['Port Number'] || r.port_number || '',
+      kseb_post_number: r['KSEB Post Number'] || r.kseb_post_number || '',
+      landmark: r['Land Mark'] || r.landmark || '',
+      enclosure_number: r['Enclosure Number'] || r.enclosure_number || '',
+      enclosure_id: r['Enclosure ID'] || r.enclosure_id || '',
+      lat_long: r['Lat /Long'] || r['Lat/Long'] || r.lat_long || '',
+      splitter_id: r['Splitter ID'] || r.splitter_id || '',
+      splitter_ratio: r['Splitter Ratio'] || r.splitter_ratio || '',
+      customers_connected: r['No: Of Customer Connected'] || r['No: of Customer Connected'] || r.customers_connected || 0,
       splitter_lead_color: r['Splitter Lead Colour Code'] || r.splitter_lead_color || '',
       adl_subscriber_id: r['ADL Subscriber ID'] || r.adl_subscriber_id || '',
       acs_subscriber_id: r['ACS Subscriber ID'] || r.acs_subscriber_id || '',
@@ -2747,7 +2755,7 @@ async function triggerManualSync() {
 
 function configureServerUrl() {
   const current = localStorage.getItem('gpon_server_url') || serverUrl;
-  const input = prompt('Enter Ubuntu Server Address (e.g. http://192.168.1.100:8000 or Cloudflare Tunnel URL):', current);
+  const input = prompt('Enter Ubuntu Server Address (e.g. http://192.168.1.100:9001 or Cloudflare Tunnel URL):', current);
   if (input !== null && input.trim() !== '') {
     serverUrl = input.trim().replace(/\/+$/, '');
     localStorage.setItem('gpon_server_url', serverUrl);

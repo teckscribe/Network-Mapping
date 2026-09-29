@@ -77,7 +77,7 @@ function computeEnclosureId(oltName, port, enclosure) {
     oltCode = s.replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 12);
   }
 
-  const portCode = (port || "P1").trim().toUpperCase().replace(/\s+/g, '');
+  const portCode = (port || "P1").trim().toUpperCase().replace(/[\s,]+/g, '');
   const encCode = (enclosure || "E1").trim().toUpperCase();
 
   return `${oltCode}${portCode}${encCode}`;
