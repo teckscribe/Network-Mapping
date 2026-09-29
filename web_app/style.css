@@ -594,8 +594,47 @@ body {
   font-size: 0.85rem;
   font-weight: 500;
   box-shadow: 0 3px 8px rgba(0,0,0,0.25);
-  z-index: 6000;
+  z-index: 100001;
   display: none;
+}
+
+/* Password Toggle Icon Button */
+.password-toggle-btn {
+  position: absolute;
+  right: 8px;
+  background: none;
+  border: none;
+  font-size: 1.15rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 6px;
+  color: #64748b;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s ease, background 0.15s ease;
+  user-select: none;
+}
+
+.password-toggle-btn:hover {
+  color: #1e293b;
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.password-toggle-btn:active {
+  transform: scale(0.95);
+}
+
+/* Shake Animation for Login & Input Validation Errors */
+.shake-anim {
+  animation: loginShake 0.35s ease-in-out;
+}
+
+@keyframes loginShake {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-6px); }
+  40%, 80% { transform: translateX(6px); }
 }
 
 /* Login Overlay */

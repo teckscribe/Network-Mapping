@@ -230,22 +230,88 @@ function updateUserBar() {
   }
 }
 
+// ==========================================
+// AUTHENTICATION & LOGIN HELPERS
+// ==========================================
+
+function togglePasswordVisibility(inputId, btnId) {
+  const input = document.getElementById(inputId);
+  const btn = document.getElementById(btnId);
+  if (!input) return;
+  if (input.type === 'password') {
+    input.type = 'text';
+    if (btn) {
+      btn.innerText = '🙈';
+      btn.title = 'Hide password';
+      btn.setAttribute('aria-label', 'Hide password');
+    }
+  } else {
+    input.type = 'password';
+    if (btn) {
+      btn.innerText = '👁️';
+      btn.title = 'Show password';
+      btn.setAttribute('aria-label', 'Show password');
+    }
+  }
+}
+
+function setLoginError(htmlMsg) {
+  const errBox = document.getElementById('login-error-msg');
+  if (errBox) {
+    errBox.innerHTML = htmlMsg;
+    errBox.style.display = 'block';
+    errBox.classList.remove('shake-anim');
+    void errBox.offsetWidth; // Force DOM reflow to re-trigger shake animation
+    errBox.classList.add('shake-anim');
+  }
+  // Strip HTML tags for clean toast notification
+  const plainText = htmlMsg.replace(/<[^>]*>?/gm, '');
+  showToast(plainText, false);
+}
+
+function clearLoginError() {
+  const errBox = document.getElementById('login-error-msg');
+  if (errBox) {
+    errBox.style.display = 'none';
+    errBox.innerHTML = '';
+  }
+}
+
 async function handleLogin(e) {
   if (e) e.preventDefault();
-  const u = document.getElementById('login-username').value.trim();
-  const p = document.getElementById('login-password').value.trim();
+  clearLoginError();
+
+  const uInput = document.getElementById('login-username');
+  const pInput = document.getElementById('login-password');
+  const submitBtn = document.getElementById('btn-login-submit');
+
+  const u = (uInput ? uInput.value : '').trim();
+  const p = (pInput ? pInput.value : '').trim();
   const rememberCheckbox = document.getElementById('login-remember-me');
   const remember = rememberCheckbox ? rememberCheckbox.checked : true;
   
   if (!u || !p) {
-    showToast('Please enter username and password', false);
+    setLoginError('⚠️ <strong>Please enter username and password.</strong>');
+    if (!u && uInput) uInput.focus();
+    else if (!p && pInput) pInput.focus();
     return;
   }
 
-  // 1. Attempt login with Ubuntu server
+  // Visual loading indicator on submit button
+  const origBtnHtml = submitBtn ? submitBtn.innerHTML : 'Sign In';
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '⏳ Signing in...';
+    submitBtn.style.opacity = '0.75';
+    submitBtn.style.cursor = 'not-allowed';
+  }
+
+  let serverContacted = false;
+
+  // 1. Attempt login with Ubuntu server (15-second timeout for mobile networks)
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 4000);
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
     const res = await fetch(`${serverUrl}/api/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -253,6 +319,7 @@ async function handleLogin(e) {
       signal: controller.signal
     });
     clearTimeout(timeoutId);
+    serverContacted = true;
 
     if (res.ok) {
       const data = await res.json();
@@ -272,26 +339,52 @@ async function handleLogin(e) {
       setCurrentUser(data.user);
       showToast(`Welcome, ${data.user.full_name}!`);
       return;
+    } else {
+      // Server returned an HTTP error
+      const errData = await res.json().catch(() => ({}));
+      if (res.status === 401) {
+        setLoginError('⚠️ <strong>Invalid username or password.</strong><br><span style="font-size: 0.78rem; opacity: 0.95;">Tap the 👁️ eye icon to check your password for typos or phone auto-capitalization.</span>');
+      } else if (res.status === 429) {
+        setLoginError('⏳ <strong>Too many login attempts.</strong><br><span style="font-size: 0.78rem;">Please wait 1 minute before trying again.</span>');
+      } else if (res.status >= 500) {
+        setLoginError(`⚠️ <strong>Server Error (${res.status}).</strong><br><span style="font-size: 0.78rem;">The server is restarting or busy. Please retry in a few moments.</span>`);
+      } else {
+        setLoginError(`⚠️ <strong>${errData.detail || 'Login failed. Please check credentials.'}</strong>`);
+      }
+      return;
     }
   } catch (err) {
-    console.log('Server login unreachable, trying offline fallback...');
+    console.log('Server login error / unreachable:', err);
+    if (err.name === 'AbortError') {
+      setLoginError('⚠️ <strong>Connection Timed Out.</strong><br><span style="font-size: 0.78rem;">Server took too long to respond. Please check your mobile signal and retry.</span>');
+      return;
+    }
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = origBtnHtml;
+      submitBtn.style.opacity = '1';
+      submitBtn.style.cursor = 'pointer';
+    }
   }
 
-  // 2. Offline fallback credentials for remote field areas
-  const offlineUsers = {
-    'admin': { username: 'admin', full_name: 'Central Super Administrator', email: 'admin@gpon.local', assigned_center: 'ALL', assigned_region: 'ALL', role: 'super_admin' }
-  };
+  // 2. Offline fallback credentials for remote emergency field areas
+  if (!serverContacted) {
+    const offlineUsers = {
+      'admin': { username: 'admin', full_name: 'Central Super Administrator', email: 'admin@gpon.local', assigned_center: 'ALL', assigned_region: 'ALL', role: 'super_admin' }
+    };
 
-  if (offlineUsers[u] && p === 'admin123') {
-    if (remember) {
-      localStorage.setItem('gpon_remember_creds', 'true');
-      localStorage.setItem('gpon_remembered_username', u);
+    if (offlineUsers[u.toLowerCase()] && p === 'admin123') {
+      if (remember) {
+        localStorage.setItem('gpon_remember_creds', 'true');
+        localStorage.setItem('gpon_remembered_username', u);
+      }
+      localStorage.removeItem('gpon_remembered_password');
+      setCurrentUser(offlineUsers[u.toLowerCase()]);
+      showToast(`Offline Login: Welcome, ${offlineUsers[u.toLowerCase()].full_name}!`);
+    } else {
+      setLoginError('⚠️ <strong>Unable to connect to server.</strong><br><span style="font-size: 0.78rem;">Please check your mobile data / Wi-Fi or verify that the server is running.</span>');
     }
-    localStorage.removeItem('gpon_remembered_password');
-    setCurrentUser(offlineUsers[u]);
-    showToast(`Offline Login: Welcome, ${offlineUsers[u].full_name}!`);
-  } else {
-    showToast('Invalid username or password', false);
   }
 }
 

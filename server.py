@@ -765,10 +765,16 @@ def login(req: LoginRequest, request: Request):
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
-    cur.execute("SELECT * FROM users WHERE username = ?", (req.username.strip(),))
+    cur.execute("SELECT * FROM users WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))", (req.username.strip(),))
     user = cur.fetchone()
 
-    if not user or not verify_password(req.password.strip(), user["password"]):
+    pwd_input = req.password
+    pwd_stripped = req.password.strip()
+    pwd_valid = False
+    if user:
+        pwd_valid = verify_password(pwd_stripped, user["password"]) or verify_password(pwd_input, user["password"])
+
+    if not user or not pwd_valid:
         conn.close()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
 
@@ -2247,7 +2253,10 @@ def admin_dashboard(response: Response):
             </div>
             <div style="margin-bottom:16px;">
               <label style="display:block; font-size:0.78rem; font-weight:700; color:#475569; margin-bottom:4px;">Password / PIN</label>
-              <input type="password" id="admin-login-pass" required style="width:100%; padding:9px 12px;" placeholder="Password">
+              <div style="position:relative; display:flex; align-items:center;">
+                <input type="password" id="admin-login-pass" required style="width:100%; padding:9px 40px 9px 12px;" placeholder="Password" autocapitalize="none" spellcheck="false">
+                <button type="button" id="btn-toggle-admin-pass" onclick="toggleAdminPassword()" style="position:absolute; right:8px; background:none; border:none; font-size:1.15rem; cursor:pointer; padding:4px; color:#64748b;" title="Show / Hide Password">👁️</button>
+              </div>
             </div>
             <div id="admin-login-error" style="display:none; background:#fee2e2; color:#991b1b; padding:8px 12px; border-radius:6px; font-size:0.82rem; margin-bottom:14px;"></div>
             <button type="submit" class="btn" style="width:100%; justify-content:center; padding:10px; font-size:0.92rem; background:#0284c7;">🔐 Sign In to Portal</button>
@@ -2885,9 +2894,17 @@ def admin_dashboard(response: Response):
           return true;
         }
 
-        function showAdminLoginModal() {
-          document.getElementById('admin-auth-overlay').style.display = 'flex';
-          document.getElementById('admin-login-error').style.display = 'none';
+        function toggleAdminPassword() {
+          const inp = document.getElementById('admin-login-pass');
+          const btn = document.getElementById('btn-toggle-admin-pass');
+          if (!inp) return;
+          if (inp.type === 'password') {
+            inp.type = 'text';
+            if (btn) btn.innerText = '🙈';
+          } else {
+            inp.type = 'password';
+            if (btn) btn.innerText = '👁️';
+          }
         }
 
         async function handleAdminLogin(e) {

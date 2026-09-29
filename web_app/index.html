@@ -14,7 +14,7 @@
 
   <!-- Local Offline Vendor Styles -->
   <link rel="stylesheet" href="vendor/leaflet.css">
-  <link rel="stylesheet" href="style.css?v=44">
+  <link rel="stylesheet" href="style.css?v=45">
   <script>
     // Synchronous Pre-Render Auth Check: Prevents Flash of Unauthenticated Content (FOUC)
     // If user is already logged in with a valid session, hide login modal before first paint.
@@ -307,19 +307,28 @@
       <form onsubmit="handleLogin(event)">
         <div class="gs-cell-group" style="margin-bottom: 12px;">
           <label class="gs-cell-label" for="login-username">Username</label>
-          <input type="text" id="login-username" class="gs-input" placeholder="Enter your username" required autocomplete="username">
+          <input type="text" id="login-username" class="gs-input" placeholder="Enter your username" required autocomplete="username" autocapitalize="none" spellcheck="false" oninput="clearLoginError()">
         </div>
-        <div class="gs-cell-group" style="margin-bottom: 16px;">
+        <div class="gs-cell-group" style="margin-bottom: 12px;">
           <label class="gs-cell-label" for="login-password">Password / PIN</label>
-          <input type="password" id="login-password" class="gs-input" placeholder="Enter password / PIN" required autocomplete="current-password">
+          <div style="position: relative; display: flex; align-items: center;">
+            <input type="password" id="login-password" class="gs-input" placeholder="Enter password / PIN" required autocomplete="current-password" autocapitalize="none" spellcheck="false" oninput="clearLoginError()" style="padding-right: 42px; width: 100%;">
+            <button type="button" id="btn-toggle-login-password" class="password-toggle-btn" onclick="togglePasswordVisibility('login-password', 'btn-toggle-login-password')" title="Show / Hide Password" aria-label="Toggle password visibility">
+              👁️
+            </button>
+          </div>
         </div>
+
+        <!-- Inline Error Message Box (Visible on Card) -->
+        <div id="login-error-msg" style="display: none; background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; padding: 10px 12px; border-radius: 6px; font-size: 0.82rem; margin-bottom: 12px; text-align: left; line-height: 1.4;"></div>
+
         <div style="display: flex; align-items: center; justify-content: flex-start; margin-bottom: 16px; font-size: 0.85rem; color: #5f6368;">
           <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;">
             <input type="checkbox" id="login-remember-me" checked style="width: 16px; height: 16px; accent-color: #0f9d58; cursor: pointer;">
             <span>Remember credentials on this device</span>
           </label>
         </div>
-        <button type="submit" class="btn-add-row" style="margin-top: 0; padding: 12px;">
+        <button type="submit" id="btn-login-submit" class="btn-add-row" style="margin-top: 0; padding: 12px; width: 100%; justify-content: center;">
           Sign In
         </button>
         <div style="text-align: center; margin-top: 14px;">
@@ -345,7 +354,7 @@
         <form onsubmit="handleRequestResetOtp(event)">
           <div class="gs-cell-group" style="margin-bottom: 14px;">
             <label class="gs-cell-label" for="reset-identifier">Username or Email Address</label>
-            <input type="text" id="reset-identifier" class="gs-input" placeholder="e.g. anoop or anoop@bsnl.co.in" required autocomplete="username">
+            <input type="text" id="reset-identifier" class="gs-input" placeholder="e.g. anoop or anoop@bsnl.co.in" required autocomplete="username" autocapitalize="none" spellcheck="false">
           </div>
           <div id="reset-step1-error" style="display: none; background: #fee2e2; color: #991b1b; padding: 8px 12px; border-radius: 6px; font-size: 0.8rem; margin-bottom: 14px;"></div>
           <button type="submit" id="btn-send-reset-otp" class="btn-add-row" style="margin-top: 0; padding: 11px; background: #0284c7; justify-content: center; width: 100%;">
@@ -373,12 +382,18 @@
 
           <div class="gs-cell-group" style="margin-bottom: 12px;">
             <label class="gs-cell-label" for="reset-new-password">New Password / PIN</label>
-            <input type="password" id="reset-new-password" class="gs-input" placeholder="Enter new password / PIN" required autocomplete="new-password">
+            <div style="position: relative; display: flex; align-items: center;">
+              <input type="password" id="reset-new-password" class="gs-input" placeholder="Enter new password / PIN" required autocomplete="new-password" autocapitalize="none" spellcheck="false" style="padding-right: 42px; width: 100%;">
+              <button type="button" id="btn-toggle-reset-new" class="password-toggle-btn" onclick="togglePasswordVisibility('reset-new-password', 'btn-toggle-reset-new')" title="Show / Hide Password" aria-label="Toggle password visibility">👁️</button>
+            </div>
           </div>
 
           <div class="gs-cell-group" style="margin-bottom: 14px;">
             <label class="gs-cell-label" for="reset-confirm-password">Confirm New Password</label>
-            <input type="password" id="reset-confirm-password" class="gs-input" placeholder="Re-enter new password" required autocomplete="new-password">
+            <div style="position: relative; display: flex; align-items: center;">
+              <input type="password" id="reset-confirm-password" class="gs-input" placeholder="Re-enter new password" required autocomplete="new-password" autocapitalize="none" spellcheck="false" style="padding-right: 42px; width: 100%;">
+              <button type="button" id="btn-toggle-reset-confirm" class="password-toggle-btn" onclick="togglePasswordVisibility('reset-confirm-password', 'btn-toggle-reset-confirm')" title="Show / Hide Password" aria-label="Toggle password visibility">👁️</button>
+            </div>
           </div>
 
           <div id="reset-step2-error" style="display: none; background: #fee2e2; color: #991b1b; padding: 8px 12px; border-radius: 6px; font-size: 0.8rem; margin-bottom: 14px;"></div>
@@ -420,7 +435,7 @@
   <!-- Local Offline Vendor Scripts -->
   <script src="vendor/leaflet.js"></script>
   <script src="vendor/xlsx.full.min.js"></script>
-  <script src="preload_data.js?v=44"></script>
-  <script src="app.js?v=44"></script>
+  <script src="preload_data.js?v=45"></script>
+  <script src="app.js?v=45"></script>
 </body>
 </html>
