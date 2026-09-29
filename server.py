@@ -392,6 +392,7 @@ def init_db():
 
     cur.execute("CREATE INDEX IF NOT EXISTS idx_records_center ON survey_records(center)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_records_enclosure ON survey_records(enclosure_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_records_enc_spl ON survey_records(enclosure_id, splitter_id)")
 
     # 1. Sync from persistent users_config.json if it exists
     load_users_from_json(conn)
@@ -1511,57 +1512,193 @@ def health_check():
         "server_time": datetime.datetime.now().isoformat()
     }
 
+@app.get("/api/surveyed-points")
+def get_surveyed_points(center: Optional[str] = None):
+    """
+    Returns an index map of all surveyed enclosure/splitter points across the network.
+    Used by mobile clients for duplicate detection, locking, and ACSO supervisor updates.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    
+    query = """
+        SELECT client_uuid, region, center, rt_room, technology, olt_name, port_number,
+               enclosure_number, enclosure_id, splitter_id, splitter_ratio,
+               customers_connected, splitter_lead_color, adl_subscriber_id, acs_subscriber_id,
+               kseb_post_number, landmark, lat_long, survey_date_time,
+               surveyor_username, surveyor_name, created_at
+        FROM survey_records
+    """
+    params = []
+    if center and center.strip() and center.strip().upper() != "ALL":
+        query += " WHERE LOWER(TRIM(center)) = LOWER(TRIM(?))"
+        params.append(center.strip())
+        
+    cur.execute(query, params)
+    rows = cur.fetchall()
+    conn.close()
+    
+    points = {}
+    for r in rows:
+        enc_id = (r["enclosure_id"] or "").strip()
+        spl_id = (r["splitter_id"] or "").strip()
+        if enc_id and spl_id:
+            key = f"{enc_id}|{spl_id}".upper()
+            points[key] = {
+                "client_uuid": r["client_uuid"],
+                "region": r["region"] or "",
+                "center": r["center"] or "",
+                "rt_room": r["rt_room"] or "",
+                "technology": r["technology"] or "GPON",
+                "olt_name": r["olt_name"] or "",
+                "port_number": r["port_number"] or "",
+                "enclosure_number": r["enclosure_number"] or "",
+                "enclosure_id": enc_id,
+                "splitter_id": spl_id,
+                "splitter_ratio": r["splitter_ratio"] or "",
+                "customers_connected": r["customers_connected"] or 0,
+                "splitter_lead_color": r["splitter_lead_color"] or "",
+                "adl_subscriber_id": r["adl_subscriber_id"] or "",
+                "acs_subscriber_id": r["acs_subscriber_id"] or "",
+                "kseb_post_number": r["kseb_post_number"] or "",
+                "landmark": r["landmark"] or "",
+                "lat_long": r["lat_long"] or "",
+                "survey_date_time": r["survey_date_time"] or "",
+                "surveyor_username": r["surveyor_username"] or "",
+                "surveyor_name": r["surveyor_name"] or r["surveyor_username"] or "Surveyor"
+            }
+            
+    return {
+        "status": "success",
+        "total_points": len(points),
+        "points": points
+    }
+
 @app.post("/api/sync")
-def sync_records(payload: SyncPayload):
+def sync_records(payload: SyncPayload, authorization: Optional[str] = Header(None)):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     now_str = datetime.datetime.now().isoformat()
     synced_uuids = []
+    updated_records = []
+    skipped_duplicates = []
+
+    session = get_current_session(authorization)
+    caller_role = session.get("role") if session else None
 
     for r in payload.records:
         try:
-            cur.execute("""
-            INSERT INTO survey_records (
-                client_uuid, region, center, rt_room, technology,
-                olt_name, port_number, kseb_post_number, landmark,
-                enclosure_number, enclosure_id, lat_long, splitter_id,
-                splitter_ratio, customers_connected, splitter_lead_color,
-                adl_subscriber_id, acs_subscriber_id, survey_date_time,
-                device_id, surveyor_username, surveyor_name, created_at, synced_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(client_uuid) DO UPDATE SET
-                region=excluded.region,
-                center=excluded.center,
-                rt_room=excluded.rt_room,
-                technology=excluded.technology,
-                olt_name=excluded.olt_name,
-                port_number=excluded.port_number,
-                kseb_post_number=excluded.kseb_post_number,
-                landmark=excluded.landmark,
-                enclosure_number=excluded.enclosure_number,
-                enclosure_id=excluded.enclosure_id,
-                lat_long=excluded.lat_long,
-                splitter_id=excluded.splitter_id,
-                splitter_ratio=excluded.splitter_ratio,
-                customers_connected=excluded.customers_connected,
-                splitter_lead_color=excluded.splitter_lead_color,
-                adl_subscriber_id=excluded.adl_subscriber_id,
-                acs_subscriber_id=excluded.acs_subscriber_id,
-                survey_date_time=excluded.survey_date_time,
-                surveyor_username=excluded.surveyor_username,
-                surveyor_name=excluded.surveyor_name,
-                synced_at=excluded.synced_at
-            """, (
-                r.client_uuid, r.region, r.center, r.rt_room, r.technology,
-                r.olt_name, r.port_number, r.kseb_post_number, r.landmark,
-                r.enclosure_number, r.enclosure_id, r.lat_long, r.splitter_id,
-                r.splitter_ratio, r.customers_connected, r.splitter_lead_color,
-                r.adl_subscriber_id, r.acs_subscriber_id,
-                r.survey_date_time or (r.created_at[:19].replace('T', ' ') if r.created_at else now_str[:19].replace('T', ' ')),
-                payload.device_id, r.surveyor_username, r.surveyor_name,
-                r.created_at or now_str, now_str
-            ))
-            synced_uuids.append(r.client_uuid)
+            # 1. Determine effective role for this record
+            user_role = caller_role
+            if not user_role and r.surveyor_username:
+                cur.execute("SELECT role FROM users WHERE username = ?", (r.surveyor_username,))
+                urow = cur.fetchone()
+                if urow:
+                    user_role = urow[0]
+            clean_role = normalize_role(user_role or "field_technician")
+            is_supervisor = clean_role in ("super_admin", "acso")
+
+            enc_id = (r.enclosure_id or "").strip()
+            spl_id = (r.splitter_id or "").strip()
+
+            # 2. Check if (enclosure_id, splitter_id) already exists in database
+            existing = None
+            if enc_id and spl_id:
+                cur.execute("""
+                    SELECT client_uuid, surveyor_username, surveyor_name, survey_date_time
+                    FROM survey_records
+                    WHERE UPPER(TRIM(enclosure_id)) = UPPER(TRIM(?))
+                      AND UPPER(TRIM(splitter_id)) = UPPER(TRIM(?))
+                """, (enc_id, spl_id))
+                existing = cur.fetchone()
+
+            # Case A: Brand-new record OR re-sync of existing record with matching client_uuid
+            if not existing or existing[0] == r.client_uuid:
+                cur.execute("""
+                INSERT INTO survey_records (
+                    client_uuid, region, center, rt_room, technology,
+                    olt_name, port_number, kseb_post_number, landmark,
+                    enclosure_number, enclosure_id, lat_long, splitter_id,
+                    splitter_ratio, customers_connected, splitter_lead_color,
+                    adl_subscriber_id, acs_subscriber_id, survey_date_time,
+                    device_id, surveyor_username, surveyor_name, created_at, synced_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(client_uuid) DO UPDATE SET
+                    region=excluded.region,
+                    center=excluded.center,
+                    rt_room=excluded.rt_room,
+                    technology=excluded.technology,
+                    olt_name=excluded.olt_name,
+                    port_number=excluded.port_number,
+                    kseb_post_number=excluded.kseb_post_number,
+                    landmark=excluded.landmark,
+                    enclosure_number=excluded.enclosure_number,
+                    enclosure_id=excluded.enclosure_id,
+                    lat_long=excluded.lat_long,
+                    splitter_id=excluded.splitter_id,
+                    splitter_ratio=excluded.splitter_ratio,
+                    customers_connected=excluded.customers_connected,
+                    splitter_lead_color=excluded.splitter_lead_color,
+                    adl_subscriber_id=excluded.adl_subscriber_id,
+                    acs_subscriber_id=excluded.acs_subscriber_id,
+                    survey_date_time=excluded.survey_date_time,
+                    surveyor_username=excluded.surveyor_username,
+                    surveyor_name=excluded.surveyor_name,
+                    synced_at=excluded.synced_at
+                """, (
+                    r.client_uuid, r.region, r.center, r.rt_room, r.technology,
+                    r.olt_name, r.port_number, r.kseb_post_number, r.landmark,
+                    r.enclosure_number, r.enclosure_id, r.lat_long, r.splitter_id,
+                    r.splitter_ratio, r.customers_connected, r.splitter_lead_color,
+                    r.adl_subscriber_id, r.acs_subscriber_id,
+                    r.survey_date_time or (r.created_at[:19].replace('T', ' ') if r.created_at else now_str[:19].replace('T', ' ')),
+                    payload.device_id, r.surveyor_username, r.surveyor_name,
+                    r.created_at or now_str, now_str
+                ))
+                synced_uuids.append(r.client_uuid)
+
+            # Case B: Record exists with a DIFFERENT client_uuid
+            else:
+                existing_uuid, orig_user, orig_name, orig_date = existing
+                if is_supervisor:
+                    # OPTION C: Supervisor update rights! Overwrite master record cleanly in-place
+                    cur.execute("""
+                    UPDATE survey_records SET
+                        region = ?, center = ?, rt_room = ?, technology = ?,
+                        olt_name = ?, port_number = ?, kseb_post_number = ?, landmark = ?,
+                        enclosure_number = ?, enclosure_id = ?, lat_long = ?, splitter_id = ?,
+                        splitter_ratio = ?, customers_connected = ?, splitter_lead_color = ?,
+                        adl_subscriber_id = ?, acs_subscriber_id = ?, survey_date_time = ?,
+                        device_id = ?, surveyor_username = ?, surveyor_name = ?, synced_at = ?
+                    WHERE client_uuid = ?
+                    """, (
+                        r.region, r.center, r.rt_room, r.technology,
+                        r.olt_name, r.port_number, r.kseb_post_number, r.landmark,
+                        r.enclosure_number, r.enclosure_id, r.lat_long, r.splitter_id,
+                        r.splitter_ratio, r.customers_connected, r.splitter_lead_color,
+                        r.adl_subscriber_id, r.acs_subscriber_id,
+                        r.survey_date_time or now_str[:19].replace('T', ' '),
+                        payload.device_id, r.surveyor_username, r.surveyor_name, now_str,
+                        existing_uuid
+                    ))
+                    synced_uuids.append(r.client_uuid)
+                    updated_records.append({
+                        "client_uuid": r.client_uuid,
+                        "master_uuid": existing_uuid,
+                        "enclosure_id": enc_id,
+                        "splitter_id": spl_id
+                    })
+                else:
+                    # OPTION D: Field Tech duplicate prevention! Block duplicate insertion
+                    skipped_duplicates.append({
+                        "client_uuid": r.client_uuid,
+                        "enclosure_id": enc_id,
+                        "splitter_id": spl_id,
+                        "surveyor_name": orig_name or orig_user or "another technician",
+                        "survey_date_time": orig_date or "",
+                        "reason": f"Splitter {spl_id} under Enclosure {enc_id} was already surveyed by {orig_name or orig_user}."
+                    })
         except Exception as e:
             print(f"Error syncing record {r.client_uuid}: {e}")
 
@@ -1574,8 +1711,13 @@ def sync_records(payload: SyncPayload):
         "status": "success",
         "synced_count": len(synced_uuids),
         "synced_uuids": synced_uuids,
+        "updated_count": len(updated_records),
+        "updated_records": updated_records,
+        "skipped_count": len(skipped_duplicates),
+        "skipped_duplicates": skipped_duplicates,
         "total_server_records": total_count
     }
+
 
 @app.get("/api/records")
 def get_all_records(center: Optional[str] = None, region: Optional[str] = None):

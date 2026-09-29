@@ -34,6 +34,98 @@ let lastKnownHierarchyVersion = parseInt(localStorage.getItem('gpon_hierarchy_ve
 // User Session & Authentication
 let currentUser = JSON.parse(localStorage.getItem('gpon_logged_in_user') || 'null');
 
+// Network-Wide Surveyed Points Map (for duplicate checking, field locks, and ACSO supervisor updates)
+let networkSurveyedPoints = {};
+let currentAcsoEditingUuid = null;
+
+try {
+  const cachedPoints = localStorage.getItem('gpon_network_surveyed_points');
+  if (cachedPoints) {
+    networkSurveyedPoints = JSON.parse(cachedPoints);
+  }
+} catch (e) {
+  networkSurveyedPoints = {};
+}
+
+function getSurveyedInfo(eid, spl) {
+  if (!eid || !spl) return null;
+  const key = `${eid}|${spl}`.toUpperCase();
+  if (networkSurveyedPoints[key]) {
+    return networkSurveyedPoints[key];
+  }
+  const local = records.find(r => 
+    (r["Enclosure ID"] || r.enclosure_id || '').toUpperCase() === eid.toUpperCase() &&
+    (r["Splitter ID"] || r.splitter_id || '').toUpperCase() === spl.toUpperCase()
+  );
+  if (local) {
+    return {
+      client_uuid: local.client_uuid,
+      enclosure_id: local["Enclosure ID"] || local.enclosure_id,
+      splitter_id: local["Splitter ID"] || local.splitter_id,
+      surveyor_name: local.surveyor_name || local.surveyor_username || 'Local',
+      survey_date_time: local["Date & Time"] || local.survey_date_time || '',
+      kseb_post_number: local["KSEB Post Number"] || local.kseb_post_number || '',
+      landmark: local["Land Mark"] || local.landmark || '',
+      lat_long: local["Lat /Long"] || local.lat_long || '',
+      splitter_ratio: local["Splitter Ratio"] || local.splitter_ratio || '',
+      customers_connected: (local["No: Of Customer Connected"] !== undefined ? local["No: Of Customer Connected"] : local.customers_connected) || 0,
+      splitter_lead_color: local["Splitter Lead Colour Code"] || local.splitter_lead_color || '',
+      adl_subscriber_id: local["ADL Subscriber ID"] || local.adl_subscriber_id || '',
+      acs_subscriber_id: local["ACS Subscriber ID"] || local.acs_subscriber_id || ''
+    };
+  }
+  return null;
+}
+
+function getSurveyedSplittersForEnclosure(eid) {
+  const surveyed = new Set();
+  const eidUpper = (eid || '').toUpperCase();
+  if (!eidUpper) return [];
+
+  Object.keys(networkSurveyedPoints).forEach(key => {
+    if (key.startsWith(eidUpper + '|')) {
+      const parts = key.split('|');
+      if (parts[1]) surveyed.add(parts[1]);
+    }
+  });
+
+  records.forEach(r => {
+    const rEid = (r["Enclosure ID"] || r.enclosure_id || '').toUpperCase();
+    const rSpl = (r["Splitter ID"] || r.splitter_id || '').toUpperCase();
+    if (rEid === eidUpper && rSpl) {
+      surveyed.add(rSpl);
+    }
+  });
+
+  return Array.from(surveyed);
+}
+
+async function fetchSurveyedPoints() {
+  try {
+    const center = (centerSelect && centerSelect.value && centerSelect.value !== 'Center') 
+      ? centerSelect.value 
+      : (currentUser && currentUser.assigned_center && currentUser.assigned_center !== 'ALL' ? currentUser.assigned_center : '');
+    
+    const query = center ? `?center=${encodeURIComponent(center)}` : '';
+    const token = localStorage.getItem('gpon_auth_token') || '';
+    const headers = {};
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+
+    const res = await fetch(`${serverUrl}/api/surveyed-points${query}`, { headers });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.points) {
+        networkSurveyedPoints = data.points;
+        localStorage.setItem('gpon_network_surveyed_points', JSON.stringify(networkSurveyedPoints));
+        updateAvailableEnclosures();
+        updateAvailableSplitters();
+      }
+    }
+  } catch (err) {
+    console.warn('Could not fetch surveyed points from server (using offline cache):', err);
+  }
+}
+
 function normalizeClientRole(role) {
   const r = (role || '').trim().toLowerCase();
   if (r === 'admin' || r === 'super_admin' || r === 'superadmin') return 'super_admin';
@@ -41,6 +133,7 @@ function normalizeClientRole(role) {
   if (r === 'acso') return 'acso';
   return 'field_technician';
 }
+
 
 function updateUserBar() {
   const userBar = document.getElementById('user-bar');
@@ -116,6 +209,8 @@ function updateUserBar() {
     const isDownloadAllowed = (role !== 'field_technician');
     if (excelBtn) excelBtn.style.display = isDownloadAllowed ? 'inline-flex' : 'none';
 
+    updateAvailableEnclosures();
+    updateAvailableSplitters();
   } else {
     userBar.style.display = 'none';
   }
@@ -198,13 +293,16 @@ function setCurrentUser(user) {
   document.getElementById('login-overlay').style.display = 'none';
   updateUserBar();
   initDropdowns();
+  fetchSurveyedPoints();
 }
 
 function logout() {
   if (confirm('Log out from survey account?')) {
     currentUser = null;
+    networkSurveyedPoints = {};
     localStorage.removeItem('gpon_logged_in_user');
     localStorage.removeItem('gpon_auth_token');
+    localStorage.removeItem('gpon_network_surveyed_points');
     updateUserBar();
     document.getElementById('login-overlay').style.display = 'flex';
   }
@@ -728,7 +826,7 @@ function updateSplitterColorOptions() {
   }
 }
 
-// Filter Enclosures to prevent selecting duplicate enclosure number multiple times in same OLT port
+// Filter Enclosures to reflect survey status and role rights
 function updateAvailableEnclosures() {
   const olt = oltSelect ? oltSelect.value : '';
   const port = portSelect ? portSelect.value : '';
@@ -742,29 +840,46 @@ function updateAvailableEnclosures() {
   defOpt.innerText = (olt && port) ? '-- Select Enclosure --' : '-- Select Port First --';
   enclosureSelect.appendChild(defOpt);
 
-  if (olt && port) {
-    // Enclosures already used for this exact OLT & Port
-    const usedEnc = new Set(
-      records
-        .filter(r => (r["OLT/Node  Name"] || r.olt_name) === olt && (r["Port Number"] || r.port_number) === port)
-        .map(r => r["Enclosure Number"] || r.enclosure_number)
-    );
+  const role = currentUser ? normalizeClientRole(currentUser.role) : 'field_technician';
+  const isSupervisor = (role === 'acso' || role === 'super_admin');
 
+  if (olt && port) {
     DEFAULT_PRELOAD.enclosures.forEach(e => {
+      const eid = computeEnclosureId(olt, port, e);
+      const surveyedSplitters = getSurveyedSplittersForEnclosure(eid);
+      const hasSurvey = surveyedSplitters.length > 0;
+
       const opt = document.createElement('option');
       opt.value = e;
-      if (usedEnc.has(e)) {
-        opt.innerText = `${e} (Already Used in ${port})`;
-        opt.disabled = true;
-        opt.style.color = '#94a3b8';
+
+      if (hasSurvey) {
+        if (isSupervisor) {
+          // ACSO: Always selectable for supervisor updates
+          opt.innerText = `${e} (✏️ ${surveyedSplitters.length} Surveyed)`;
+          opt.style.color = '#0284c7';
+        } else {
+          // Field Tech:
+          const totalSplitters = (DEFAULT_PRELOAD.splitters && DEFAULT_PRELOAD.splitters.length) || 4;
+          if (surveyedSplitters.length >= totalSplitters) {
+            opt.innerText = `${e} (🔒 Fully Surveyed)`;
+            opt.disabled = true;
+            opt.style.color = '#94a3b8';
+          } else {
+            opt.innerText = `${e} (${surveyedSplitters.length} Surveyed)`;
+          }
+        }
       } else {
         opt.innerText = e;
       }
+
       enclosureSelect.appendChild(opt);
     });
 
-    if (prevVal && !usedEnc.has(prevVal)) {
-      enclosureSelect.value = prevVal;
+    if (prevVal) {
+      const optMatch = Array.from(enclosureSelect.options).find(o => o.value === prevVal && !o.disabled);
+      if (optMatch) {
+        enclosureSelect.value = prevVal;
+      }
     }
   }
 
@@ -772,7 +887,7 @@ function updateAvailableEnclosures() {
   updateAvailableSplitters();
 }
 
-// Filter Splitter IDs to prevent selecting duplicate splitter ID under same Enclosure ID
+// Filter Splitter IDs to enforce Field Tech lock (Option D) and ACSO update (Option C)
 function updateAvailableSplitters() {
   const olt = oltSelect ? oltSelect.value : '';
   const port = portSelect ? portSelect.value : '';
@@ -787,34 +902,151 @@ function updateAvailableSplitters() {
   defOpt.innerText = enc ? '-- Select Splitter ID --' : '-- Select Enclosure First --';
   splitterIdSelect.appendChild(defOpt);
 
+  const role = currentUser ? normalizeClientRole(currentUser.role) : 'field_technician';
+  const isSupervisor = (role === 'acso' || role === 'super_admin');
+
   if (enc) {
     const eid = computeEnclosureId(olt, port, enc);
 
-    // Splitters already used under this exact Enclosure ID
-    const usedSplitters = new Set(
-      records
-        .filter(r => (r["Enclosure ID"] || r.enclosure_id) === eid)
-        .map(r => r["Splitter ID"] || r.splitter_id)
-    );
-
     DEFAULT_PRELOAD.splitters.forEach(s => {
+      const surveyInfo = getSurveyedInfo(eid, s);
+
       const opt = document.createElement('option');
       opt.value = s;
-      if (usedSplitters.has(s)) {
-        opt.innerText = `${s} (Already Used in ${eid})`;
-        opt.disabled = true;
-        opt.style.color = '#94a3b8';
+
+      if (surveyInfo) {
+        const byWho = surveyInfo.surveyor_name || surveyInfo.surveyor_username || 'Surveyor';
+        if (isSupervisor) {
+          // OPTION C: Supervisor update rights
+          opt.innerText = `${s} — ✏️ Update Existing (${byWho})`;
+          opt.style.color = '#0284c7';
+          opt.style.fontWeight = '600';
+        } else {
+          // OPTION D: Field Tech duplicate prevention
+          opt.innerText = `${s} — 🔒 Already Surveyed (${byWho})`;
+          opt.disabled = true;
+          opt.style.color = '#94a3b8';
+          opt.style.backgroundColor = '#f1f5f9';
+        }
       } else {
         opt.innerText = s;
       }
+
       splitterIdSelect.appendChild(opt);
     });
 
-    if (prevVal && !usedSplitters.has(prevVal)) {
-      splitterIdSelect.value = prevVal;
+    if (prevVal) {
+      const optMatch = Array.from(splitterIdSelect.options).find(o => o.value === prevVal && !o.disabled);
+      if (optMatch) {
+        splitterIdSelect.value = prevVal;
+      }
+    }
+  }
+
+  handleSplitterSelectionChange();
+}
+
+// Handle Splitter Selection: Toggles ACSO Update Banner & Pre-fills Existing Survey Data
+function handleSplitterSelectionChange() {
+  const banner = document.getElementById('acso-update-banner');
+  const descEl = document.getElementById('acso-update-desc');
+  const submitBtn = document.getElementById('btn-save-record') || document.querySelector('.btn-add-row');
+
+  const olt = oltSelect ? oltSelect.value : '';
+  const port = portSelect ? portSelect.value : '';
+  const enc = enclosureSelect ? enclosureSelect.value : '';
+  const spl = splitterIdSelect ? splitterIdSelect.value : '';
+
+  const role = currentUser ? normalizeClientRole(currentUser.role) : 'field_technician';
+  const isSupervisor = (role === 'acso' || role === 'super_admin');
+
+  if (!olt || !port || !enc || !spl) {
+    if (banner) banner.style.display = 'none';
+    if (submitBtn) {
+      submitBtn.innerHTML = '<span>➕</span> Submit';
+      submitBtn.style.background = '';
+    }
+    currentAcsoEditingUuid = null;
+    return;
+  }
+
+  const eid = computeEnclosureId(olt, port, enc);
+  const surveyInfo = getSurveyedInfo(eid, spl);
+
+  if (surveyInfo && isSupervisor) {
+    // Enter ACSO Update Mode
+    currentAcsoEditingUuid = surveyInfo.client_uuid;
+    const by = surveyInfo.surveyor_name || surveyInfo.surveyor_username || 'another surveyor';
+    const dt = surveyInfo.survey_date_time || surveyInfo["Date & Time"] || 'previous survey';
+
+    if (banner && descEl) {
+      descEl.innerHTML = `Editing record for <strong>${eid} (${spl})</strong>, originally surveyed by <strong>${by}</strong> (${dt}). Submitting will overwrite the master central database record.`;
+      banner.style.display = 'block';
+    }
+    if (submitBtn) {
+      submitBtn.innerHTML = '<span>✏️</span> Update Master Record';
+      submitBtn.style.background = '#0284c7';
+    }
+
+    // Pre-populate fields from existing record for easy supervisor corrections
+    populateFieldsFromExistingRecord(surveyInfo);
+  } else {
+    // Normal entry mode
+    currentAcsoEditingUuid = null;
+    if (banner) banner.style.display = 'none';
+    if (submitBtn) {
+      submitBtn.innerHTML = '<span>➕</span> Submit';
+      submitBtn.style.background = '';
     }
   }
 }
+
+function populateFieldsFromExistingRecord(info) {
+  if (!info) return;
+  if (postInput && !postInput.value.trim()) {
+    postInput.value = info.kseb_post_number || info["KSEB Post Number"] || '';
+  }
+  if (landmarkInput && !landmarkInput.value.trim()) {
+    landmarkInput.value = info.landmark || info["Land Mark"] || '';
+  }
+  if (custCountInput && custCountInput.value === '0') {
+    custCountInput.value = (info.customers_connected !== undefined ? info.customers_connected : info["No: Of Customer Connected"]) || 0;
+  }
+  if (adlSubInput && !adlSubInput.value.trim()) {
+    adlSubInput.value = info.adl_subscriber_id || info["ADL Subscriber ID"] || '';
+  }
+  if (acsSubInput && !acsSubInput.value.trim()) {
+    acsSubInput.value = info.acs_subscriber_id || info["ACS Subscriber ID"] || '';
+  }
+
+  const ratio = info.splitter_ratio || info["Splitter Ratio"];
+  if (ratio && splitterRatioSelect && !splitterRatioSelect.value) {
+    splitterRatioSelect.value = ratio;
+    updateSplitterColorOptions();
+  }
+
+  const color = info.splitter_lead_color || info["Splitter Lead Colour Code"];
+  if (color && splitterColorSelect && !splitterColorSelect.value) {
+    splitterColorSelect.value = color;
+  }
+
+  const coords = info.lat_long || info["Lat /Long"];
+  if (coords && coords.includes(',') && (!currentLat || !currentLon)) {
+    if (manualCoordsInput) manualCoordsInput.value = coords;
+    const parts = coords.split(',').map(s => parseFloat(s.trim()));
+    if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+      currentLat = parts[0];
+      currentLon = parts[1];
+      if (gpsAccText) {
+        gpsAccText.innerHTML = `<span style="color:#0284c7; font-weight:600;">📍 Existing Survey Coords (${coords})</span>`;
+      }
+      if (mapInstance && typeof L !== 'undefined') {
+        renderMapMarker(currentLat, currentLon, 10);
+      }
+    }
+  }
+}
+
 
 function onCenterChange(targetRt = null, targetOlt = null) {
   const c = centerSelect.value;
@@ -1086,13 +1318,14 @@ function handleExcelHierarchyUpload(e) {
 }
 
 // Event Listeners for Cascading
-centerSelect.addEventListener('change', onCenterChange);
+centerSelect.addEventListener('change', () => { onCenterChange(); fetchSurveyedPoints(); });
 rtRoomSelect.addEventListener('change', onRTRoomChange);
 oltSelect.addEventListener('change', onOLTChange);
 if (oltTypeSelect) oltTypeSelect.addEventListener('change', onOLTTypeChange);
-portSelect.addEventListener('change', updateAvailableEnclosures);
-enclosureSelect.addEventListener('change', () => { updateEnclosureId(); updateAvailableSplitters(); });
+portSelect.addEventListener('change', () => { updateAvailableEnclosures(); updateAvailableSplitters(); });
+enclosureSelect.addEventListener('change', () => { updateEnclosureId(); updateAvailableSplitters(); handleSplitterSelectionChange(); });
 splitterRatioSelect.addEventListener('change', updateSplitterColorOptions);
+splitterIdSelect.addEventListener('change', handleSplitterSelectionChange);
 
 // High-Precision GNSS / GPS Geolocation Engine (Multi-Sample Satellite Convergence)
 function captureGPS() {
@@ -1443,37 +1676,47 @@ function saveRecord() {
     }
   }
 
-  const clientUuid = (typeof crypto !== 'undefined' && crypto.randomUUID) 
-    ? crypto.randomUUID() 
-    : ('rec_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9));
-
   const olt = oltSelect.value;
   const port = portSelect.value;
   const enc = enclosureSelect.value;
   const eid = computeEnclosureId(olt, port, enc);
+  const spl = splitterIdSelect.value;
 
-  // Condition 1: Can not able to select the same enclosure number multiple time in a same OLT port
-  const isDuplicateEnclosure = records.some(r => 
-    (r["OLT/Node  Name"] || r.olt_name) === olt && 
-    (r["Port Number"] || r.port_number) === port && 
-    (r["Enclosure Number"] || r.enclosure_number) === enc
-  );
-  if (isDuplicateEnclosure) {
-    showToast(`❌ Enclosure ${enc} is already used in ${olt} (${port})! Duplicate enclosures on same Node port not allowed.`, false);
-    enclosureSelect.focus();
-    return;
-  }
+  const role = currentUser ? normalizeClientRole(currentUser.role) : 'field_technician';
+  const isSupervisor = (role === 'acso' || role === 'super_admin');
 
-  // Condition 2: Can not able to select the same splitter id number under same Enclosure ID
-  const isDuplicateSplitter = records.some(r => 
-    (r["Enclosure ID"] || r.enclosure_id) === eid && 
-    (r["Splitter ID"] || r.splitter_id) === splitterIdSelect.value
-  );
-  if (isDuplicateSplitter) {
-    showToast(`❌ Splitter ${splitterIdSelect.value} is already used under Enclosure ${eid}! Duplicate Splitter ID under same Enclosure not allowed.`, false);
+  // Check if this enclosure & splitter point is already surveyed (across network or locally)
+  const existingSurvey = getSurveyedInfo(eid, spl);
+
+  // OPTION D: Field Technician Hard Block
+  if (existingSurvey && !isSupervisor) {
+    const surveyor = existingSurvey.surveyor_name || existingSurvey.surveyor_username || 'another surveyor';
+    showToast(`❌ Splitter ${spl} under Enclosure ${eid} was already surveyed by ${surveyor}! Field technicians cannot overwrite existing records.`, false);
     splitterIdSelect.focus();
     return;
   }
+
+  // OPTION C: ACSO Supervisor Update Mode
+  const isAcsoUpdate = !!(existingSurvey && isSupervisor);
+
+  if (!isAcsoUpdate) {
+    // Condition for brand-new entries: prevent duplicate splitter in same enclosure locally
+    const isDuplicateSplitter = records.some(r => 
+      (r["Enclosure ID"] || r.enclosure_id) === eid && 
+      (r["Splitter ID"] || r.splitter_id) === spl
+    );
+    if (isDuplicateSplitter) {
+      showToast(`❌ Splitter ${spl} is already surveyed under Enclosure ${eid}! Duplicate Splitter ID not allowed.`, false);
+      splitterIdSelect.focus();
+      return;
+    }
+  }
+
+  const clientUuid = isAcsoUpdate
+    ? (existingSurvey.client_uuid || currentAcsoEditingUuid || crypto.randomUUID())
+    : ((typeof crypto !== 'undefined' && crypto.randomUUID) 
+        ? crypto.randomUUID() 
+        : ('rec_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9)));
 
   const now = new Date();
   const formattedDateTime = getFormattedDateTime(now);
@@ -1499,7 +1742,7 @@ function saveRecord() {
     "Enclosure Number": enc,
     "Enclosure ID": eid,
     "Lat /Long": latLongStr,
-    "Splitter ID": splitterIdSelect.value,
+    "Splitter ID": spl,
     "Splitter Ratio": splitterRatioSelect.value,
     "No: Of Customer Connected": parseInt(custCountInput.value) || 0,
     "Splitter Lead Colour Code": colorCode,
@@ -1516,8 +1759,37 @@ function saveRecord() {
   };
 
   try {
-    records.push(entry);
+    if (isAcsoUpdate) {
+      const existingIdx = records.findIndex(r => r.client_uuid === clientUuid);
+      if (existingIdx >= 0) {
+        records[existingIdx] = entry;
+      } else {
+        records.push(entry);
+      }
+    } else {
+      records.push(entry);
+    }
     localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+
+    // Update in-memory and local cache map immediately
+    const surveyKey = `${eid}|${spl}`.toUpperCase();
+    networkSurveyedPoints[surveyKey] = {
+      client_uuid: clientUuid,
+      enclosure_id: eid,
+      splitter_id: spl,
+      surveyor_username: entry.surveyor_username,
+      surveyor_name: entry.surveyor_name,
+      survey_date_time: formattedDateTime,
+      kseb_post_number: entry["KSEB Post Number"],
+      landmark: entry["Land Mark"],
+      lat_long: entry["Lat /Long"],
+      splitter_ratio: entry["Splitter Ratio"],
+      customers_connected: entry["No: Of Customer Connected"],
+      splitter_lead_color: entry["Splitter Lead Colour Code"],
+      adl_subscriber_id: entry["ADL Subscriber ID"],
+      acs_subscriber_id: entry["ACS Subscriber ID"]
+    };
+    localStorage.setItem('gpon_network_surveyed_points', JSON.stringify(networkSurveyedPoints));
   } catch (err) {
     console.error('Local storage write failed:', err);
     showToast('Failed to save on device storage: ' + (err.message || 'Storage full'), false);
@@ -1526,8 +1798,12 @@ function saveRecord() {
 
   updateRecordsBadge();
   updateSyncUI();
-  showToast('Record Submitted Successfully');
-  showSubmitConfirmModal(entry);
+  if (isAcsoUpdate) {
+    showToast('✏️ Master Record Updated Successfully');
+  } else {
+    showToast('Record Submitted Successfully');
+  }
+  showSubmitConfirmModal(entry, isAcsoUpdate);
 
   // Clear pole-specific inputs
   postInput.value = '';
@@ -1565,6 +1841,10 @@ function saveRecord() {
   enclosureIdPreview.innerText = '---';
   updateSplitterColorOptions();
 
+  // Reset ACSO update state
+  currentAcsoEditingUuid = null;
+  handleSplitterSelectionChange();
+
   // Refresh available enclosures & splitters for next entry
   updateAvailableEnclosures();
   updateAvailableSplitters();
@@ -1575,10 +1855,33 @@ function saveRecord() {
 }
 
 // Confirmation Message Modal
-function showSubmitConfirmModal(entry) {
+function showSubmitConfirmModal(entry, isAcsoUpdate = false) {
   const modal = document.getElementById('submit-confirm-modal');
   const detailsEl = document.getElementById('submit-confirm-details');
+  const iconEl = document.getElementById('submit-confirm-icon');
+  const titleEl = document.getElementById('submit-confirm-title');
+  const descEl = document.getElementById('submit-confirm-desc');
   if (!modal || !detailsEl) return;
+
+  if (isAcsoUpdate) {
+    if (iconEl) iconEl.innerText = '✏️';
+    if (titleEl) {
+      titleEl.innerText = 'Master Record Updated';
+      titleEl.style.color = '#0284c7';
+    }
+    if (descEl) {
+      descEl.innerText = 'Supervisor update saved. Central database will be overwritten with corrections.';
+    }
+  } else {
+    if (iconEl) iconEl.innerText = '✅';
+    if (titleEl) {
+      titleEl.innerText = 'Record Submitted Successfully';
+      titleEl.style.color = '#0f9d58';
+    }
+    if (descEl) {
+      descEl.innerText = 'The survey record has been recorded and safely saved.';
+    }
+  }
 
   const encId = entry["Enclosure ID"] || '-';
   const splitInfo = `${entry["Splitter ID"] || '-'} (${entry["Splitter Ratio"] || '-'})`;
@@ -1594,6 +1897,10 @@ function showSubmitConfirmModal(entry) {
         : '<span style="color:#f59e0b; font-weight:600;">💾 Saved on Phone (Pending Sync)</span>');
 
   detailsEl.innerHTML = `
+    ${isAcsoUpdate ? `
+    <div style="background:#eff6ff; border:1px solid #bfdbfe; border-radius:6px; padding:6px 10px; margin-bottom:10px; font-size:0.8rem; color:#1e40af; display:flex; align-items:center; gap:6px;">
+      <span>✏️</span> <strong>ACSO Correction:</strong> Master database record updated.
+    </div>` : ''}
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
       <span style="color:#64748b;">Enclosure ID:</span>
       <strong style="color:#0284c7; font-family:monospace; font-size:1.05rem;">${encId}</strong>
@@ -1624,6 +1931,7 @@ function showSubmitConfirmModal(entry) {
   const okBtn = document.getElementById('btn-submit-confirm-ok');
   if (okBtn) okBtn.focus();
 }
+
 
 function closeSubmitConfirmModal() {
   const modal = document.getElementById('submit-confirm-modal');
@@ -1891,6 +2199,7 @@ async function checkServerConnection() {
     clearTimeout(timeoutId);
     if (res.ok) {
       isServerReachable = true;
+      fetchSurveyedPoints();
       const data = await res.json().catch(() => null);
       if (data && data.hierarchy_version) {
         if (data.hierarchy_version !== lastKnownHierarchyVersion) {
@@ -2079,11 +2388,15 @@ async function syncWithServer(silent = false) {
     if (res.ok) {
       const data = await res.json();
       const syncedIds = new Set(data.synced_uuids || []);
-      
+      const skippedDupes = data.skipped_duplicates || [];
+      const skippedIds = new Set(skippedDupes.map(d => d.client_uuid));
+
       // Update local storage status
       records.forEach(r => {
         if (syncedIds.has(r.client_uuid)) {
           r.sync_status = 'synced';
+        } else if (skippedIds.has(r.client_uuid)) {
+          r.sync_status = 'duplicate_skipped';
         }
       });
       localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
@@ -2092,7 +2405,15 @@ async function syncWithServer(silent = false) {
       if (modalSyncBadge) {
         modalSyncBadge.innerHTML = '<span style="color:#10b981; font-weight:700;">☁️ Synced to Server ✓</span>';
       }
-      if (!silent) showToast(`Synced ${syncedIds.size} records with Ubuntu server!`);
+
+      if (skippedDupes.length > 0) {
+        showToast(`⚠️ ${skippedDupes.length} duplicate record(s) rejected by server (already surveyed).`, false);
+      } else if (!silent) {
+        showToast(`Synced ${syncedIds.size} records with Ubuntu server!`);
+      }
+
+      // Re-fetch network surveyed points so dropdown locks immediately reflect all newly synced data
+      fetchSurveyedPoints();
     } else {
       isServerReachable = false;
       serverConnectionChecked = true;
