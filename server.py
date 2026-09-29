@@ -2680,8 +2680,11 @@ def admin_dashboard(response: Response):
               <button type="submit" class="btn btn-green">💾 Save Node</button>
             </div>
           </form>
+        </div>
+      </div>
+
       <!-- Edit Survey Record Modal (Super Admin) -->
-      <div id="edit-survey-modal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(15,23,42,0.65); backdrop-filter:blur(3px); z-index:10000; justify-content:center; align-items:center; padding:16px;">
+      <div id="edit-survey-modal" onclick="if(event.target===this)closeEditSurveyRecordModal()" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(15,23,42,0.65); backdrop-filter:blur(3px); z-index:10000; justify-content:center; align-items:center; padding:16px;">
         <div style="background:white; border-radius:12px; padding:24px; max-width:640px; width:100%; box-shadow:0 20px 25px -5px rgba(0,0,0,0.25); max-height:90vh; overflow-y:auto; border:1px solid #cbd5e1;">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; border-bottom:1px solid #e2e8f0; padding-bottom:10px;">
             <h3 style="margin:0; color:#0284c7; display:flex; align-items:center; gap:8px;">
@@ -3505,30 +3508,45 @@ def admin_dashboard(response: Response):
         }
 
         function openEditSurveyRecordModal(uuid) {
-          const r = cachedRecords.find(item => item.client_uuid === uuid);
+          console.log('[openEditSurveyRecordModal] Opening for uuid:', uuid);
+          const r = cachedRecords.find(item => String(item.client_uuid) === String(uuid));
           if (!r) {
+            console.error('[openEditSurveyRecordModal] Record not found for uuid:', uuid, cachedRecords);
             alert('Record not found.');
             return;
           }
-          document.getElementById('edit-rec-uuid').value = r.client_uuid;
-          document.getElementById('edit-rec-enclosure-id').innerText = r.enclosure_id || '-';
-          document.getElementById('edit-rec-splitter-id').innerText = `${r.splitter_id || '-'} (${r.splitter_ratio || '-'})`;
-          document.getElementById('edit-rec-center-rt').innerText = `${r.center || '-'} / ${r.rt_room || '-'}`;
-          document.getElementById('edit-rec-node-port').innerText = `${r.olt_name || '-'} [${r.port_number || '-'}]`;
+          const setVal = (id, val) => {
+            const el = document.getElementById(id);
+            if (el) el.value = val !== undefined && val !== null ? val : '';
+          };
+          const setText = (id, txt) => {
+            const el = document.getElementById(id);
+            if (el) el.innerText = txt !== undefined && txt !== null ? txt : '-';
+          };
 
-          document.getElementById('edit-rec-post').value = r.kseb_post_number || '';
-          document.getElementById('edit-rec-landmark').value = r.landmark || '';
-          document.getElementById('edit-rec-coords').value = r.lat_long || '';
-          document.getElementById('edit-rec-cust').value = (r.customers_connected !== undefined) ? r.customers_connected : 0;
-          document.getElementById('edit-rec-ratio').value = r.splitter_ratio || '1:8';
-          document.getElementById('edit-rec-color').value = r.splitter_lead_color || '';
-          document.getElementById('edit-rec-adl').value = r.adl_subscriber_id || '';
-          document.getElementById('edit-rec-acs').value = r.acs_subscriber_id || '';
-          document.getElementById('edit-rec-port').value = r.port_number || '';
-          document.getElementById('edit-rec-enc').value = r.enclosure_number || '';
+          setVal('edit-rec-uuid', r.client_uuid);
+          setText('edit-rec-enclosure-id', r.enclosure_id || '-');
+          setText('edit-rec-splitter-id', `${r.splitter_id || '-'} (${r.splitter_ratio || '-'})`);
+          setText('edit-rec-center-rt', `${r.center || '-'} / ${r.rt_room || '-'}`);
+          setText('edit-rec-node-port', `${r.olt_name || '-'} [${r.port_number || '-'}]`);
+
+          setVal('edit-rec-post', r.kseb_post_number || '');
+          setVal('edit-rec-landmark', r.landmark || '');
+          setVal('edit-rec-coords', r.lat_long || '');
+          setVal('edit-rec-cust', (r.customers_connected !== undefined) ? r.customers_connected : 0);
+          setVal('edit-rec-ratio', r.splitter_ratio || '1:8');
+          setVal('edit-rec-color', r.splitter_lead_color || '');
+          setVal('edit-rec-adl', r.adl_subscriber_id || '');
+          setVal('edit-rec-acs', r.acs_subscriber_id || '');
+          setVal('edit-rec-port', r.port_number || '');
+          setVal('edit-rec-enc', r.enclosure_number || '');
 
           const modal = document.getElementById('edit-survey-modal');
-          if (modal) modal.style.display = 'flex';
+          if (modal) {
+            modal.style.display = 'flex';
+          } else {
+            console.error('[openEditSurveyRecordModal] edit-survey-modal element not found in DOM!');
+          }
         }
 
         function closeEditSurveyRecordModal() {
