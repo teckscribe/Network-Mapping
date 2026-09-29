@@ -1,0 +1,180 @@
+================================================================================
+24/7 POWER REBOOT & OUTAGE SURVIVAL GUIDE FOR UBUNTU
+================================================================================
+Application: GPON Network Mapping & Survey Platform
+Project Folder: /home/psms/Network-Mapping
+System Architecture: Hardware Auto-Power + Systemd Daemons + Anti-Sleep Masking
+
+--------------------------------------------------------------------------------
+1. THE 4 LAYERS OF REBOOT SURVIVAL
+--------------------------------------------------------------------------------
+To ensure your server survives a power outage or unexpected reboot and resumes
+without requiring anyone to touch the computer or type passwords:
+
+Layer 1: Hardware / BIOS Level
+         When wall electricity returns, the physical PC must turn itself ON
+         automatically without pressing the power button.
+
+Layer 2: Operating System (Ubuntu Sleep Prevention)
+         Ubuntu Desktop must NEVER enter "Sleep" or "Suspend", which disables
+         network cards and disconnects surveyors.
+
+Layer 3: Application & Background Services
+         The survey web server (gpon-server), the public tunnel (tailscaled /
+         cloudflared), and the Google Drive backup (cron) must start on boot.
+
+Layer 4: Auto-Resume Network Tunnel
+         Tailscale Funnel restores its proxy state to port 9001 automatically.
+
+
+--------------------------------------------------------------------------------
+2. AUTOMATED 1-STEP CONFIGURATION (RECOMMENDED)
+--------------------------------------------------------------------------------
+We have created an automated script in your project folder that sets up all
+OS-level services and disables sleep in 1 second.
+
+In your Ubuntu terminal, run:
+
+cd /home/psms/Network-Mapping
+git stash
+git pull origin main
+chmod +x configure_247_reboot_survival.sh
+sudo ./configure_247_reboot_survival.sh
+
+This script automatically executes all steps in Section 3 below.
+
+
+--------------------------------------------------------------------------------
+3. MANUAL STEP-BY-STEP CONFIGURATION (FOR REFERENCE)
+--------------------------------------------------------------------------------
+
+STEP 3.1: Enable GPON Survey Web Server on Boot
+----------------------------------------------
+[Where to enter: ANY TERMINAL]
+
+sudo systemctl daemon-reload
+sudo systemctl enable gpon-server.service
+sudo systemctl restart gpon-server.service
+
+Verify it is enabled:
+systemctl is-enabled gpon-server
+(Should print: "enabled")
+
+
+STEP 3.2: Enable Tailscale Daemon on Boot
+-----------------------------------------
+[Where to enter: ANY TERMINAL]
+
+sudo systemctl enable tailscaled.service
+sudo systemctl restart tailscaled.service
+
+Verify it is enabled:
+systemctl is-enabled tailscaled
+(Should print: "enabled")
+
+Note on Tailscale Funnel:
+Tailscale saves your background Funnel configuration in /var/lib/tailscale/.
+Whenever tailscaled starts upon boot, it automatically restores the Funnel link
+(https://network-mapping.tail1add79.ts.net/) to port 9001!
+
+
+STEP 3.3: Enable Cron (30-Minute Google Drive Backups) on Boot
+--------------------------------------------------------------
+[Where to enter: ANY TERMINAL]
+
+sudo systemctl enable cron.service
+sudo systemctl restart cron.service
+
+Verify it is enabled:
+systemctl is-enabled cron
+(Should print: "enabled")
+
+
+STEP 3.4: Enable Cloudflare Tunnel (If using network-mapping.online)
+-------------------------------------------------------------------
+[Where to enter: ANY TERMINAL]
+
+If you use Cloudflare Tunnel as a system service:
+sudo systemctl enable cloudflared.service
+sudo systemctl restart cloudflared.service
+
+
+STEP 3.5: Disable Ubuntu Desktop Sleep & Suspend (CRITICAL)
+----------------------------------------------------------
+[Where to enter: ANY TERMINAL]
+
+On Ubuntu Desktop, the system is configured by default to "Suspend" or "Sleep"
+after 15 to 20 minutes if no keyboard or mouse is touched. When Ubuntu sleeps:
+- The network adapter is powered down.
+- All incoming HTTP connections are refused.
+- Field surveyors see "Server Disconnected (Offline)".
+
+To permanently block Ubuntu from ever going to sleep:
+
+sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
+
+This guarantees the desktop remains awake 24 hours a day, 7 days a week.
+
+
+--------------------------------------------------------------------------------
+4. HARDWARE BIOS SETUP: AUTO POWER-ON AFTER ELECTRICITY CUT
+--------------------------------------------------------------------------------
+When mains power cuts out and comes back, desktop PCs normally stay turned OFF.
+To make your PC turn ON automatically when electricity returns:
+
+1. Restart or turn on your Ubuntu desktop computer.
+2. Immediately tap the BIOS setup key repeatedly:
+   - For Dell:        Tap F2 or F12
+   - For HP:          Tap F10 or Esc
+   - For Lenovo:      Tap F1 or F2
+   - For Asus / MSI:  Tap Del or F2
+   - For Gigabyte:    Tap Del
+
+3. In the BIOS setup screen:
+   Navigate to the "Power", "Advanced", or "APM Configuration" menu.
+
+4. Look for one of these setting names:
+   - "Restore on AC Power Loss"
+   - "AC Back"
+   - "State After G3"
+   - "After Power Failure"
+
+5. Change the value from [Power Off] to:
+   --> [Power On]  (or [Always On] / [Last State])
+
+6. Press F10 to Save and Exit.
+
+Result:
+Whenever mains power is cut and restored, the physical computer will turn on,
+boot into Ubuntu, start gpon-server, launch Tailscale Funnel, and resume your
+Google Drive backups automatically without anyone touching the machine!
+
+
+--------------------------------------------------------------------------------
+5. HOW TO TEST THE ENTIRE REBOOT SURVIVAL
+--------------------------------------------------------------------------------
+To test that everything works seamlessly after a reboot:
+
+1. Run in terminal:
+   sudo reboot
+
+2. Wait 60 to 90 seconds for Ubuntu to boot up. Do NOT log in or touch anything.
+
+3. On your phone on mobile 4G/5G data (outside office Wi-Fi):
+   Open: https://network-mapping.tail1add79.ts.net/
+   Open: https://network-mapping.tail1add79.ts.net/admin
+
+4. If both pages load instantly and show "Server Connected (Synced ✓)", your
+   system is 100% resilient and 24/7 disaster-proof!
+
+
+--------------------------------------------------------------------------------
+6. STATUS CHECK COMMANDS AFTER REBOOT
+--------------------------------------------------------------------------------
+Check GPON Server   : sudo systemctl status gpon-server
+Check Tailscale     : tailscale status
+Check Funnel Link   : tailscale funnel status
+Check Cron Backups  : crontab -l
+Check Latest Backup : tail -n 20 /home/psms/Network-Mapping/backup.log
+Check Google Drive  : rclone ls gdrive:GPON_Backups
+================================================================================
