@@ -1946,6 +1946,32 @@ def delete_record(client_uuid: str, session: dict = Depends(require_admin_auth))
         raise HTTPException(status_code=404, detail="Record not found.")
     return {"status": "success", "message": "Record deleted successfully."}
 
+@app.post("/api/records/bulk-delete")
+def bulk_delete_records(payload: dict, session: dict = Depends(require_admin_auth)):
+    uuids = payload.get("uuids", [])
+    if not uuids:
+        raise HTTPException(status_code=400, detail="No record UUIDs provided for deletion.")
+    clean_uuids = [str(u).strip() for u in uuids if str(u).strip()]
+    if not clean_uuids:
+        raise HTTPException(status_code=400, detail="No valid record UUIDs provided.")
+    
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    deleted_count = 0
+    chunk_size = 500
+    for i in range(0, len(clean_uuids), chunk_size):
+        chunk = clean_uuids[i:i + chunk_size]
+        placeholders = ",".join(["?"] * len(chunk))
+        cur.execute(f"DELETE FROM survey_records WHERE client_uuid IN ({placeholders})", tuple(chunk))
+        deleted_count += cur.rowcount
+    conn.commit()
+    conn.close()
+    return {
+        "status": "success",
+        "message": f"Successfully deleted {deleted_count} survey record(s).",
+        "deleted": deleted_count
+    }
+
 @app.get("/api/export-excel")
 def export_server_excel(session: dict = Depends(require_management_auth)):
     conn = sqlite3.connect(DB_PATH)
@@ -2552,6 +2578,10 @@ def admin_dashboard(response: Response):
           </div>
 
           <div style="display:flex; gap:8px; align-items:flex-end;">
+            <span id="feed-selection-count" style="font-size:0.82rem; color:#dc2626; font-weight:700; align-self:center; display:none;">0 selected</span>
+            <button id="btn-feed-delete-selected" onclick="deleteSelectedSurveyRecords()" class="btn btn-danger" style="font-size:0.82rem; padding:8px 14px; display:none;">
+              🗑️ Delete Selected
+            </button>
             <button id="btn-download-center" onclick="downloadSelectedCenterExcel()" class="btn btn-green" style="font-size:0.82rem; padding:8px 14px;">
               📥 Download Center Excel
             </button>
@@ -2567,6 +2597,7 @@ def admin_dashboard(response: Response):
           <table>
             <thead>
               <tr style="position:sticky; top:0; z-index:2; background:#f8fafc;">
+                <th id="th-feed-select-all" style="width:36px; text-align:center; display:none;"><input type="checkbox" id="feed-select-all-cb" onchange="toggleSelectAllFeedRecords(this.checked)" title="Select All Records" style="cursor:pointer; width:16px; height:16px;"></th>
                 <th>#</th>
                 <th>Date & Time</th>
                 <th>Enclosure ID</th>
@@ -2585,7 +2616,7 @@ def admin_dashboard(response: Response):
               </tr>
             </thead>
             <tbody id="table-body">
-              <tr><td colspan="15" style="text-align:center; padding:20px; color:#64748b;">Loading survey records...</td></tr>
+              <tr><td colspan="16" style="text-align:center; padding:20px; color:#64748b;">Loading survey records...</td></tr>
             </tbody>
           </table>
         </div>
@@ -3187,6 +3218,9 @@ def admin_dashboard(response: Response):
           const btnTab1Import = document.getElementById('btn-tab1-import');
           const thRecordActions = document.getElementById('th-record-actions');
           const btnOptimize = document.getElementById('btn-optimize-storage');
+          const thFeedSelectAll = document.getElementById('th-feed-select-all');
+          const feedSelectionCount = document.getElementById('feed-selection-count');
+          const btnFeedDeleteSelected = document.getElementById('btn-feed-delete-selected');
 
           if (role === 'super_admin') {
             badgeEl.innerText = '👑 Super Admin';
@@ -3196,6 +3230,7 @@ def admin_dashboard(response: Response):
             btnTopImport.style.display = 'inline-flex';
             btnTab1Import.style.display = 'inline-flex';
             thRecordActions.style.display = '';
+            if (thFeedSelectAll) thFeedSelectAll.style.display = 'table-cell';
             if (btnOptimize) btnOptimize.style.display = 'inline-flex';
           } else if (role === 'rcsm') {
             badgeEl.innerText = '📊 RCSM';
@@ -3207,6 +3242,9 @@ def admin_dashboard(response: Response):
             btnTopImport.style.display = 'none';
             btnTab1Import.style.display = 'none';
             thRecordActions.style.display = 'none';
+            if (thFeedSelectAll) thFeedSelectAll.style.display = 'none';
+            if (feedSelectionCount) feedSelectionCount.style.display = 'none';
+            if (btnFeedDeleteSelected) btnFeedDeleteSelected.style.display = 'none';
             if (btnOptimize) btnOptimize.style.display = 'none';
 
             // Ensure current tab is feed or folders
@@ -3258,6 +3296,68 @@ def admin_dashboard(response: Response):
         let selectedFeedRegions = new Set();
         let selectedFeedCenters = new Set();
         let selectedFeedRTRooms = new Set();
+        let selectedFeedRecordUuids = new Set();
+
+        function toggleSelectAllFeedRecords(checked) {
+          const visibleCheckboxes = document.querySelectorAll('#table-body .feed-record-cb');
+          visibleCheckboxes.forEach(cb => {
+            cb.checked = checked;
+            if (checked) {
+              selectedFeedRecordUuids.add(cb.value);
+            } else {
+              selectedFeedRecordUuids.delete(cb.value);
+            }
+          });
+          updateFeedSelectionUI();
+        }
+
+        function onSingleFeedRecordCheckboxChanged(cb) {
+          if (cb.checked) {
+            selectedFeedRecordUuids.add(cb.value);
+          } else {
+            selectedFeedRecordUuids.delete(cb.value);
+          }
+          updateFeedSelectionUI();
+        }
+
+        function updateFeedSelectionUI() {
+          const isSuperAdmin = (currentAdmin && currentAdmin.role === 'super_admin');
+          const countEl = document.getElementById('feed-selection-count');
+          const btnEl = document.getElementById('btn-feed-delete-selected');
+          const masterCb = document.getElementById('feed-select-all-cb');
+          const thMaster = document.getElementById('th-feed-select-all');
+
+          if (thMaster) {
+            thMaster.style.display = isSuperAdmin ? 'table-cell' : 'none';
+          }
+
+          const selectedCount = selectedFeedRecordUuids.size;
+
+          if (countEl && btnEl) {
+            if (isSuperAdmin && selectedCount > 0) {
+              countEl.innerText = `${selectedCount} selected`;
+              countEl.style.display = 'inline-block';
+              btnEl.style.display = 'inline-block';
+              btnEl.innerText = `🗑️ Delete Selected (${selectedCount})`;
+            } else {
+              countEl.style.display = 'none';
+              btnEl.style.display = 'none';
+            }
+          }
+
+          if (masterCb) {
+            const visibleCheckboxes = document.querySelectorAll('#table-body .feed-record-cb');
+            if (visibleCheckboxes.length > 0) {
+              const allChecked = Array.from(visibleCheckboxes).every(cb => cb.checked);
+              const someChecked = Array.from(visibleCheckboxes).some(cb => cb.checked);
+              masterCb.checked = allChecked;
+              masterCb.indeterminate = (!allChecked && someChecked);
+            } else {
+              masterCb.checked = false;
+              masterCb.indeterminate = false;
+            }
+          }
+        }
 
         function toggleFeedMultiDropdown(panelId) {
           const p = document.getElementById(panelId);
@@ -3957,7 +4057,13 @@ def admin_dashboard(response: Response):
         }
 
         function filterAndRenderFeed() {
+          const isSuperAdmin = (currentAdmin && currentAdmin.role === 'super_admin');
+          const thMaster = document.getElementById('th-feed-select-all');
+          if (thMaster) thMaster.style.display = isSuperAdmin ? 'table-cell' : 'none';
+
           if (selectedFeedRegions.size === 0 || selectedFeedCenters.size === 0) {
+            selectedFeedRecordUuids.clear();
+            updateFeedSelectionUI();
             document.getElementById('feed-stat-records').innerText = '0';
             document.getElementById('feed-stat-customers').innerText = '0';
             document.getElementById('feed-stat-enclosures').innerText = '0';
@@ -3967,7 +4073,7 @@ def admin_dashboard(response: Response):
             if (tbody) {
               tbody.innerHTML = `
                 <tr>
-                  <td colspan="15" style="text-align:center; padding:45px 20px; color:#64748b; font-size:0.95rem;">
+                  <td colspan="16" style="text-align:center; padding:45px 20px; color:#64748b; font-size:0.95rem;">
                     <div style="font-size:2.2rem; margin-bottom:8px;">📍</div>
                     <div style="font-weight:700; color:#334155; margin-bottom:4px; font-size:1.05rem;">Please Select Region(s) and Center(s)</div>
                     <div style="color:#64748b; font-size:0.85rem;">Select at least one <strong>Region</strong> and <strong>Center</strong> above to view survey records.</div>
@@ -3979,7 +4085,6 @@ def admin_dashboard(response: Response):
           }
 
           const q = (document.getElementById('feed-search').value || '').toLowerCase().trim();
-          const isSuperAdmin = (currentAdmin && currentAdmin.role === 'super_admin');
 
           let filtered = cachedRecords;
 
@@ -4025,7 +4130,8 @@ def admin_dashboard(response: Response):
           tbody.innerHTML = '';
 
           if (filtered.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="15" style="text-align:center; padding:30px; color:#94a3b8;"><div style="font-size:1.8rem; margin-bottom:6px;">🔍</div>No survey records match current filters.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="16" style="text-align:center; padding:30px; color:#94a3b8;"><div style="font-size:1.8rem; margin-bottom:6px;">🔍</div>No survey records match current filters.</td></tr>';
+            updateFeedSelectionUI();
             return;
           }
 
@@ -4033,19 +4139,26 @@ def admin_dashboard(response: Response):
             const tr = document.createElement('tr');
             const timeDisplay = (r.survey_date_time || r.created_at || r.synced_at || '').slice(0, 19).replace('T', ' ');
             
+            let checkboxHtml = '';
             let actionHtml = '';
             if (isSuperAdmin) {
+              const isChecked = selectedFeedRecordUuids.has(String(r.client_uuid));
+              checkboxHtml = `<td style="text-align:center; width:36px;">
+                <input type="checkbox" class="feed-record-cb" value="${escapeHtml(r.client_uuid)}" ${isChecked ? 'checked' : ''} onchange="onSingleFeedRecordCheckboxChanged(this)" style="cursor:pointer; width:16px; height:16px;">
+              </td>`;
               actionHtml = `<td style="text-align:center; white-space:nowrap;">
                 <button class="btn btn-outline" style="padding:3px 7px; font-size:0.75rem; margin-right:4px; color:#0284c7; border-color:#0284c7;" onclick="openEditSurveyRecordModal('${r.client_uuid}')" title="Edit Record">✏️</button>
                 <button class="btn btn-danger" style="padding:3px 7px; font-size:0.75rem;" onclick="deleteSurveyRecord('${r.client_uuid}')" title="Delete Record">🗑️</button>
               </td>`;
             } else {
+              checkboxHtml = `<td style="display:none;"></td>`;
               actionHtml = `<td style="display:none;"></td>`;
             }
 
             const splitterBadge = r.splitter_id ? `<span style="background:#e0f2fe; color:#0369a1; padding:2px 5px; border-radius:4px; font-weight:700; font-size:0.75rem; margin-left:4px;">${escapeHtml(r.splitter_id)}</span>` : '';
 
             tr.innerHTML = `
+              ${checkboxHtml}
               <td style="color:#64748b; font-family:monospace; font-size:0.8rem;">${idx + 1}</td>
               <td style="font-family:monospace; font-size:0.8rem; color:#64748b;">${timeDisplay || '-'}</td>
               <td><strong style="color:#0284c7;">${r.enclosure_id || '-'}</strong>${splitterBadge}</td>
@@ -4064,6 +4177,7 @@ def admin_dashboard(response: Response):
             `;
             tbody.appendChild(tr);
           });
+          updateFeedSelectionUI();
         }
 
         function downloadSelectedCenterExcel() {
@@ -4186,10 +4300,54 @@ def admin_dashboard(response: Response):
           try {
             const res = await authFetch(`/api/records/${uuid}`, { method: 'DELETE' });
             if (res.ok) {
+              selectedFeedRecordUuids.delete(String(uuid));
+              updateFeedSelectionUI();
               fetchData();
+              if (typeof fetchFoldersSummary === 'function') {
+                fetchFoldersSummary();
+              }
             } else {
               const err = await res.json();
               alert('Error: ' + (err.detail || 'Could not delete record'));
+            }
+          } catch(err) {
+            alert('Network error: ' + err.message);
+          }
+        }
+
+        async function deleteSelectedSurveyRecords() {
+          if (!currentAdmin || currentAdmin.role !== 'super_admin') {
+            alert('Permission Denied: Only Super Admin can delete records.');
+            return;
+          }
+          const count = selectedFeedRecordUuids.size;
+          if (count === 0) return;
+
+          const confirmed = await showConfirmModal(
+            '🗑️ Confirm Bulk Record Deletion',
+            `Are you sure you want to permanently delete ${count} selected survey record(s) from the database? This action cannot be undone.`,
+            `Delete ${count} Records`,
+            '#dc2626'
+          );
+          if (!confirmed) return;
+
+          const uuids = Array.from(selectedFeedRecordUuids);
+          try {
+            const res = await authFetch('/api/records/bulk-delete', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ uuids: uuids })
+            });
+            const data = await res.json();
+            if (res.ok) {
+              selectedFeedRecordUuids.clear();
+              alert(`✅ ${data.message || 'Records deleted successfully.'}`);
+              fetchData();
+              if (typeof fetchFoldersSummary === 'function') {
+                fetchFoldersSummary();
+              }
+            } else {
+              alert('Error: ' + (data.detail || 'Could not delete records'));
             }
           } catch(err) {
             alert('Network error: ' + err.message);
