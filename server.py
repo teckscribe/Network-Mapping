@@ -2454,13 +2454,13 @@ def admin_dashboard(response: Response):
             <div>
               <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:2px;">Filter Region:</label>
               <select id="feed-filter-region" onchange="onFeedRegionChanged()" style="min-width:140px;">
-                <option value="ALL">All Regions</option>
+                <option value="">-- Select Region --</option>
               </select>
             </div>
             <div>
               <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:2px;">Filter Center:</label>
-              <select id="feed-filter-center" onchange="onFeedCenterChanged()" style="min-width:180px;">
-                <option value="ALL">All Centers</option>
+              <select id="feed-filter-center" onchange="onFeedCenterChanged()" style="min-width:180px;" disabled>
+                <option value="">-- Select Region First --</option>
               </select>
             </div>
             <div style="flex:1; min-width:200px;">
@@ -3174,20 +3174,28 @@ def admin_dashboard(response: Response):
 
         // Tab 1: Survey Records & Center Filter
         async function fetchData() {
-          const region = document.getElementById('feed-filter-region').value;
-          const center = document.getElementById('feed-filter-center').value;
+          const regSelect = document.getElementById('feed-filter-region');
+          const centerSelect = document.getElementById('feed-filter-center');
+          const region = regSelect ? regSelect.value : '';
+          const center = centerSelect ? centerSelect.value : '';
+
+          // If region or center is blank, clear records and show prompt
+          if (!region || !center) {
+            cachedRecords = [];
+            filterAndRenderFeed();
+            return;
+          }
 
           let url = '/api/records';
           const params = [];
-          if (region && region !== 'ALL') params.push(`region=${encodeURIComponent(region)}`);
-          if (center && center !== 'ALL') params.push(`center=${encodeURIComponent(center)}`);
+          if (region) params.push(`region=${encodeURIComponent(region)}`);
+          if (center) params.push(`center=${encodeURIComponent(center)}`);
           if (params.length > 0) url += '?' + params.join('&');
 
           try {
             const res = await authFetch(url);
             const data = await res.json();
             cachedRecords = data.records || [];
-            updateFeedFilterDropdowns();
             filterAndRenderFeed();
           } catch(e) {
             console.error('Failed to fetch records:', e);
@@ -3236,20 +3244,20 @@ def admin_dashboard(response: Response):
           const centerSelect = document.getElementById('feed-filter-center');
           if (!regSelect || !centerSelect) return;
 
-          const curReg = regSelect.value || 'ALL';
-          const curCenter = centerSelect.value || 'ALL';
+          const curReg = regSelect.value || '';
+          const curCenter = centerSelect.value || '';
 
-          regSelect.innerHTML = '<option value="ALL">All Regions</option>';
+          regSelect.innerHTML = '<option value="">-- Select Region --</option>';
           meta.regions.forEach(reg => {
             const opt = document.createElement('option');
             opt.value = reg;
             opt.innerText = reg;
-            if (reg.toLowerCase() === curReg.toLowerCase()) opt.selected = true;
+            if (curReg && reg.toLowerCase() === curReg.toLowerCase()) opt.selected = true;
             regSelect.appendChild(opt);
           });
-          if (curReg === 'ALL') regSelect.value = 'ALL';
+          if (!curReg) regSelect.value = '';
 
-          updateFeedCenterFilterOptions(curReg, curCenter);
+          updateFeedCenterFilterOptions(regSelect.value, curCenter);
         }
 
         function updateFeedCenterFilterOptions(selectedReg, curCenter) {
@@ -3257,13 +3265,18 @@ def admin_dashboard(response: Response):
           const centerSelect = document.getElementById('feed-filter-center');
           if (!centerSelect) return;
 
-          const prev = curCenter || centerSelect.value || 'ALL';
-          centerSelect.innerHTML = '<option value="ALL">All Centers</option>';
+          if (!selectedReg) {
+            centerSelect.disabled = true;
+            centerSelect.innerHTML = '<option value="">-- Select Region First --</option>';
+            centerSelect.value = '';
+            return;
+          }
+
+          centerSelect.disabled = false;
+          centerSelect.innerHTML = '<option value="">-- Select Center --</option>';
 
           let centerList = [];
-          if (!selectedReg || selectedReg === 'ALL') {
-            centerList = meta.allCenters;
-          } else if (meta.centersByRegion[selectedReg]) {
+          if (meta.centersByRegion[selectedReg]) {
             centerList = Array.from(meta.centersByRegion[selectedReg]).sort();
           }
 
@@ -3271,21 +3284,21 @@ def admin_dashboard(response: Response):
             const opt = document.createElement('option');
             opt.value = c;
             opt.innerText = c;
-            if (prev && c.trim().toLowerCase() === prev.trim().toLowerCase()) opt.selected = true;
+            if (curCenter && c.trim().toLowerCase() === curCenter.trim().toLowerCase()) opt.selected = true;
             centerSelect.appendChild(opt);
           });
 
-          if (prev && (prev === 'ALL' || centerList.some(c => c.trim().toLowerCase() === prev.trim().toLowerCase()))) {
-            const matched = centerList.find(c => c.trim().toLowerCase() === prev.trim().toLowerCase());
-            centerSelect.value = matched || 'ALL';
+          if (curCenter && centerList.some(c => c.trim().toLowerCase() === curCenter.trim().toLowerCase())) {
+            const matched = centerList.find(c => c.trim().toLowerCase() === curCenter.trim().toLowerCase());
+            centerSelect.value = matched || '';
           } else {
-            centerSelect.value = 'ALL';
+            centerSelect.value = '';
           }
         }
 
         function onFeedRegionChanged() {
           const reg = document.getElementById('feed-filter-region').value;
-          updateFeedCenterFilterOptions(reg, 'ALL');
+          updateFeedCenterFilterOptions(reg, '');
           fetchData();
         }
 
@@ -3568,6 +3581,33 @@ def admin_dashboard(response: Response):
         }
 
         function filterAndRenderFeed() {
+          const regSelect = document.getElementById('feed-filter-region');
+          const centerSelect = document.getElementById('feed-filter-center');
+          const region = regSelect ? regSelect.value : '';
+          const center = centerSelect ? centerSelect.value : '';
+
+          // If region or center is blank, reset stats to 0 and display instructional prompt
+          if (!region || !center) {
+            document.getElementById('feed-stat-records').innerText = '0';
+            document.getElementById('feed-stat-customers').innerText = '0';
+            document.getElementById('feed-stat-enclosures').innerText = '0';
+            document.getElementById('feed-stat-centers').innerText = '0';
+
+            const tbody = document.getElementById('table-body');
+            if (tbody) {
+              tbody.innerHTML = `
+                <tr>
+                  <td colspan="15" style="text-align:center; padding:45px 20px; color:#64748b; font-size:0.95rem;">
+                    <div style="font-size:2.2rem; margin-bottom:8px;">📍</div>
+                    <div style="font-weight:700; color:#334155; margin-bottom:4px; font-size:1.05rem;">Please Select a Region and Center</div>
+                    <div style="color:#64748b; font-size:0.85rem;">Select both a <strong>Region</strong> and <strong>Center</strong> above to view survey records.</div>
+                  </td>
+                </tr>
+              `;
+            }
+            return;
+          }
+
           const q = (document.getElementById('feed-search').value || '').toLowerCase().trim();
           const isSuperAdmin = (currentAdmin && currentAdmin.role === 'super_admin');
 
@@ -3608,7 +3648,7 @@ def admin_dashboard(response: Response):
           tbody.innerHTML = '';
 
           if (filtered.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="15" style="text-align:center; padding:20px; color:#94a3b8;">No survey records match current filters.</td></tr>';
+            tbody.innerHTML = `<tr><td colspan="15" style="text-align:center; padding:30px; color:#94a3b8;"><div style="font-size:1.8rem; margin-bottom:6px;">🔍</div>No survey records found for Center: <strong>${escapeHtml(center)}</strong> (${escapeHtml(region)}).</td></tr>`;
             return;
           }
 
@@ -3650,14 +3690,15 @@ def admin_dashboard(response: Response):
         }
 
         function downloadSelectedCenterExcel() {
-          const region = document.getElementById('feed-filter-region').value;
-          const center = document.getElementById('feed-filter-center').value;
+          const region = document.getElementById('feed-filter-region')?.value;
+          const center = document.getElementById('feed-filter-center')?.value;
 
-          if (center && center !== 'ALL') {
-            downloadWithAuth(`/api/export-center-excel?center=${encodeURIComponent(center)}&region=${encodeURIComponent(region)}`);
-          } else {
-            downloadWithAuth('/api/export-excel');
+          if (!region || !center) {
+            alert('Please select both a Region and a Center first to download the Excel spreadsheet.');
+            return;
           }
+
+          downloadWithAuth(`/api/export-center-excel?center=${encodeURIComponent(center)}&region=${encodeURIComponent(region)}`);
         }
 
         function openEditSurveyRecordModal(uuid) {
@@ -4511,7 +4552,8 @@ def admin_dashboard(response: Response):
 
         async function initAdminData() {
           await fetchHierarchy();
-          await fetchData();
+          updateFeedFilterDropdowns();
+          filterAndRenderFeed();
           if (currentAdmin && currentAdmin.role === 'super_admin') {
             fetchUsers();
           }
@@ -4525,7 +4567,11 @@ def admin_dashboard(response: Response):
           if (currentAdmin && (currentAdmin.role === 'super_admin' || currentAdmin.role === 'rcsm')) {
             const currentTab = document.querySelector('.tab-btn.active');
             if (currentTab && currentTab.id === 'tab-btn-feed') {
-              fetchData();
+              const reg = document.getElementById('feed-filter-region')?.value;
+              const cen = document.getElementById('feed-filter-center')?.value;
+              if (reg && cen) {
+                fetchData();
+              }
             }
           }
         }, 15000);
