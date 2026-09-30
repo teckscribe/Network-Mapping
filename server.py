@@ -1823,40 +1823,59 @@ def sync_records(payload: SyncPayload, session: dict = Depends(require_any_auth)
 
 
 @app.get("/api/records")
-def get_all_records(center: Optional[str] = None, region: Optional[str] = None, session: dict = Depends(require_management_auth)):
+def get_all_records(
+    center: Optional[str] = None, 
+    region: Optional[str] = None, 
+    rt_room: Optional[str] = None,
+    centers: Optional[str] = None,
+    regions: Optional[str] = None,
+    rt_rooms: Optional[str] = None,
+    session: dict = Depends(require_management_auth)
+):
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
-    # Enforce jurisdiction boundaries for RCSM
     user_role = session.get("role", "")
     username = session.get("username", "")
 
+    raw_centers = centers or center or ""
+    raw_regions = regions or region or ""
+    raw_rts = rt_rooms or rt_room or ""
+
+    centers_list = [c.strip().lower() for c in raw_centers.split(",") if c.strip() and c.strip().upper() != "ALL"]
+    regions_list = [r.strip().lower() for r in raw_regions.split(",") if r.strip() and r.strip().upper() != "ALL"]
+    rts_list = [rt.strip().lower() for rt in raw_rts.split(",") if rt.strip() and rt.strip().upper() != "ALL"]
+
+    # Enforce jurisdiction boundaries for RCSM
     if user_role == "rcsm":
         cur.execute("SELECT assigned_center FROM users WHERE username = ?", (username,))
         u_info = cur.fetchone()
         if u_info and u_info[0] and u_info[0] != "ALL":
             assigned_list = [c.strip().lower() for c in u_info[0].split(",") if c.strip()]
-            if center and center.strip() and center.strip().upper() != "ALL":
-                if center.strip().lower() not in assigned_list:
-                    conn.close()
-                    raise HTTPException(status_code=403, detail="Permission denied: Center is outside your assigned jurisdiction.")
+            if centers_list:
+                for c in centers_list:
+                    if c not in assigned_list:
+                        conn.close()
+                        raise HTTPException(status_code=403, detail=f"Permission denied: Center '{c}' is outside your assigned jurisdiction.")
             else:
-                placeholders = ",".join(["?"] * len(assigned_list))
-                query = f"SELECT * FROM survey_records WHERE LOWER(TRIM(center)) IN ({placeholders}) ORDER BY rowid DESC"
-                cur.execute(query, tuple(assigned_list))
-                rows = [dict(r) for r in cur.fetchall()]
-                conn.close()
-                return {"records": rows, "count": len(rows)}
+                centers_list = assigned_list
 
     query = "SELECT * FROM survey_records WHERE 1=1"
     params = []
-    if center and center.strip() and center.strip().upper() != "ALL":
-        query += " AND LOWER(TRIM(center)) = LOWER(TRIM(?))"
-        params.append(center.strip())
-    if region and region.strip() and region.strip().upper() != "ALL":
-        query += " AND LOWER(TRIM(region)) = LOWER(TRIM(?))"
-        params.append(region.strip())
+    if centers_list:
+        placeholders = ",".join(["?"] * len(centers_list))
+        query += f" AND LOWER(TRIM(center)) IN ({placeholders})"
+        params.extend(centers_list)
+    if regions_list:
+        placeholders = ",".join(["?"] * len(regions_list))
+        query += f" AND LOWER(TRIM(region)) IN ({placeholders})"
+        params.extend(regions_list)
+    if rts_list:
+        placeholders = ",".join(["?"] * len(rts_list))
+        query += f" AND LOWER(TRIM(rt_room)) IN ({placeholders})"
+        params.extend(rts_list)
+
     query += " ORDER BY rowid DESC"
     cur.execute(query, params)
     rows = [dict(r) for r in cur.fetchall()]
@@ -1948,14 +1967,29 @@ def export_server_excel(session: dict = Depends(require_management_auth)):
     )
 
 @app.get("/api/export-center-excel")
-def export_center_excel(center: str, region: Optional[str] = None, session: dict = Depends(require_export_auth)):
-    """Exports and downloads an individual Center's survey Excel file streamed dynamically in-memory."""
-    if not center or not center.strip():
-        raise HTTPException(status_code=400, detail="Center name is required.")
-    
-    cent_clean = center.strip()
+def export_center_excel(
+    center: Optional[str] = None, 
+    region: Optional[str] = None, 
+    rt_room: Optional[str] = None,
+    centers: Optional[str] = None,
+    regions: Optional[str] = None,
+    rt_rooms: Optional[str] = None,
+    session: dict = Depends(require_export_auth)
+):
+    """Exports and downloads filtered survey Excel file streamed dynamically in-memory."""
+    raw_centers = centers or center or ""
+    raw_regions = regions or region or ""
+    raw_rts = rt_rooms or rt_room or ""
+
+    if not raw_centers and not raw_regions:
+        raise HTTPException(status_code=400, detail="Center or Region is required.")
+
     user_role = session.get("role", "")
     username = session.get("username", "")
+
+    centers_list = [c.strip().lower() for c in raw_centers.split(",") if c.strip() and c.strip().upper() != "ALL"]
+    regions_list = [r.strip().lower() for r in raw_regions.split(",") if r.strip() and r.strip().upper() != "ALL"]
+    rts_list = [rt.strip().lower() for rt in raw_rts.split(",") if rt.strip() and rt.strip().upper() != "ALL"]
 
     # For non-admin roles (RCSM, ACSO, Field Technician), verify requested center is within assigned jurisdiction
     if user_role not in ("super_admin", "admin", "supervisor"):
@@ -1966,30 +2000,48 @@ def export_center_excel(center: str, region: Optional[str] = None, session: dict
         conn_u.close()
         if urow and urow[0] and urow[0] != "ALL":
             assigned_centers = [c.strip().lower() for c in urow[0].split(",") if c.strip()]
-            if cent_clean.upper() == "ALL":
-                cent_clean = ",".join(assigned_centers)
+            if not centers_list:
+                centers_list = assigned_centers
             else:
-                requested_centers = [c.strip().lower() for c in cent_clean.split(",") if c.strip()]
-                if not set(requested_centers).issubset(set(assigned_centers)):
+                if not set(centers_list).issubset(set(assigned_centers)):
                     raise HTTPException(status_code=403, detail="Permission Denied: Center is outside your assigned jurisdiction.")
 
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
-    
-    if cent_clean.upper() == "ALL":
-        cur.execute("SELECT * FROM survey_records ORDER BY rowid ASC")
-    elif "," in cent_clean:
-        cent_list = [c.strip().lower() for c in cent_clean.split(",") if c.strip()]
-        placeholders = ",".join(["?"] * len(cent_list))
-        cur.execute(f"SELECT * FROM survey_records WHERE LOWER(TRIM(center)) IN ({placeholders}) ORDER BY rowid ASC", tuple(cent_list))
-    else:
-        cur.execute("SELECT * FROM survey_records WHERE LOWER(TRIM(center)) = LOWER(TRIM(?)) ORDER BY rowid ASC", (cent_clean,))
-        
+
+    query = "SELECT * FROM survey_records WHERE 1=1"
+    params = []
+
+    if centers_list:
+        placeholders = ",".join(["?"] * len(centers_list))
+        query += f" AND LOWER(TRIM(center)) IN ({placeholders})"
+        params.extend(centers_list)
+
+    if regions_list:
+        placeholders = ",".join(["?"] * len(regions_list))
+        query += f" AND LOWER(TRIM(region)) IN ({placeholders})"
+        params.extend(regions_list)
+
+    if rts_list:
+        placeholders = ",".join(["?"] * len(rts_list))
+        query += f" AND LOWER(TRIM(rt_room)) IN ({placeholders})"
+        params.extend(rts_list)
+
+    query += " ORDER BY rowid ASC"
+    cur.execute(query, params)
     rows = cur.fetchall()
     conn.close()
 
-    safe_cent = sanitize_folder_name(cent_clean.replace(",", "_"), "General")
+    title_part = "Survey_Data"
+    if centers_list:
+        title_part = "_".join(centers_list[:3])
+        if len(centers_list) > 3:
+            title_part += f"_and_{len(centers_list)-3}_more"
+    elif regions_list:
+        title_part = "_".join(regions_list[:3])
+
+    safe_cent = sanitize_folder_name(title_part, "Survey_Data")
     wb = build_excel_workbook(rows, title=safe_cent[:31])
     excel_bytes = workbook_to_bytes(wb)
     today = datetime.date.today().isoformat()
@@ -1997,7 +2049,7 @@ def export_center_excel(center: str, region: Optional[str] = None, session: dict
         content=excel_bytes,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={
-            "Content-Disposition": f'attachment; filename="{safe_cent}_Survey_Data_{today}.xlsx"'
+            "Content-Disposition": f'attachment; filename="{safe_cent}_{today}.xlsx"'
         }
     )
 
@@ -2440,21 +2492,62 @@ def admin_dashboard(response: Response):
         <!-- Filter & Action Bar -->
         <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:14px; background:#f8fafc; padding:12px; border-radius:8px; border:1px solid #e2e8f0;">
           <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; flex:1;">
-            <div>
-              <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:2px;">Filter Region:</label>
-              <select id="feed-filter-region" onchange="onFeedRegionChanged()" style="min-width:140px;">
-                <option value="">-- Select Region --</option>
-              </select>
+            <!-- Multi-Region Selector -->
+            <div style="position:relative; min-width:150px;">
+              <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:2px;">Filter Region(s):</label>
+              <button type="button" id="btn-feed-region-picker" onclick="toggleFeedMultiDropdown('feed-region-dropdown-panel')" style="width:100%; text-align:left; background:white; border:1.5px solid #cbd5e1; padding:7px 10px; border-radius:6px; font-size:0.82rem; display:flex; justify-content:space-between; align-items:center; cursor:pointer;">
+                <span id="feed-region-picker-label" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:130px;"><span style="color:#94a3b8;">-- Select Region(s) --</span></span>
+                <span style="font-size:0.7rem; color:#64748b; margin-left:4px;">▼</span>
+              </button>
+              <div id="feed-region-dropdown-panel" style="display:none; position:absolute; top:100%; left:0; z-index:1100; min-width:220px; background:white; border:1.5px solid #0284c7; border-radius:8px; padding:8px; margin-top:4px; box-shadow:0 10px 25px -5px rgba(0,0,0,0.15); max-height:260px; overflow-y:auto;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; padding-bottom:4px; border-bottom:1px solid #e2e8f0;">
+                  <span style="font-size:0.72rem; font-weight:700; color:#64748b;">Regions</span>
+                  <div>
+                    <button type="button" onclick="selectAllFeedRegions(true)" style="background:none; border:none; color:#0284c7; font-size:0.72rem; font-weight:700; cursor:pointer;">All</button>
+                    <button type="button" onclick="selectAllFeedRegions(false)" style="background:none; border:none; color:#64748b; font-size:0.72rem; font-weight:700; cursor:pointer; margin-left:6px;">Clear</button>
+                  </div>
+                </div>
+                <div id="feed-region-checkbox-list"></div>
+              </div>
             </div>
-            <div>
-              <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:2px;">Filter Center:</label>
-              <select id="feed-filter-center" onchange="onFeedCenterChanged()" style="min-width:180px;" disabled>
-                <option value="">-- Select Region First --</option>
-              </select>
+
+            <!-- Multi-Center Selector -->
+            <div style="position:relative; min-width:170px;">
+              <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:2px;">Filter Center(s):</label>
+              <button type="button" id="btn-feed-center-picker" onclick="toggleFeedMultiDropdown('feed-center-dropdown-panel')" style="width:100%; text-align:left; background:white; border:1.5px solid #cbd5e1; padding:7px 10px; border-radius:6px; font-size:0.82rem; display:flex; justify-content:space-between; align-items:center; cursor:pointer;" disabled>
+                <span id="feed-center-picker-label" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:150px; color:#94a3b8;">-- Select Region First --</span>
+                <span style="font-size:0.7rem; color:#64748b; margin-left:4px;">▼</span>
+              </button>
+              <div id="feed-center-dropdown-panel" style="display:none; position:absolute; top:100%; left:0; z-index:1100; min-width:280px; background:white; border:1.5px solid #0284c7; border-radius:8px; padding:8px; margin-top:4px; box-shadow:0 10px 25px -5px rgba(0,0,0,0.15); max-height:280px; overflow-y:auto;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; padding-bottom:4px; border-bottom:1px solid #e2e8f0; gap:6px;">
+                  <input type="text" id="feed-center-search-input" placeholder="🔍 Search centers..." oninput="filterFeedCenterChecklist(this.value)" style="flex:1; padding:3px 6px; font-size:0.75rem; border:1px solid #cbd5e1; border-radius:4px; outline:none;">
+                  <button type="button" onclick="selectAllFeedCenters(true)" style="background:none; border:none; color:#0284c7; font-size:0.72rem; font-weight:700; cursor:pointer;">All</button>
+                  <button type="button" onclick="selectAllFeedCenters(false)" style="background:none; border:none; color:#64748b; font-size:0.72rem; font-weight:700; cursor:pointer;">Clear</button>
+                </div>
+                <div id="feed-center-checkbox-list"></div>
+              </div>
             </div>
-            <div style="flex:1; min-width:200px;">
+
+            <!-- Multi-RT Room Selector -->
+            <div style="position:relative; min-width:170px;">
+              <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:2px;">Filter RT Room(s):</label>
+              <button type="button" id="btn-feed-rt-picker" onclick="toggleFeedMultiDropdown('feed-rt-dropdown-panel')" style="width:100%; text-align:left; background:white; border:1.5px solid #cbd5e1; padding:7px 10px; border-radius:6px; font-size:0.82rem; display:flex; justify-content:space-between; align-items:center; cursor:pointer;" disabled>
+                <span id="feed-rt-picker-label" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:150px; color:#94a3b8;">-- Select Center First --</span>
+                <span style="font-size:0.7rem; color:#64748b; margin-left:4px;">▼</span>
+              </button>
+              <div id="feed-rt-dropdown-panel" style="display:none; position:absolute; top:100%; left:0; z-index:1100; min-width:260px; background:white; border:1.5px solid #0284c7; border-radius:8px; padding:8px; margin-top:4px; box-shadow:0 10px 25px -5px rgba(0,0,0,0.15); max-height:280px; overflow-y:auto;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; padding-bottom:4px; border-bottom:1px solid #e2e8f0; gap:6px;">
+                  <input type="text" id="feed-rt-search-input" placeholder="🔍 Search RT rooms..." oninput="filterFeedRTChecklist(this.value)" style="flex:1; padding:3px 6px; font-size:0.75rem; border:1px solid #cbd5e1; border-radius:4px; outline:none;">
+                  <button type="button" onclick="selectAllFeedRTRooms(true)" style="background:none; border:none; color:#0284c7; font-size:0.72rem; font-weight:700; cursor:pointer;">All</button>
+                  <button type="button" onclick="selectAllFeedRTRooms(false)" style="background:none; border:none; color:#64748b; font-size:0.72rem; font-weight:700; cursor:pointer;">Clear</button>
+                </div>
+                <div id="feed-rt-checkbox-list"></div>
+              </div>
+            </div>
+
+            <div style="flex:1; min-width:180px;">
               <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:2px;">Search Survey Data:</label>
-              <input type="text" id="feed-search" placeholder="🔍 Search Enclosure, Post #, Landmark, Surveyor..." oninput="filterAndRenderFeed()" style="width:100%;">
+              <input type="text" id="feed-search" placeholder="🔍 Search Enclosure, Post #, Landmark, Surveyor..." oninput="filterAndRenderFeed()" style="width:100%; padding:7px 10px; font-size:0.82rem; border:1.5px solid #cbd5e1; border-radius:6px;">
             </div>
           </div>
 
@@ -3161,15 +3254,41 @@ def admin_dashboard(response: Response):
           }
         }
 
+        // State for Tab 1 Feed Multi-Region, Multi-Center, Multi-RT Room selection
+        let selectedFeedRegions = new Set();
+        let selectedFeedCenters = new Set();
+        let selectedFeedRTRooms = new Set();
+
+        function toggleFeedMultiDropdown(panelId) {
+          const p = document.getElementById(panelId);
+          if (!p) return;
+          const isShown = (p.style.display === 'block');
+          ['feed-region-dropdown-panel', 'feed-center-dropdown-panel', 'feed-rt-dropdown-panel'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.style.display = 'none';
+          });
+          p.style.display = isShown ? 'none' : 'block';
+        }
+
+        // Close feed dropdown panels on outside click
+        document.addEventListener('click', (e) => {
+          ['feed-region', 'feed-center', 'feed-rt'].forEach(prefix => {
+            const panel = document.getElementById(`${prefix}-dropdown-panel`);
+            const btn = document.getElementById(`btn-${prefix}-picker`);
+            if (panel && btn && !panel.contains(e.target) && !btn.contains(e.target)) {
+              panel.style.display = 'none';
+            }
+          });
+        });
+
         // Tab 1: Survey Records & Center Filter
         async function fetchData() {
-          const regSelect = document.getElementById('feed-filter-region');
-          const centerSelect = document.getElementById('feed-filter-center');
-          const region = regSelect ? regSelect.value : '';
-          const center = centerSelect ? centerSelect.value : '';
+          const regions = Array.from(selectedFeedRegions);
+          const centers = Array.from(selectedFeedCenters);
+          const rtRooms = Array.from(selectedFeedRTRooms);
 
-          // If region or center is blank, clear records and show prompt
-          if (!region || !center) {
+          // If no region or no center is selected, clear records and show prompt
+          if (regions.length === 0 || centers.length === 0) {
             cachedRecords = [];
             filterAndRenderFeed();
             return;
@@ -3177,8 +3296,9 @@ def admin_dashboard(response: Response):
 
           let url = '/api/records';
           const params = [];
-          if (region) params.push(`region=${encodeURIComponent(region)}`);
-          if (center) params.push(`center=${encodeURIComponent(center)}`);
+          if (regions.length > 0) params.push(`regions=${encodeURIComponent(regions.join(','))}`);
+          if (centers.length > 0) params.push(`centers=${encodeURIComponent(centers.join(','))}`);
+          if (rtRooms.length > 0) params.push(`rt_rooms=${encodeURIComponent(rtRooms.join(','))}`);
           if (params.length > 0) url += '?' + params.join('&');
 
           try {
@@ -3195,11 +3315,14 @@ def admin_dashboard(response: Response):
           const regionsSet = new Set();
           const centersByRegion = {};
           const centerToRegion = {};
+          const rtsByCenter = {};
 
           Object.keys(cachedHierarchy).forEach(center => {
             const rts = cachedHierarchy[center] || {};
+            if (!rtsByCenter[center]) rtsByCenter[center] = new Set();
             let centerRegion = null;
             Object.keys(rts).forEach(rt => {
+              rtsByCenter[center].add(rt);
               const olts = rts[rt] || {};
               Object.keys(olts).forEach(oltName => {
                 const entry = olts[oltName];
@@ -3222,77 +3345,341 @@ def admin_dashboard(response: Response):
             regions: Array.from(regionsSet).sort(),
             centersByRegion: centersByRegion,
             centerToRegion: centerToRegion,
+            rtsByCenter: rtsByCenter,
             allCenters: Object.keys(cachedHierarchy).sort()
           };
         }
 
-        // Tab 1 Filters: Strictly ONLY regions and centers from uploaded Node Master Excel
         function updateFeedFilterDropdowns() {
           const meta = getHierarchyMeta();
-          const regSelect = document.getElementById('feed-filter-region');
-          const centerSelect = document.getElementById('feed-filter-center');
-          if (!regSelect || !centerSelect) return;
-
-          const curReg = regSelect.value || '';
-          const curCenter = centerSelect.value || '';
-
-          regSelect.innerHTML = '<option value="">-- Select Region --</option>';
-          meta.regions.forEach(reg => {
-            const opt = document.createElement('option');
-            opt.value = reg;
-            opt.innerText = reg;
-            if (curReg && reg.toLowerCase() === curReg.toLowerCase()) opt.selected = true;
-            regSelect.appendChild(opt);
-          });
-          if (!curReg) regSelect.value = '';
-
-          updateFeedCenterFilterOptions(regSelect.value, curCenter);
+          renderFeedRegionCheckboxes(meta);
+          renderFeedCenterCheckboxes(meta);
+          renderFeedRTCheckboxes(meta);
+          updateFeedPickerLabels();
         }
 
-        function updateFeedCenterFilterOptions(selectedReg, curCenter) {
-          const meta = getHierarchyMeta();
-          const centerSelect = document.getElementById('feed-filter-center');
-          if (!centerSelect) return;
+        function renderFeedRegionCheckboxes(meta) {
+          const container = document.getElementById('feed-region-checkbox-list');
+          if (!container) return;
 
-          if (!selectedReg) {
-            centerSelect.disabled = true;
-            centerSelect.innerHTML = '<option value="">-- Select Region First --</option>';
-            centerSelect.value = '';
+          let html = '';
+          meta.regions.forEach(reg => {
+            const checked = selectedFeedRegions.has(reg);
+            html += `
+              <label style="display:flex; align-items:center; gap:8px; padding:4px 2px; font-size:0.82rem; cursor:pointer; color:#334155;">
+                <input type="checkbox" class="feed-reg-cb" value="${escapeHtml(reg)}" ${checked ? 'checked' : ''} onchange="onFeedRegionCheckboxChanged(this)">
+                <span>${escapeHtml(reg)}</span>
+              </label>
+            `;
+          });
+          container.innerHTML = html || '<div style="color:#94a3b8; font-size:0.78rem; padding:6px;">No regions loaded.</div>';
+        }
+
+        function selectAllFeedRegions(selectAll) {
+          const meta = getHierarchyMeta();
+          if (selectAll) {
+            meta.regions.forEach(r => selectedFeedRegions.add(r));
+          } else {
+            selectedFeedRegions.clear();
+            selectedFeedCenters.clear();
+            selectedFeedRTRooms.clear();
+          }
+          pruneFeedSelections(meta);
+          renderFeedRegionCheckboxes(meta);
+          renderFeedCenterCheckboxes(meta);
+          renderFeedRTCheckboxes(meta);
+          updateFeedPickerLabels();
+          fetchData();
+        }
+
+        function onFeedRegionCheckboxChanged(cb) {
+          const meta = getHierarchyMeta();
+          if (cb.checked) {
+            selectedFeedRegions.add(cb.value);
+          } else {
+            selectedFeedRegions.delete(cb.value);
+          }
+          pruneFeedSelections(meta);
+          renderFeedRegionCheckboxes(meta);
+          renderFeedCenterCheckboxes(meta);
+          renderFeedRTCheckboxes(meta);
+          updateFeedPickerLabels();
+          fetchData();
+        }
+
+        function pruneFeedSelections(meta) {
+          if (selectedFeedRegions.size === 0) {
+            selectedFeedCenters.clear();
+            selectedFeedRTRooms.clear();
             return;
           }
 
-          centerSelect.disabled = false;
-          centerSelect.innerHTML = '<option value="">-- Select Center --</option>';
-
-          let centerList = [];
-          if (meta.centersByRegion[selectedReg]) {
-            centerList = Array.from(meta.centersByRegion[selectedReg]).sort();
-          }
-
-          centerList.forEach(c => {
-            const opt = document.createElement('option');
-            opt.value = c;
-            opt.innerText = c;
-            if (curCenter && c.trim().toLowerCase() === curCenter.trim().toLowerCase()) opt.selected = true;
-            centerSelect.appendChild(opt);
+          const allowedCenters = new Set();
+          selectedFeedRegions.forEach(reg => {
+            if (meta.centersByRegion[reg]) {
+              meta.centersByRegion[reg].forEach(c => allowedCenters.add(c));
+            }
           });
 
-          if (curCenter && centerList.some(c => c.trim().toLowerCase() === curCenter.trim().toLowerCase())) {
-            const matched = centerList.find(c => c.trim().toLowerCase() === curCenter.trim().toLowerCase());
-            centerSelect.value = matched || '';
-          } else {
-            centerSelect.value = '';
+          selectedFeedCenters.forEach(c => {
+            if (!allowedCenters.has(c)) {
+              selectedFeedCenters.delete(c);
+            }
+          });
+
+          const allowedRTs = new Set();
+          selectedFeedCenters.forEach(c => {
+            if (meta.rtsByCenter[c]) {
+              meta.rtsByCenter[c].forEach(rt => allowedRTs.add(rt));
+            }
+          });
+
+          selectedFeedRTRooms.forEach(rt => {
+            if (!allowedRTs.has(rt)) {
+              selectedFeedRTRooms.delete(rt);
+            }
+          });
+        }
+
+        function renderFeedCenterCheckboxes(meta) {
+          const container = document.getElementById('feed-center-checkbox-list');
+          if (!container) return;
+
+          if (selectedFeedRegions.size === 0) {
+            container.innerHTML = '<div style="color:#94a3b8; font-size:0.78rem; padding:8px; text-align:center;">Select at least one Region first.</div>';
+            return;
           }
+
+          const q = (document.getElementById('feed-center-search-input')?.value || '').toLowerCase().trim();
+
+          let html = '';
+          Array.from(selectedFeedRegions).sort().forEach(reg => {
+            const centers = meta.centersByRegion[reg] ? Array.from(meta.centersByRegion[reg]).sort() : [];
+            const filteredCenters = q ? centers.filter(c => c.toLowerCase().includes(q)) : centers;
+            if (filteredCenters.length === 0) return;
+
+            html += `
+              <div style="margin-top:6px; margin-bottom:4px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; background:#f1f5f9; padding:3px 6px; border-radius:4px; font-size:0.73rem; font-weight:700; color:#334155; margin-bottom:3px;">
+                  <span>📍 ${escapeHtml(reg)}</span>
+                  <button type="button" onclick="toggleFeedRegionCenterGroup('${escapeHtml(reg)}')" style="background:none; border:none; color:#0284c7; font-size:0.7rem; cursor:pointer; font-weight:600;">Toggle</button>
+                </div>
+            `;
+            filteredCenters.forEach(c => {
+              const checked = selectedFeedCenters.has(c);
+              html += `
+                <label style="display:flex; align-items:center; gap:8px; padding:3px 6px; font-size:0.8rem; cursor:pointer; color:#334155;">
+                  <input type="checkbox" class="feed-center-cb" data-region="${escapeHtml(reg)}" value="${escapeHtml(c)}" ${checked ? 'checked' : ''} onchange="onFeedCenterCheckboxChanged(this)">
+                  <span>${escapeHtml(c)}</span>
+                </label>
+              `;
+            });
+            html += `</div>`;
+          });
+
+          container.innerHTML = html || '<div style="color:#94a3b8; font-size:0.78rem; padding:8px; text-align:center;">No matching centers found.</div>';
         }
 
-        function onFeedRegionChanged() {
-          const reg = document.getElementById('feed-filter-region').value;
-          updateFeedCenterFilterOptions(reg, '');
+        function filterFeedCenterChecklist(query) {
+          const meta = getHierarchyMeta();
+          renderFeedCenterCheckboxes(meta);
+        }
+
+        function toggleFeedRegionCenterGroup(reg) {
+          const meta = getHierarchyMeta();
+          const centers = meta.centersByRegion[reg] ? Array.from(meta.centersByRegion[reg]) : [];
+          const allSelected = centers.every(c => selectedFeedCenters.has(c));
+          if (allSelected) {
+            centers.forEach(c => selectedFeedCenters.delete(c));
+          } else {
+            centers.forEach(c => selectedFeedCenters.add(c));
+          }
+          pruneFeedSelections(meta);
+          renderFeedCenterCheckboxes(meta);
+          renderFeedRTCheckboxes(meta);
+          updateFeedPickerLabels();
           fetchData();
         }
 
-        function onFeedCenterChanged() {
+        function selectAllFeedCenters(selectAll) {
+          const meta = getHierarchyMeta();
+          if (selectAll) {
+            selectedFeedRegions.forEach(reg => {
+              if (meta.centersByRegion[reg]) {
+                meta.centersByRegion[reg].forEach(c => selectedFeedCenters.add(c));
+              }
+            });
+          } else {
+            selectedFeedCenters.clear();
+            selectedFeedRTRooms.clear();
+          }
+          pruneFeedSelections(meta);
+          renderFeedCenterCheckboxes(meta);
+          renderFeedRTCheckboxes(meta);
+          updateFeedPickerLabels();
           fetchData();
+        }
+
+        function onFeedCenterCheckboxChanged(cb) {
+          const meta = getHierarchyMeta();
+          if (cb.checked) {
+            selectedFeedCenters.add(cb.value);
+          } else {
+            selectedFeedCenters.delete(cb.value);
+          }
+          pruneFeedSelections(meta);
+          renderFeedCenterCheckboxes(meta);
+          renderFeedRTCheckboxes(meta);
+          updateFeedPickerLabels();
+          fetchData();
+        }
+
+        function renderFeedRTCheckboxes(meta) {
+          const container = document.getElementById('feed-rt-checkbox-list');
+          if (!container) return;
+
+          if (selectedFeedCenters.size === 0) {
+            container.innerHTML = '<div style="color:#94a3b8; font-size:0.78rem; padding:8px; text-align:center;">Select at least one Center first.</div>';
+            return;
+          }
+
+          const q = (document.getElementById('feed-rt-search-input')?.value || '').toLowerCase().trim();
+
+          let html = '';
+          Array.from(selectedFeedCenters).sort().forEach(c => {
+            const rts = meta.rtsByCenter[c] ? Array.from(meta.rtsByCenter[c]).sort() : [];
+            const filteredRTs = q ? rts.filter(rt => rt.toLowerCase().includes(q)) : rts;
+            if (filteredRTs.length === 0) return;
+
+            html += `
+              <div style="margin-top:6px; margin-bottom:4px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; background:#f1f5f9; padding:3px 6px; border-radius:4px; font-size:0.73rem; font-weight:700; color:#334155; margin-bottom:3px;">
+                  <span>🏢 ${escapeHtml(c)}</span>
+                  <button type="button" onclick="toggleFeedCenterRTGroup('${escapeHtml(c)}')" style="background:none; border:none; color:#0284c7; font-size:0.7rem; cursor:pointer; font-weight:600;">Toggle</button>
+                </div>
+            `;
+            filteredRTs.forEach(rt => {
+              const checked = selectedFeedRTRooms.has(rt);
+              html += `
+                <label style="display:flex; align-items:center; gap:8px; padding:3px 6px; font-size:0.8rem; cursor:pointer; color:#334155;">
+                  <input type="checkbox" class="feed-rt-cb" data-center="${escapeHtml(c)}" value="${escapeHtml(rt)}" ${checked ? 'checked' : ''} onchange="onFeedRTCheckboxChanged(this)">
+                  <span>${escapeHtml(rt)}</span>
+                </label>
+              `;
+            });
+            html += `</div>`;
+          });
+
+          container.innerHTML = html || '<div style="color:#94a3b8; font-size:0.78rem; padding:8px; text-align:center;">No matching RT rooms found.</div>';
+        }
+
+        function filterFeedRTChecklist(query) {
+          const meta = getHierarchyMeta();
+          renderFeedRTCheckboxes(meta);
+        }
+
+        function toggleFeedCenterRTGroup(centerName) {
+          const meta = getHierarchyMeta();
+          const rts = meta.rtsByCenter[centerName] ? Array.from(meta.rtsByCenter[centerName]) : [];
+          const allSelected = rts.every(rt => selectedFeedRTRooms.has(rt));
+          if (allSelected) {
+            rts.forEach(rt => selectedFeedRTRooms.delete(rt));
+          } else {
+            rts.forEach(rt => selectedFeedRTRooms.add(rt));
+          }
+          renderFeedRTCheckboxes(meta);
+          updateFeedPickerLabels();
+          fetchData();
+        }
+
+        function selectAllFeedRTRooms(selectAll) {
+          const meta = getHierarchyMeta();
+          if (selectAll) {
+            selectedFeedCenters.forEach(c => {
+              if (meta.rtsByCenter[c]) {
+                meta.rtsByCenter[c].forEach(rt => selectedFeedRTRooms.add(rt));
+              }
+            });
+          } else {
+            selectedFeedRTRooms.clear();
+          }
+          renderFeedRTCheckboxes(meta);
+          updateFeedPickerLabels();
+          fetchData();
+        }
+
+        function onFeedRTCheckboxChanged(cb) {
+          if (cb.checked) {
+            selectedFeedRTRooms.add(cb.value);
+          } else {
+            selectedFeedRTRooms.delete(cb.value);
+          }
+          const meta = getHierarchyMeta();
+          renderFeedRTCheckboxes(meta);
+          updateFeedPickerLabels();
+          fetchData();
+        }
+
+        function updateFeedPickerLabels() {
+          const regBtn = document.getElementById('btn-feed-region-picker');
+          const regLabel = document.getElementById('feed-region-picker-label');
+          const centerBtn = document.getElementById('btn-feed-center-picker');
+          const centerLabel = document.getElementById('feed-center-picker-label');
+          const rtBtn = document.getElementById('btn-feed-rt-picker');
+          const rtLabel = document.getElementById('feed-rt-picker-label');
+
+          if (regLabel) {
+            if (selectedFeedRegions.size === 0) {
+              regLabel.innerHTML = '<span style="color:#94a3b8;">-- Select Region(s) --</span>';
+            } else if (selectedFeedRegions.size === 1) {
+              regLabel.innerHTML = `<strong style="color:#0284c7;">${escapeHtml(Array.from(selectedFeedRegions)[0])}</strong>`;
+            } else {
+              regLabel.innerHTML = `<strong style="color:#0284c7;">${selectedFeedRegions.size} Regions Selected</strong>`;
+            }
+          }
+
+          if (centerBtn && centerLabel) {
+            if (selectedFeedRegions.size === 0) {
+              centerBtn.disabled = true;
+              centerLabel.innerHTML = '<span style="color:#94a3b8;">-- Select Region First --</span>';
+            } else {
+              centerBtn.disabled = false;
+              if (selectedFeedCenters.size === 0) {
+                centerLabel.innerHTML = '<span style="color:#94a3b8;">-- Select Center(s) --</span>';
+              } else if (selectedFeedCenters.size === 1) {
+                centerLabel.innerHTML = `<strong style="color:#0284c7;">${escapeHtml(Array.from(selectedFeedCenters)[0])}</strong>`;
+              } else {
+                centerLabel.innerHTML = `<strong style="color:#0284c7;">${selectedFeedCenters.size} Centers Selected</strong>`;
+              }
+            }
+          }
+
+          if (rtBtn && rtLabel) {
+            if (selectedFeedCenters.size === 0) {
+              rtBtn.disabled = true;
+              rtLabel.innerHTML = '<span style="color:#94a3b8;">-- Select Center First --</span>';
+            } else {
+              rtBtn.disabled = false;
+              if (selectedFeedRTRooms.size === 0) {
+                rtLabel.innerHTML = '<span style="color:#475569; font-weight:600;">All RT Rooms</span>';
+              } else if (selectedFeedRTRooms.size === 1) {
+                rtLabel.innerHTML = `<strong style="color:#0284c7;">${escapeHtml(Array.from(selectedFeedRTRooms)[0])}</strong>`;
+              } else {
+                rtLabel.innerHTML = `<strong style="color:#0284c7;">${selectedFeedRTRooms.size} RT Rooms Selected</strong>`;
+              }
+            }
+          }
+
+          const dlBtn = document.getElementById('btn-download-center');
+          if (dlBtn) {
+            if (selectedFeedCenters.size === 1) {
+              dlBtn.innerText = `📥 Download ${Array.from(selectedFeedCenters)[0]} Excel`;
+            } else if (selectedFeedCenters.size > 1) {
+              dlBtn.innerText = `📥 Download Filtered Excel (${selectedFeedCenters.size} Centers)`;
+            } else {
+              dlBtn.innerText = '📥 Download Center Excel';
+            }
+          }
         }
 
         // State for User Multi-Region and Multi-Center selection
@@ -3570,13 +3957,7 @@ def admin_dashboard(response: Response):
         }
 
         function filterAndRenderFeed() {
-          const regSelect = document.getElementById('feed-filter-region');
-          const centerSelect = document.getElementById('feed-filter-center');
-          const region = regSelect ? regSelect.value : '';
-          const center = centerSelect ? centerSelect.value : '';
-
-          // If region or center is blank, reset stats to 0 and display instructional prompt
-          if (!region || !center) {
+          if (selectedFeedRegions.size === 0 || selectedFeedCenters.size === 0) {
             document.getElementById('feed-stat-records').innerText = '0';
             document.getElementById('feed-stat-customers').innerText = '0';
             document.getElementById('feed-stat-enclosures').innerText = '0';
@@ -3588,8 +3969,8 @@ def admin_dashboard(response: Response):
                 <tr>
                   <td colspan="15" style="text-align:center; padding:45px 20px; color:#64748b; font-size:0.95rem;">
                     <div style="font-size:2.2rem; margin-bottom:8px;">📍</div>
-                    <div style="font-weight:700; color:#334155; margin-bottom:4px; font-size:1.05rem;">Please Select a Region and Center</div>
-                    <div style="color:#64748b; font-size:0.85rem;">Select both a <strong>Region</strong> and <strong>Center</strong> above to view survey records.</div>
+                    <div style="font-weight:700; color:#334155; margin-bottom:4px; font-size:1.05rem;">Please Select Region(s) and Center(s)</div>
+                    <div style="color:#64748b; font-size:0.85rem;">Select at least one <strong>Region</strong> and <strong>Center</strong> above to view survey records.</div>
                   </td>
                 </tr>
               `;
@@ -3601,8 +3982,15 @@ def admin_dashboard(response: Response):
           const isSuperAdmin = (currentAdmin && currentAdmin.role === 'super_admin');
 
           let filtered = cachedRecords;
+
+          // Optional client-side RT room filter if specific RT rooms are checked
+          if (selectedFeedRTRooms.size > 0) {
+            const rtSet = new Set(Array.from(selectedFeedRTRooms).map(s => s.toLowerCase()));
+            filtered = filtered.filter(r => r.rt_room && rtSet.has(r.rt_room.trim().toLowerCase()));
+          }
+
           if (q) {
-            filtered = cachedRecords.filter(r => 
+            filtered = filtered.filter(r => 
               (r.enclosure_id || '').toLowerCase().includes(q) ||
               (r.splitter_id || '').toLowerCase().includes(q) ||
               (r.kseb_post_number || '').toLowerCase().includes(q) ||
@@ -3637,7 +4025,7 @@ def admin_dashboard(response: Response):
           tbody.innerHTML = '';
 
           if (filtered.length === 0) {
-            tbody.innerHTML = `<tr><td colspan="15" style="text-align:center; padding:30px; color:#94a3b8;"><div style="font-size:1.8rem; margin-bottom:6px;">🔍</div>No survey records found for Center: <strong>${escapeHtml(center)}</strong> (${escapeHtml(region)}).</td></tr>`;
+            tbody.innerHTML = '<tr><td colspan="15" style="text-align:center; padding:30px; color:#94a3b8;"><div style="font-size:1.8rem; margin-bottom:6px;">🔍</div>No survey records match current filters.</td></tr>';
             return;
           }
 
@@ -3679,15 +4067,21 @@ def admin_dashboard(response: Response):
         }
 
         function downloadSelectedCenterExcel() {
-          const region = document.getElementById('feed-filter-region')?.value;
-          const center = document.getElementById('feed-filter-center')?.value;
+          const regions = Array.from(selectedFeedRegions);
+          const centers = Array.from(selectedFeedCenters);
+          const rtRooms = Array.from(selectedFeedRTRooms);
 
-          if (!region || !center) {
-            alert('Please select both a Region and a Center first to download the Excel spreadsheet.');
+          if (regions.length === 0 || centers.length === 0) {
+            alert('Please select at least one Region and Center first to download the Excel spreadsheet.');
             return;
           }
 
-          downloadWithAuth(`/api/export-center-excel?center=${encodeURIComponent(center)}&region=${encodeURIComponent(region)}`);
+          const params = [];
+          if (regions.length > 0) params.push(`regions=${encodeURIComponent(regions.join(','))}`);
+          if (centers.length > 0) params.push(`centers=${encodeURIComponent(centers.join(','))}`);
+          if (rtRooms.length > 0) params.push(`rt_rooms=${encodeURIComponent(rtRooms.join(','))}`);
+
+          downloadWithAuth(`/api/export-center-excel?${params.join('&')}`);
         }
 
         function openEditSurveyRecordModal(uuid) {
@@ -4556,9 +4950,7 @@ def admin_dashboard(response: Response):
           if (currentAdmin && (currentAdmin.role === 'super_admin' || currentAdmin.role === 'rcsm')) {
             const currentTab = document.querySelector('.tab-btn.active');
             if (currentTab && currentTab.id === 'tab-btn-feed') {
-              const reg = document.getElementById('feed-filter-region')?.value;
-              const cen = document.getElementById('feed-filter-center')?.value;
-              if (reg && cen) {
+              if (selectedFeedRegions.size > 0 && selectedFeedCenters.size > 0) {
                 fetchData();
               }
             }
