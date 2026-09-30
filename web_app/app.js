@@ -1069,6 +1069,22 @@ function updateAvailableSplitters() {
       const optMatch = Array.from(splitterIdSelect.options).find(o => o.value === prevVal && !o.disabled);
       if (optMatch) {
         splitterIdSelect.value = prevVal;
+      } else {
+        const s1Match = Array.from(splitterIdSelect.options).find(o => o.value === 'S1' && !o.disabled);
+        if (s1Match) {
+          splitterIdSelect.value = 'S1';
+        } else {
+          const firstAvail = Array.from(splitterIdSelect.options).find(o => o.value && !o.disabled);
+          if (firstAvail) splitterIdSelect.value = firstAvail.value;
+        }
+      }
+    } else {
+      const s1Match = Array.from(splitterIdSelect.options).find(o => o.value === 'S1' && !o.disabled);
+      if (s1Match) {
+        splitterIdSelect.value = 'S1';
+      } else {
+        const firstAvail = Array.from(splitterIdSelect.options).find(o => o.value && !o.disabled);
+        if (firstAvail) splitterIdSelect.value = firstAvail.value;
       }
     }
   }
