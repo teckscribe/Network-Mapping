@@ -1705,7 +1705,7 @@ def sync_records(payload: SyncPayload, session: dict = Depends(require_any_auth)
 
     auth_username = session.get("username", "")
     auth_role = normalize_role(session.get("role", "field_technician"))
-    is_supervisor = auth_role in ("super_admin", "acso")
+    is_supervisor = auth_role in ("super_admin", "admin", "supervisor", "rcsm", "acso")
 
     for r in payload.records:
         try:
@@ -2516,7 +2516,7 @@ def admin_dashboard(response: Response):
             <h3 style="margin:0 0 4px 0; color:#0284c7;">Add / Manage User Access (4 Access Tiers)</h3>
             <p style="margin:0; font-size:0.82rem; color:#64748b;">
               1. <strong>Super Admin</strong>: Full admin access | 
-              2. <strong>RCSM</strong>: Center dashboard & downloads only | 
+              2. <strong>RCSM</strong>: Center dashboard, downloads & field survey entry | 
               3. <strong>ACSO</strong>: Field entry & download | 
               4. <strong>Field Tech</strong>: Field entry only
             </p>
@@ -2592,7 +2592,7 @@ def admin_dashboard(response: Response):
               <select id="modal-new-role" required style="width:100%; font-weight:600; border:1.5px solid #0284c7; border-radius:6px; padding:8px 10px; font-size:0.85rem;">
                 <option value="field_technician">👷 Field Technician (Data Entry Only)</option>
                 <option value="acso">📝 ACSO (Data Entry & Downloads)</option>
-                <option value="rcsm">📊 RCSM (Center Dashboard & Downloads)</option>
+                <option value="rcsm">📊 RCSM (Dashboard, Downloads & Field Survey)</option>
                 <option value="super_admin">👑 Super Admin (Full Control)</option>
               </select>
             </div>

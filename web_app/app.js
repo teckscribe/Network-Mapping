@@ -201,20 +201,15 @@ function updateUserBar() {
       }
     }
 
-    // 3. RCSM: "No option to enter the field inputs"
-    // Disable form and hide submit button for RCSM
-    const isEntryAllowed = (role !== 'rcsm');
-    if (rcsmBanner) rcsmBanner.style.display = isEntryAllowed ? 'none' : 'block';
-    if (submitBtn) submitBtn.style.display = isEntryAllowed ? 'flex' : 'none';
+    // 3. Field Survey Entry: Enabled for all roles (including RCSM, ACSO, Super Admin, and Field Tech)
+    const isEntryAllowed = true;
+    if (rcsmBanner) rcsmBanner.style.display = 'none';
+    if (submitBtn) submitBtn.style.display = 'flex';
 
     const formInputs = document.querySelectorAll('.gs-card-body input, .gs-card-body select');
     formInputs.forEach(el => {
-      if (!isEntryAllowed) {
-        el.setAttribute('disabled', 'true');
-      } else {
-        if (!['tech-select', 'olt-type-select', 'region-select'].includes(el.id)) {
-          el.removeAttribute('disabled');
-        }
+      if (!['tech-select', 'olt-type-select', 'region-select'].includes(el.id)) {
+        el.removeAttribute('disabled');
       }
     });
 
@@ -976,7 +971,7 @@ function updateAvailableEnclosures() {
   enclosureSelect.appendChild(defOpt);
 
   const role = currentUser ? normalizeClientRole(currentUser.role) : 'field_technician';
-  const isSupervisor = (role === 'acso' || role === 'super_admin');
+  const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'super_admin');
 
   if (olt && port) {
     DEFAULT_PRELOAD.enclosures.forEach(e => {
@@ -1038,7 +1033,7 @@ function updateAvailableSplitters() {
   splitterIdSelect.appendChild(defOpt);
 
   const role = currentUser ? normalizeClientRole(currentUser.role) : 'field_technician';
-  const isSupervisor = (role === 'acso' || role === 'super_admin');
+  const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'super_admin');
 
   if (enc) {
     const eid = computeEnclosureId(olt, port, enc);
@@ -1093,7 +1088,7 @@ function handleSplitterSelectionChange() {
   const spl = splitterIdSelect ? splitterIdSelect.value : '';
 
   const role = currentUser ? normalizeClientRole(currentUser.role) : 'field_technician';
-  const isSupervisor = (role === 'acso' || role === 'super_admin');
+  const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'super_admin');
 
   if (!olt || !port || !enc || !spl) {
     if (banner) banner.style.display = 'none';
@@ -1918,11 +1913,6 @@ function adjustCustomer(delta) {
 
 // Save Entry
 function saveRecord() {
-  if (currentUser && normalizeClientRole(currentUser.role) === 'rcsm') {
-    showToast('RCSM accounts cannot enter or submit field survey records.', false);
-    return;
-  }
-
   if (!postInput.value.trim()) {
     showToast('Please enter KSEB Post Number', false);
     postInput.focus();
@@ -1990,7 +1980,7 @@ function saveRecord() {
   const spl = splitterIdSelect.value;
 
   const role = currentUser ? normalizeClientRole(currentUser.role) : 'field_technician';
-  const isSupervisor = (role === 'acso' || role === 'super_admin');
+  const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'super_admin');
 
   // Check if this enclosure & splitter point is already surveyed (across network or locally)
   const existingSurvey = getSurveyedInfo(eid, spl);
