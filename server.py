@@ -505,32 +505,58 @@ def sanitize_folder_name(name: str, default: str = "Unknown") -> str:
     cleaned = cleaned.strip('. ')
     return cleaned if cleaned else default
 
+def prune_hierarchy(hier: dict) -> dict:
+    """Removes empty RT rooms ({}) and empty centers ({}) to eliminate ghost counts and dangling nodes."""
+    if not isinstance(hier, dict):
+        return {}
+    clean = {}
+    for c, rts in hier.items():
+        c_clean = str(c).strip()
+        if not c_clean or not isinstance(rts, dict) or not rts:
+            continue
+        clean_rts = {}
+        for rt, olts in rts.items():
+            rt_clean = str(rt).strip()
+            if not rt_clean or not isinstance(olts, dict) or not olts:
+                continue
+            clean_olts = {}
+            for olt_name, olt_data in olts.items():
+                olt_clean = str(olt_name).strip()
+                if olt_clean and olt_data:
+                    clean_olts[olt_clean] = olt_data
+            if clean_olts:
+                clean_rts[rt_clean] = clean_olts
+        if clean_rts:
+            clean[c_clean] = clean_rts
+    return clean
+
 def load_hierarchy_data() -> dict:
-    """Loads network hierarchy from HIERARCHY_FILE (or fallback to legacy custom_hierarchy.json)."""
+    """Loads network hierarchy from HIERARCHY_FILE (or fallback to legacy custom_hierarchy.json) and prunes ghost entries."""
     if os.path.exists(HIERARCHY_FILE):
         try:
             with open(HIERARCHY_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                return prune_hierarchy(json.load(f))
         except Exception as e:
             print(f"[Hierarchy Warning] Failed loading {HIERARCHY_FILE}: {e}")
     legacy_file = os.path.join(BASE_DIR, "custom_hierarchy.json")
     if os.path.exists(legacy_file):
         try:
             with open(legacy_file, "r", encoding="utf-8") as f:
-                return json.load(f)
+                return prune_hierarchy(json.load(f))
         except Exception:
             pass
     return {}
 
 def save_hierarchy_data(data: dict):
-    """Saves network hierarchy to HIERARCHY_FILE and mirrors to legacy path for backward compatibility."""
+    """Saves sanitized network hierarchy to HIERARCHY_FILE and mirrors to legacy path for backward compatibility."""
+    clean_data = prune_hierarchy(data)
     os.makedirs(NODE_MASTER_DIR, exist_ok=True)
     with open(HIERARCHY_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+        json.dump(clean_data, f, indent=2)
     try:
         legacy_file = os.path.join(BASE_DIR, "custom_hierarchy.json")
         with open(legacy_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+            json.dump(clean_data, f, indent=2)
     except Exception:
         pass
 
@@ -668,6 +694,13 @@ def ensure_directories_and_migrate():
                         os.remove(os.path.join(dir_to_clean, fname))
                     except Exception:
                         pass
+
+    # 4. Prune legacy ghost RT rooms / empty centers from hierarchy files
+    try:
+        current_hier = load_hierarchy_data()
+        save_hierarchy_data(current_hier)
+    except Exception as e:
+        print(f"[Init Warning] Could not sanitize hierarchy file: {e}")
 
 init_db()
 ensure_directories_and_migrate()
@@ -1421,31 +1454,16 @@ async def upload_hierarchy_excel(file: UploadFile = File(...), session: dict = D
         if total_olts == 0:
             raise HTTPException(status_code=400, detail="No valid Center and OLT rows found in uploaded sheet.")
 
-        # Merge with existing custom hierarchy without duplicates
-        existing_hierarchy = load_hierarchy_data()
-
-        for c, rts in new_hierarchy.items():
-            if c not in existing_hierarchy:
-                existing_hierarchy[c] = {}
-            for rt, olts in rts.items():
-                if rt not in existing_hierarchy[c]:
-                    existing_hierarchy[c][rt] = {}
-                for olt_k, olt_data in olts.items():
-                    target_k = olt_k
-                    for exist_k in list(existing_hierarchy[c][rt].keys()):
-                        if exist_k.strip().lower() == olt_k.lower():
-                            target_k = exist_k
-                            break
-                    existing_hierarchy[c][rt][target_k] = olt_data
-
-        save_hierarchy_data(existing_hierarchy)
+        # The uploaded Excel file is the authoritative new Node Master hierarchy
+        clean_hierarchy = prune_hierarchy(new_hierarchy)
+        save_hierarchy_data(clean_hierarchy)
 
         return {
             "status": "success",
             "message": f"Imported {total_olts} unique Nodes across {len(centers_found)} Centers successfully into Node Master!",
             "total_olts": total_olts,
             "centers": list(centers_found),
-            "hierarchy": existing_hierarchy
+            "hierarchy": clean_hierarchy
         }
     except HTTPException:
         raise
@@ -1514,23 +1532,20 @@ def delete_olt(payload: OLTDeleteModel, session: dict = Depends(require_admin_au
     rt = payload.rt_room.strip()
     olt = payload.olt_name.strip()
 
-    if c in hierarchy and rt in hierarchy[c]:
-        deleted = False
-        for k in list(hierarchy[c][rt].keys()):
-            if k.strip().lower() == olt.lower():
-                del hierarchy[c][rt][k]
-                deleted = True
-                break
-        
-        if not hierarchy[c][rt]:
-            del hierarchy[c][rt]
-        if not hierarchy[c]:
-            del hierarchy[c]
+    matched_c = next((k for k in hierarchy.keys() if k.strip().lower() == c.lower()), None)
+    if matched_c:
+        matched_rt = next((k for k in hierarchy[matched_c].keys() if k.strip().lower() == rt.lower()), None)
+        if matched_rt:
+            deleted = False
+            for k in list(hierarchy[matched_c][matched_rt].keys()):
+                if k.strip().lower() == olt.lower():
+                    del hierarchy[matched_c][matched_rt][k]
+                    deleted = True
+                    break
+            if deleted:
+                save_hierarchy_data(hierarchy)
+                return {"status": "success", "message": f"Deleted Node '{olt}' successfully."}
 
-        if deleted:
-            save_hierarchy_data(hierarchy)
-            return {"status": "success", "message": f"Deleted Node '{olt}' successfully."}
-    
     raise HTTPException(status_code=404, detail="Node not found in hierarchy.")
 
 @app.post("/api/hierarchy/bulk-delete")
@@ -1547,18 +1562,16 @@ def bulk_delete_olts(payload: dict, session: dict = Depends(require_admin_auth))
         rt = str(item.get("rt_room", "")).strip()
         olt = str(item.get("olt_name", "")).strip()
         
-        if c in hierarchy and rt in hierarchy[c]:
-            for k in list(hierarchy[c][rt].keys()):
-                if k.strip().lower() == olt.lower():
-                    del hierarchy[c][rt][k]
-                    deleted_count += 1
-                    break
-            
-            if not hierarchy[c][rt]:
-                del hierarchy[c][rt]
-            if c in hierarchy and not hierarchy[c]:
-                del hierarchy[c]
-    
+        matched_c = next((k for k in hierarchy.keys() if k.strip().lower() == c.lower()), None)
+        if matched_c:
+            matched_rt = next((k for k in hierarchy[matched_c].keys() if k.strip().lower() == rt.lower()), None)
+            if matched_rt:
+                for k in list(hierarchy[matched_c][matched_rt].keys()):
+                    if k.strip().lower() == olt.lower():
+                        del hierarchy[matched_c][matched_rt][k]
+                        deleted_count += 1
+                        break
+
     save_hierarchy_data(hierarchy)
     return {"status": "success", "message": f"Deleted {deleted_count} Node(s) successfully.", "deleted": deleted_count}
 
@@ -3458,18 +3471,23 @@ def admin_dashboard(response: Response):
 
           Object.keys(cachedHierarchy).forEach(center => {
             const rts = cachedHierarchy[center] || {};
-            if (!rtsByCenter[center]) rtsByCenter[center] = new Set();
             let centerRegion = null;
+            let activeRtsInCenter = 0;
             Object.keys(rts).forEach(rt => {
-              rtsByCenter[center].add(rt);
               const olts = rts[rt] || {};
-              Object.keys(olts).forEach(oltName => {
+              const oltKeys = Object.keys(olts);
+              if (oltKeys.length === 0) return;
+              if (!rtsByCenter[center]) rtsByCenter[center] = new Set();
+              rtsByCenter[center].add(rt);
+              activeRtsInCenter++;
+              oltKeys.forEach(oltName => {
                 const entry = olts[oltName];
                 if (entry && typeof entry === 'object' && entry.region) {
                   centerRegion = entry.region.trim();
                 }
               });
             });
+            if (activeRtsInCenter === 0) return;
             if (!centerRegion) centerRegion = 'Thrissur';
 
             regionsSet.add(centerRegion);
@@ -3485,7 +3503,7 @@ def admin_dashboard(response: Response):
             centersByRegion: centersByRegion,
             centerToRegion: centerToRegion,
             rtsByCenter: rtsByCenter,
-            allCenters: Object.keys(cachedHierarchy).sort()
+            allCenters: Object.keys(rtsByCenter).sort()
           };
         }
 
@@ -4638,7 +4656,7 @@ def admin_dashboard(response: Response):
             const tbody = document.getElementById('hierarchy-table-body');
             tbody.innerHTML = '';
 
-            let totalCenters = Object.keys(hier).length;
+            let totalCenters = 0;
             let totalRTRooms = 0;
             let totalOLTs = 0;
             fullHierarchyRows = [];
@@ -4646,11 +4664,16 @@ def admin_dashboard(response: Response):
             Object.keys(hier).sort().forEach(center => {
               const rts = hier[center];
               if (!rts || typeof rts !== 'object') return;
+              let centerHasValidOlts = false;
               Object.keys(rts).sort().forEach(rtRoom => {
-                totalRTRooms++;
                 const olts = rts[rtRoom];
                 if (!olts || typeof olts !== 'object') return;
-                Object.keys(olts).sort().forEach(oltName => {
+                const oltKeys = Object.keys(olts).sort();
+                if (oltKeys.length === 0) return;
+
+                totalRTRooms++;
+                centerHasValidOlts = true;
+                oltKeys.forEach(oltName => {
                   totalOLTs++;
                   const entry = olts[oltName];
                   let region = 'Thrissur';
@@ -4679,6 +4702,9 @@ def admin_dashboard(response: Response):
                   });
                 });
               });
+              if (centerHasValidOlts) {
+                totalCenters++;
+              }
             });
 
             document.getElementById('hier-total-centers').innerText = totalCenters;
