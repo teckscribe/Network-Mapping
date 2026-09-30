@@ -243,6 +243,10 @@ body {
   gap: 4px;
 }
 
+.gs-cell-group > label {
+  margin-bottom: auto;
+}
+
 .gs-cell-label {
   font-size: 0.82rem;
   font-weight: 800;
