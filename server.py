@@ -1567,6 +1567,23 @@ def clear_hierarchy(session: dict = Depends(require_admin_auth)):
     save_hierarchy_data({})
     return {"status": "success", "message": "All hierarchy data cleared."}
 
+@app.delete("/api/hierarchy/center")
+def delete_hierarchy_center(payload: dict, session: dict = Depends(require_admin_auth)):
+    center = (payload.get("center") or "").strip()
+    if not center:
+        raise HTTPException(status_code=400, detail="Center name is required.")
+    hierarchy = load_hierarchy_data()
+    deleted = False
+    for k in list(hierarchy.keys()):
+        if k.strip().lower() == center.lower():
+            del hierarchy[k]
+            deleted = True
+            break
+    if deleted:
+        save_hierarchy_data(hierarchy)
+        return {"status": "success", "message": f"Center '{center}' removed from hierarchy."}
+    return {"status": "success", "message": f"Center '{center}' was not in hierarchy."}
+
 @app.get("/api/download-hierarchy-template")
 def download_hierarchy_template():
     wb = openpyxl.Workbook()
@@ -1970,6 +1987,28 @@ def bulk_delete_records(payload: dict, session: dict = Depends(require_admin_aut
         "status": "success",
         "message": f"Successfully deleted {deleted_count} survey record(s).",
         "deleted": deleted_count
+    }
+
+@app.post("/api/records/clear-center")
+def clear_center_records(payload: dict, session: dict = Depends(require_admin_auth)):
+    center = (payload.get("center") or "").strip()
+    region = (payload.get("region") or "").strip()
+    if not center:
+        raise HTTPException(status_code=400, detail="Center name is required.")
+    
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    if region:
+        cur.execute("DELETE FROM survey_records WHERE LOWER(TRIM(center)) = LOWER(TRIM(?)) AND LOWER(TRIM(region)) = LOWER(TRIM(?))", (center, region))
+    else:
+        cur.execute("DELETE FROM survey_records WHERE LOWER(TRIM(center)) = LOWER(TRIM(?))", (center,))
+    deleted = cur.rowcount
+    conn.commit()
+    conn.close()
+    return {
+        "status": "success",
+        "message": f"Successfully deleted all {deleted} survey record(s) for center '{center}'.",
+        "deleted": deleted
     }
 
 @app.get("/api/export-excel")
@@ -4076,7 +4115,10 @@ def admin_dashboard(response: Response):
                   <td colspan="16" style="text-align:center; padding:45px 20px; color:#64748b; font-size:0.95rem;">
                     <div style="font-size:2.2rem; margin-bottom:8px;">📍</div>
                     <div style="font-weight:700; color:#334155; margin-bottom:4px; font-size:1.05rem;">Please Select Region(s) and Center(s)</div>
-                    <div style="color:#64748b; font-size:0.85rem;">Select at least one <strong>Region</strong> and <strong>Center</strong> above to view survey records.</div>
+                    <div style="color:#64748b; font-size:0.85rem; margin-bottom:8px;">Select at least one <strong>Region</strong> and <strong>Center</strong> above to view and manage captured survey records.</div>
+                    <div style="font-size:0.8rem; color:#475569; background:#f1f5f9; display:inline-block; padding:5px 12px; border-radius:6px; border:1px solid #e2e8f0;">
+                      💡 Note: Region & Center filters are unselected by default. Your survey records remain safely stored in the database.
+                    </div>
                   </td>
                 </tr>
               `;
@@ -4976,6 +5018,7 @@ def admin_dashboard(response: Response):
             const container = document.getElementById('folders-container');
             container.innerHTML = '';
 
+            const isSuperAdmin = (currentAdmin && currentAdmin.role === 'super_admin');
             const regions = data.regions || {};
             const regKeys = Object.keys(regions);
 
@@ -5002,12 +5045,28 @@ def admin_dashboard(response: Response):
                         ${c.records_count} record${c.records_count === 1 ? '' : 's'}
                       </span>
                     </td>
-                    <td>
+                    <td style="white-space:nowrap;">
                       <button onclick="downloadWithAuth('/api/export-center-excel?center=${encodeURIComponent(c.center)}&region=${encodeURIComponent(c.region)}')" 
                               class="btn btn-outline" 
                               style="padding:4px 10px; font-size:0.75rem;">
                         📥 Download Excel
                       </button>
+                      ${isSuperAdmin && c.records_count > 0 ? `
+                        <button onclick="clearCenterSurveyRecords('${escapeHtml(c.region)}', '${escapeHtml(c.center)}', ${c.records_count})" 
+                                class="btn btn-danger" 
+                                style="padding:4px 9px; font-size:0.75rem; margin-left:6px;"
+                                title="Permanently delete all survey records in this center">
+                          🗑️ Clear Records (${c.records_count})
+                        </button>
+                      ` : ''}
+                      ${isSuperAdmin && c.records_count === 0 ? `
+                        <button onclick="deleteEntireCenterFolder('${escapeHtml(c.region)}', '${escapeHtml(c.center)}')" 
+                                class="btn btn-outline" 
+                                style="padding:4px 8px; font-size:0.75rem; color:#dc2626; border-color:#dc2626; margin-left:6px;" 
+                                title="Remove empty center from hierarchy">
+                          🗑️ Remove Folder
+                        </button>
+                      ` : ''}
                     </td>
                   </tr>
                 `;
@@ -5045,6 +5104,70 @@ def admin_dashboard(response: Response):
             });
           } catch(err) {
             console.error('Failed fetching folders summary:', err);
+          }
+        }
+
+        async function clearCenterSurveyRecords(reg, cent, count) {
+          if (!currentAdmin || currentAdmin.role !== 'super_admin') {
+            alert('Permission Denied: Only Super Admin can delete records.');
+            return;
+          }
+          const confirmed = await showConfirmModal(
+            '🗑️ Confirm Clear Center Records',
+            `Are you sure you want to permanently delete all ${count} survey record(s) for center "${cent}" (${reg}) from the database? This cannot be undone.`,
+            `Delete ${count} Records`,
+            '#dc2626'
+          );
+          if (!confirmed) return;
+
+          try {
+            const res = await authFetch('/api/records/clear-center', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ region: reg, center: cent })
+            });
+            const data = await res.json();
+            if (res.ok) {
+              alert(`✅ ${data.message || 'Records deleted successfully.'}`);
+              fetchFoldersSummary();
+              fetchData();
+            } else {
+              alert('Error: ' + (data.detail || 'Could not delete records'));
+            }
+          } catch(err) {
+            alert('Network error: ' + err.message);
+          }
+        }
+
+        async function deleteEntireCenterFolder(reg, cent) {
+          if (!currentAdmin || currentAdmin.role !== 'super_admin') {
+            alert('Permission Denied: Only Super Admin can manage folders.');
+            return;
+          }
+          const confirmed = await showConfirmModal(
+            '🗑️ Confirm Remove Center Folder',
+            `Are you sure you want to remove empty center "${cent}" (${reg}) from network hierarchy and dynamic export folders?`,
+            'Remove Center',
+            '#dc2626'
+          );
+          if (!confirmed) return;
+
+          try {
+            const res = await authFetch('/api/hierarchy/center', {
+              method: 'DELETE',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ center: cent })
+            });
+            const data = await res.json();
+            if (res.ok) {
+              alert(`✅ ${data.message || 'Center removed successfully.'}`);
+              fetchFoldersSummary();
+              fetchHierarchy();
+            } else {
+              alert('Error: ' + (data.detail || 'Could not remove center'));
+            }
+          } catch(err) {
+            alert('Network error: ' + err.message);
           }
         }
 
