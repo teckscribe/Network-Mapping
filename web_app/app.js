@@ -1038,7 +1038,7 @@ function updateAvailableSplitters() {
   if (enc) {
     const eid = computeEnclosureId(olt, port, enc);
 
-    DEFAULT_PRELOAD.splitters.forEach(s => {
+    DEFAULT_PRELOAD.splitters.forEach((s, idx) => {
       const surveyInfo = getSurveyedInfo(eid, s);
 
       const opt = document.createElement('option');
@@ -1059,7 +1059,21 @@ function updateAvailableSplitters() {
           opt.style.backgroundColor = '#f1f5f9';
         }
       } else {
-        opt.innerText = s;
+        // Enforce sequential splitter addition (S2 requires S1, S3 requires S2, etc.)
+        if (idx > 0) {
+          const prevSplitter = DEFAULT_PRELOAD.splitters[idx - 1];
+          const prevSurveyed = getSurveyedInfo(eid, prevSplitter);
+          if (!prevSurveyed) {
+            opt.innerText = `${s} — 🔒 Add ${prevSplitter} first`;
+            opt.disabled = true;
+            opt.style.color = '#94a3b8';
+            opt.style.backgroundColor = '#f8fafc';
+          } else {
+            opt.innerText = s;
+          }
+        } else {
+          opt.innerText = s;
+        }
       }
 
       splitterIdSelect.appendChild(opt);
@@ -1070,22 +1084,12 @@ function updateAvailableSplitters() {
       if (optMatch) {
         splitterIdSelect.value = prevVal;
       } else {
-        const s1Match = Array.from(splitterIdSelect.options).find(o => o.value === 'S1' && !o.disabled);
-        if (s1Match) {
-          splitterIdSelect.value = 'S1';
-        } else {
-          const firstAvail = Array.from(splitterIdSelect.options).find(o => o.value && !o.disabled);
-          if (firstAvail) splitterIdSelect.value = firstAvail.value;
-        }
-      }
-    } else {
-      const s1Match = Array.from(splitterIdSelect.options).find(o => o.value === 'S1' && !o.disabled);
-      if (s1Match) {
-        splitterIdSelect.value = 'S1';
-      } else {
         const firstAvail = Array.from(splitterIdSelect.options).find(o => o.value && !o.disabled);
         if (firstAvail) splitterIdSelect.value = firstAvail.value;
       }
+    } else {
+      const firstAvail = Array.from(splitterIdSelect.options).find(o => o.value && !o.disabled);
+      if (firstAvail) splitterIdSelect.value = firstAvail.value;
     }
   }
 
@@ -2022,6 +2026,20 @@ function saveRecord() {
       showToast(`❌ Splitter ${spl} is already surveyed under Enclosure ${eid}! Duplicate Splitter ID not allowed.`, false);
       splitterIdSelect.focus();
       return;
+    }
+
+    // Condition: S2, S3, S4 can only be added if prior splitter was already surveyed
+    if (spl !== 'S1') {
+      const sIndex = DEFAULT_PRELOAD.splitters.indexOf(spl);
+      if (sIndex > 0) {
+        const prevSplitter = DEFAULT_PRELOAD.splitters[sIndex - 1];
+        const prevSurveyed = getSurveyedInfo(eid, prevSplitter);
+        if (!prevSurveyed) {
+          showToast(`❌ Splitter ${prevSplitter} must be surveyed and added first before adding ${spl} in Enclosure ${enc}!`, false);
+          splitterIdSelect.focus();
+          return;
+        }
+      }
     }
   }
 
