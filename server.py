@@ -1266,23 +1266,12 @@ async def import_users_config(file: UploadFile = File(...), session: dict = Depe
 # ====================
 
 @app.get("/api/hierarchy")
-def get_hierarchy():
+def get_hierarchy(response: Response):
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
     hier = load_hierarchy_data()
-    if hier:
-        return {"hierarchy": hier}
-    default_hierarchy = {
-        "THRISSUR NORTH": {
-            "Mulamkunnathukavu": {
-                "THN156 OLT53 Mulamkunnathukavu": ["P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8"]
-            }
-        },
-        "THATHAMANGALAM": {
-            "Kollengode": {
-                "TMM/25/OLT-08-KOLLEMGODE": ["P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8"]
-            }
-        }
-    }
-    return {"hierarchy": default_hierarchy}
+    return {"hierarchy": hier if hier else {}}
 
 @app.post("/api/upload-hierarchy")
 def upload_hierarchy(payload: dict, session: dict = Depends(require_admin_auth)):
@@ -4048,7 +4037,7 @@ def admin_dashboard(response: Response):
         // Tab 3: Network Hierarchy
         async function fetchHierarchy() {
           try {
-            const res = await authFetch('/api/hierarchy');
+            const res = await authFetch(`/api/hierarchy?t=${Date.now()}`);
             const data = await res.json();
             const hier = (data && data.hierarchy) ? data.hierarchy : data;
             cachedHierarchy = hier;
@@ -4369,7 +4358,7 @@ def admin_dashboard(response: Response):
               statusDiv.style.background = '#d1fae5';
               statusDiv.style.color = '#065f46';
               statusDiv.innerText = `✅ ${data.message || 'Hierarchy imported successfully!'}`;
-              fetchHierarchy();
+              await fetchHierarchy();
             } else {
               statusDiv.style.background = '#fee2e2';
               statusDiv.style.color = '#991b1b';
