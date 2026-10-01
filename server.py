@@ -44,27 +44,50 @@ HIERARCHY_FILE = os.path.join(NODE_MASTER_DIR, "custom_hierarchy.json")
 # SMTP EMAIL CONFIGURATION (.env supported)
 # ==========================================
 ENV_FILE = os.path.join(BASE_DIR, ".env")
-if os.path.exists(ENV_FILE):
-    try:
-        with open(ENV_FILE, "r", encoding="utf-8") as ef:
-            for line in ef:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, v = line.split("=", 1)
-                    k = k.strip()
-                    v = v.strip().strip('"').strip("'")
-                    if k and k not in os.environ:
-                        os.environ[k] = v
-    except Exception as e:
-        print(f"[SMTP Config] Warning reading .env: {e}")
 
-SMTP_HOST = os.getenv("SMTP_HOST", "")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER = os.getenv("SMTP_USER", "")
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
-SMTP_FROM = os.getenv("SMTP_FROM", os.getenv("SMTP_USER", "noreply@gpon.local"))
-SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", "GPON Network Mapping")
-SMTP_TLS = os.getenv("SMTP_TLS", "true").lower() in ("true", "1", "yes")
+def load_smtp_config():
+    """Dynamically read SMTP settings from .env file or environment variables."""
+    conf = {
+        "host": os.getenv("SMTP_HOST", ""),
+        "port": int(os.getenv("SMTP_PORT", "587")),
+        "user": os.getenv("SMTP_USER", ""),
+        "password": os.getenv("SMTP_PASSWORD", ""),
+        "from_email": os.getenv("SMTP_FROM", ""),
+        "from_name": os.getenv("SMTP_FROM_NAME", "GPON Network Mapping"),
+        "tls": os.getenv("SMTP_TLS", "true").lower() in ("true", "1", "yes")
+    }
+    if os.path.exists(ENV_FILE):
+        try:
+            with open(ENV_FILE, "r", encoding="utf-8") as ef:
+                for line in ef:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        k = k.strip()
+                        v = v.strip().strip('"').strip("'")
+                        if k == "SMTP_HOST": conf["host"] = v
+                        elif k == "SMTP_PORT":
+                            try: conf["port"] = int(v)
+                            except: conf["port"] = 587
+                        elif k == "SMTP_USER": conf["user"] = v
+                        elif k == "SMTP_PASSWORD": conf["password"] = v
+                        elif k == "SMTP_FROM": conf["from_email"] = v
+                        elif k == "SMTP_FROM_NAME": conf["from_name"] = v
+                        elif k == "SMTP_TLS": conf["tls"] = v.lower() in ("true", "1", "yes")
+        except Exception as e:
+            print(f"[SMTP Config] Warning reading .env: {e}")
+    if not conf["from_email"]:
+        conf["from_email"] = conf["user"] or "noreply@gpon.local"
+    return conf
+
+_init_smtp = load_smtp_config()
+SMTP_HOST = _init_smtp["host"]
+SMTP_PORT = _init_smtp["port"]
+SMTP_USER = _init_smtp["user"]
+SMTP_PASSWORD = _init_smtp["password"]
+SMTP_FROM = _init_smtp["from_email"]
+SMTP_FROM_NAME = _init_smtp["from_name"]
+SMTP_TLS = _init_smtp["tls"]
 
 # In-Memory OTP Store: { username: { "otp": "123456", "expires_at": float, "attempts": int, "email": "...", "full_name": "..." } }
 PASSWORD_RESET_OTPS = {}
@@ -743,6 +766,9 @@ class VerifyResetOtpPayload(BaseModel):
     otp: str
     new_password: str
 
+class TestSmtpPayload(BaseModel):
+    recipient_email: Optional[str] = ""
+
 class SurveyRecordModel(BaseModel):
     client_uuid: str
     region: Optional[str] = "Thrissur"
@@ -1008,21 +1034,30 @@ def create_user(u: UserCreateModel, session: dict = Depends(require_admin_auth))
     save_users_to_json()
     return {"status": "success", "message": f"User {u.username} ({VALID_ROLES.get(role_clean, role_clean)}) saved successfully with charge of: {center_str}."}
 
-def send_otp_email(to_email: str, recipient_name: str, otp_code: str) -> bool:
+def send_otp_email(to_email: str, recipient_name: str, otp_code: str) -> tuple[bool, str]:
     """Sends OTP verification email via configured SMTP server or logs to console if unconfigured."""
-    if not SMTP_HOST or not SMTP_USER:
+    conf = load_smtp_config()
+    host = conf["host"]
+    port = conf["port"]
+    user = conf["user"]
+    password = conf["password"]
+    from_email = conf["from_email"]
+    from_name = conf["from_name"]
+    tls = conf["tls"]
+
+    if not host or not user:
         print(f"\n=======================================================")
         print(f"[OTP DISPATCH (SIMULATION / LOG MODE)]")
         print(f"Recipient: {recipient_name} <{to_email}>")
         print(f"OTP Code:  {otp_code} (Valid for 10 minutes)")
         print(f"Notice: SMTP_HOST/SMTP_USER not set in .env. Logged for testing.")
         print(f"=======================================================\n")
-        return True
+        return True, "Simulation mode (logged to console)"
 
     try:
         msg = MIMEMultipart("alternative")
         msg["Subject"] = f"GPON Network Mapping - Password Reset OTP: {otp_code}"
-        msg["From"] = f"{SMTP_FROM_NAME} <{SMTP_FROM}>"
+        msg["From"] = f"{from_name} <{from_email}>"
         msg["To"] = to_email
 
         text_content = f"""Hello {recipient_name},
@@ -1074,23 +1109,24 @@ GPON Network Mapping Team
         msg.attach(MIMEText(text_content, "plain"))
         msg.attach(MIMEText(html_content, "html"))
 
-        if SMTP_PORT == 465:
-            server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=10)
+        if port == 465:
+            server = smtplib.SMTP_SSL(host, port, timeout=10)
         else:
-            server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10)
-            if SMTP_TLS:
+            server = smtplib.SMTP(host, port, timeout=10)
+            if tls:
                 server.starttls()
 
-        if SMTP_USER and SMTP_PASSWORD:
-            server.login(SMTP_USER, SMTP_PASSWORD)
+        if user and password:
+            server.login(user, password)
 
         server.send_message(msg)
         server.quit()
         print(f"[SMTP Success] Password reset OTP sent to {to_email}")
-        return True
+        return True, "Email sent successfully"
     except Exception as e:
-        print(f"[SMTP Error] Failed sending OTP email to {to_email}: {e}")
-        return False
+        err_msg = str(e)
+        print(f"[SMTP Error] Failed sending OTP email to {to_email}: {err_msg}")
+        return False, err_msg
 
 @app.post("/api/request-password-reset-otp")
 def request_password_reset_otp(req: RequestResetOtpPayload, request: Request):
@@ -1143,7 +1179,21 @@ def request_password_reset_otp(req: RequestResetOtpPayload, request: Request):
     conn.close()
 
     # Dispatch email
-    sent = send_otp_email(user_email, user["full_name"] or user["username"], otp_code)
+    sent, error_msg = send_otp_email(user_email, user["full_name"] or user["username"], otp_code)
+    smtp_conf = load_smtp_config()
+    is_smtp_setup = bool(smtp_conf["host"] and smtp_conf["user"])
+
+    if is_smtp_setup and not sent:
+        # Roll back OTP from database
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("DELETE FROM password_reset_otps WHERE username = ?", (user["username"].lower(),))
+        conn.commit()
+        conn.close()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unable to deliver OTP email: {error_msg}. Please check server SMTP configuration."
+        )
 
     # Mask email for privacy (e.g. j***n@gmail.com)
     parts = user_email.split("@")
@@ -1158,9 +1208,108 @@ def request_password_reset_otp(req: RequestResetOtpPayload, request: Request):
         "username": user["username"],
         "masked_email": masked_email,
         "expires_in_minutes": 10,
-        "smtp_configured": bool(SMTP_HOST and SMTP_USER),
+        "smtp_configured": is_smtp_setup,
         "message": f"A 6-digit verification code has been sent to your registered email ({masked_email}). Please check your inbox."
     }
+
+@app.post("/api/test-smtp")
+def test_smtp_endpoint(payload: Optional[TestSmtpPayload] = None, session: dict = Depends(require_admin_auth)):
+    conf = load_smtp_config()
+    if not conf["host"] or not conf["user"]:
+        return {
+            "status": "warning",
+            "message": "SMTP is not fully configured in .env. SMTP_HOST and SMTP_USER are currently empty (running in simulation/console mode).",
+            "config": {
+                "host": conf["host"] or "(not set)",
+                "port": conf["port"],
+                "user": conf["user"] or "(not set)",
+                "from_email": conf["from_email"],
+                "tls": conf["tls"]
+            }
+        }
+
+    target = (payload.recipient_email if payload and payload.recipient_email else "").strip() or conf["from_email"] or conf["user"]
+    if "@" not in target:
+        raise HTTPException(status_code=400, detail="Please provide a valid recipient email address.")
+
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = "GPON Network Mapping - SMTP Connection Test"
+        msg["From"] = f"{conf['from_name']} <{conf['from_email']}>"
+        msg["To"] = target
+
+        text_content = f"""Hello Administrator,
+
+This is a test email sent from your GPON Network Mapping platform to confirm your SMTP configuration is active and working properly.
+
+Configuration Details:
+- SMTP Host: {conf['host']}
+- Port: {conf['port']}
+- User: {conf['user']}
+- TLS Enabled: {conf['tls']}
+- Sender: {conf['from_name']} <{conf['from_email']}>
+
+If you received this email, password reset OTP dispatch is fully operational!
+"""
+
+        html_content = f"""<!DOCTYPE html>
+<html>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #f8fafc; padding: 20px;">
+  <div style="max-width: 500px; margin: 0 auto; background: #ffffff; border-radius: 12px; border: 1px solid #e2e8f0; padding: 24px;">
+    <h3 style="color: #0284c7; margin-top:0;">✅ SMTP Connection Test Successful!</h3>
+    <p>Your GPON Network Mapping platform successfully connected to your SMTP mail server and delivered this test email.</p>
+    <div style="background: #f1f5f9; border-radius: 8px; padding: 14px; margin: 16px 0; font-size: 13px;">
+      <div><strong>Host:</strong> {conf['host']}:{conf['port']}</div>
+      <div><strong>User:</strong> {conf['user']}</div>
+      <div><strong>From:</strong> {conf['from_name']} &lt;{conf['from_email']}&gt;</div>
+      <div><strong>TLS:</strong> {'Enabled (STARTTLS)' if conf['tls'] else 'Disabled'}</div>
+    </div>
+    <p style="font-size: 12px; color: #166534; background: #dcfce7; padding: 10px; border-radius: 6px; font-weight: 600;">
+      Password reset OTPs are fully ready to be delivered to surveyors' registered emails.
+    </p>
+  </div>
+</body>
+</html>"""
+
+        msg.attach(MIMEText(text_content, "plain"))
+        msg.attach(MIMEText(html_content, "html"))
+
+        if conf["port"] == 465:
+            server = smtplib.SMTP_SSL(conf["host"], conf["port"], timeout=10)
+        else:
+            server = smtplib.SMTP(conf["host"], conf["port"], timeout=10)
+            if conf["tls"]:
+                server.starttls()
+
+        if conf["user"] and conf["password"]:
+            server.login(conf["user"], conf["password"])
+
+        server.send_message(msg)
+        server.quit()
+        return {
+            "status": "success",
+            "message": f"Connected to {conf['host']}:{conf['port']} and test email delivered to {target}!",
+            "config": {
+                "host": conf["host"],
+                "port": conf["port"],
+                "user": conf["user"],
+                "from_email": conf["from_email"],
+                "tls": conf["tls"]
+            }
+        }
+    except Exception as e:
+        err_msg = str(e)
+        return {
+            "status": "error",
+            "message": f"SMTP Connection / Auth Error: {err_msg}",
+            "config": {
+                "host": conf["host"],
+                "port": conf["port"],
+                "user": conf["user"],
+                "from_email": conf["from_email"],
+                "tls": conf["tls"]
+            }
+        }
 
 @app.post("/api/verify-password-reset-otp")
 def verify_password_reset_otp(req: VerifyResetOtpPayload):
@@ -2707,6 +2856,7 @@ def admin_dashboard(response: Response):
             </p>
           </div>
           <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <button type="button" onclick="testSmtpConnection()" class="btn btn-outline" style="border-color:#0284c7; color:#0284c7; font-size:0.8rem; padding:7px 12px; font-weight:600;">📧 Test SMTP</button>
             <button type="button" onclick="openAddUserModal()" class="btn btn-green" style="font-size:0.85rem; padding:8px 16px; font-weight:700; box-shadow:0 1px 3px rgba(0,0,0,0.1);">➕ Add User</button>
             <button type="button" onclick="downloadUsersBackup()" class="btn" style="background:#0284c7; font-size:0.8rem; padding:7px 12px;">📥 Backup JSON</button>
             <button type="button" onclick="document.getElementById('import-users-file').click()" class="btn btn-outline" style="font-size:0.8rem; padding:7px 12px;">📤 Restore JSON</button>
@@ -4533,6 +4683,29 @@ def admin_dashboard(response: Response):
             a.remove();
           } catch(e) {
             alert('Download failed: ' + e.message);
+          }
+        }
+
+        async function testSmtpConnection() {
+          const testEmail = prompt("Enter an email address to send an SMTP test message to:", "");
+          if (testEmail === null) return;
+          const target = testEmail.trim();
+          try {
+            const res = await authFetch('/api/test-smtp', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ recipient_email: target })
+            });
+            const data = await res.json();
+            if (data.status === 'success') {
+              alert('✅ ' + data.message);
+            } else if (data.status === 'warning') {
+              alert('⚠️ ' + data.message);
+            } else {
+              alert('❌ ' + (data.message || data.detail || 'SMTP test failed'));
+            }
+          } catch(err) {
+            alert('❌ Network error testing SMTP: ' + err.message);
           }
         }
 
