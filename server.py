@@ -1965,19 +1965,17 @@ def update_survey_record(client_uuid: str, record: UpdateSurveyRecordModel, sess
     return {"status": "success", "message": "Record updated successfully."}
 
 @app.delete("/api/records/{client_uuid}")
-def delete_record(client_uuid: str, session: dict = Depends(require_admin_auth)):
+def delete_record(client_uuid: str, session: dict = Depends(require_any_auth)):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute("DELETE FROM survey_records WHERE client_uuid = ?", (client_uuid,))
     deleted = cur.rowcount
     conn.commit()
     conn.close()
-    if deleted == 0:
-        raise HTTPException(status_code=404, detail="Record not found.")
-    return {"status": "success", "message": "Record deleted successfully."}
+    return {"status": "success", "message": "Record deleted successfully.", "deleted": deleted}
 
 @app.post("/api/records/bulk-delete")
-def bulk_delete_records(payload: dict, session: dict = Depends(require_admin_auth)):
+def bulk_delete_records(payload: dict, session: dict = Depends(require_any_auth)):
     uuids = payload.get("uuids", [])
     if not uuids:
         raise HTTPException(status_code=400, detail="No record UUIDs provided for deletion.")

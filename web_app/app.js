@@ -2503,27 +2503,186 @@ function closeRecordsModal() {
   if (modal) modal.style.display = 'none';
 }
 
+let pendingDeleteIndex = null;
+
 function deleteRecord(index) {
-  if (confirm('Delete this survey point?')) {
-    records.splice(index, 1);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
-    updateRecordsBadge();
-    updateSyncUI();
-    updateAvailableEnclosures();
-    updateAvailableSplitters();
-    showToast('Record deleted');
+  if (index < 0 || index >= records.length) return;
+  pendingDeleteIndex = index;
+  const r = records[index];
+
+  const modal = document.getElementById('delete-confirm-modal');
+  const detailsEl = document.getElementById('delete-confirm-details');
+
+  if (!modal || !detailsEl) {
+    if (confirm('Are you sure you want to permanently delete this survey point from this device and the server?')) {
+      executeDeleteRecord(index);
+    }
+    return;
+  }
+
+  const eid = r["Enclosure ID"] || r.enclosure_id || '-';
+  const spl = r["Splitter ID"] || r.splitter_id || '-';
+  const post = r["KSEB Post Number"] || r.kseb_post_number || '-';
+  const lmark = r["Land Mark"] || r.landmark || '-';
+  const olt = r["OLT/Node  Name"] || r["OLT/Node Name"] || r.olt_name || '-';
+  const port = r["Port Number"] || r.port_number || '-';
+  const isSynced = r.sync_status === 'synced';
+
+  detailsEl.innerHTML = `
+    <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+      <span style="color:#7f1d1d;">Enclosure ID:</span>
+      <strong style="font-family:monospace; color:#991b1b;">${escapeHtml(eid)}</strong>
+    </div>
+    <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+      <span style="color:#7f1d1d;">Splitter:</span>
+      <strong style="color:#991b1b;">${escapeHtml(spl)} (${escapeHtml(r["Splitter Ratio"] || r.splitter_ratio || '-')})</strong>
+    </div>
+    <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+      <span style="color:#7f1d1d;">KSEB Post / Landmark:</span>
+      <strong style="color:#991b1b;">${escapeHtml(post)} / ${escapeHtml(lmark)}</strong>
+    </div>
+    <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+      <span style="color:#7f1d1d;">OLT / Port:</span>
+      <strong style="color:#991b1b;">${escapeHtml(olt)} [${escapeHtml(port)}]</strong>
+    </div>
+    <div style="display:flex; justify-content:space-between;">
+      <span style="color:#7f1d1d;">Server Status:</span>
+      <strong style="color:${isSynced ? '#059669' : '#d97706'};">${isSynced ? 'Synced on Server' : 'Pending Local Sync'}</strong>
+    </div>
+  `;
+
+  const confirmBtn = document.getElementById('btn-confirm-delete-action');
+  if (confirmBtn) {
+    confirmBtn.onclick = () => {
+      executeDeleteRecord(pendingDeleteIndex);
+    };
+  }
+
+  modal.style.display = 'flex';
+}
+
+function closeDeleteConfirmModal() {
+  const modal = document.getElementById('delete-confirm-modal');
+  if (modal) modal.style.display = 'none';
+  pendingDeleteIndex = null;
+}
+
+async function executeDeleteRecord(index) {
+  if (index === null || index < 0 || index >= records.length) return;
+  const r = records[index];
+  const clientUuid = r.client_uuid;
+  const eid = r["Enclosure ID"] || r.enclosure_id;
+  const spl = r["Splitter ID"] || r.splitter_id;
+
+  // 1. Remove from local array & localStorage
+  records.splice(index, 1);
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+
+  // 2. Clear from local surveyed points cache so UI unlocks immediately
+  if (eid && spl) {
+    const key = `${eid}|${spl}`.toUpperCase();
+    if (typeof networkSurveyedPoints !== 'undefined' && networkSurveyedPoints[key]) {
+      delete networkSurveyedPoints[key];
+    }
+  }
+
+  // 3. Update UI
+  renderTable();
+  updateRecordsBadge();
+  updateSyncUI();
+  updateAvailableEnclosures();
+  updateAvailableSplitters();
+  closeDeleteConfirmModal();
+
+  // If records modal was open, refresh it
+  const recModal = document.getElementById('records-modal');
+  if (recModal && recModal.style.display === 'block') {
+    openRecordsModal();
+  }
+
+  // 4. Send DELETE to server if client_uuid exists
+  if (clientUuid) {
+    let serverDeleted = false;
+    try {
+      const authToken = localStorage.getItem('gpon_auth_token') || (currentUser && currentUser.token) || '';
+      const headers = authToken ? { 'Authorization': `Bearer ${authToken}` } : {};
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 6000);
+
+      const res = await fetch(`${serverUrl}/api/records/${clientUuid}`, {
+        method: 'DELETE',
+        headers: headers,
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+      if (res.ok) {
+        serverDeleted = true;
+      }
+    } catch (err) {
+      console.warn('[Delete] Could not delete from server right now (network offline):', err);
+    }
+
+    if (serverDeleted) {
+      showToast('✓ Record permanently deleted from device and server');
+    } else {
+      // Offline fallback: queue clientUuid for deletion on next server sync
+      let pendingDeletions = [];
+      try {
+        pendingDeletions = JSON.parse(localStorage.getItem('gpon_pending_deletions') || '[]');
+      } catch(e) { pendingDeletions = []; }
+      if (!pendingDeletions.includes(clientUuid)) {
+        pendingDeletions.push(clientUuid);
+        localStorage.setItem('gpon_pending_deletions', JSON.stringify(pendingDeletions));
+      }
+      showToast('✓ Record deleted locally (will delete from server when connected)');
+    }
+  } else {
+    showToast('✓ Record deleted locally');
   }
 }
 
-function clearAllRecords() {
+async function clearAllRecords() {
   if (records.length === 0) return;
-  if (confirm(`Are you sure you want to delete all ${records.length} records? Make sure you have exported to Excel first!`)) {
-    records = [];
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
-    updateRecordsBadge();
-    updateSyncUI();
-    updateAvailableEnclosures();
-    updateAvailableSplitters();
+  if (!confirm(`Are you sure you want to permanently delete all ${records.length} records from both this device AND the server? This cannot be undone.`)) {
+    return;
+  }
+  
+  const allUuids = records.map(r => r.client_uuid).filter(Boolean);
+  records = [];
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+  if (typeof networkSurveyedPoints !== 'undefined') {
+    networkSurveyedPoints = {};
+  }
+  renderTable();
+  updateRecordsBadge();
+  updateSyncUI();
+  updateAvailableEnclosures();
+  updateAvailableSplitters();
+  closeRecordsModal();
+
+  if (allUuids.length > 0) {
+    try {
+      const authToken = localStorage.getItem('gpon_auth_token') || '';
+      const delHeaders = { 'Content-Type': 'application/json' };
+      if (authToken) delHeaders['Authorization'] = 'Bearer ' + authToken;
+      await fetch(`${serverUrl}/api/records/bulk-delete`, {
+        method: 'POST',
+        headers: delHeaders,
+        body: JSON.stringify({ uuids: allUuids })
+      });
+      showToast('All records permanently deleted from device and server');
+    } catch (e) {
+      let pendingDeletions = [];
+      try {
+        pendingDeletions = JSON.parse(localStorage.getItem('gpon_pending_deletions') || '[]');
+      } catch(err) { pendingDeletions = []; }
+      allUuids.forEach(u => {
+        if (!pendingDeletions.includes(u)) pendingDeletions.push(u);
+      });
+      localStorage.setItem('gpon_pending_deletions', JSON.stringify(pendingDeletions));
+      showToast('All records cleared locally (server will sync deletions)');
+    }
+  } else {
     showToast('All records cleared');
   }
 }
@@ -2670,6 +2829,30 @@ function updateSyncUI() {
 
 async function syncWithServer(silent = false) {
   if (isSyncing) return;
+
+  // 1. Process any queued offline deletions first!
+  let pendingDeletions = [];
+  try {
+    pendingDeletions = JSON.parse(localStorage.getItem('gpon_pending_deletions') || '[]');
+  } catch(e) { pendingDeletions = []; }
+
+  if (pendingDeletions.length > 0) {
+    try {
+      const syncToken = localStorage.getItem('gpon_auth_token') || '';
+      const delHeaders = { 'Content-Type': 'application/json' };
+      if (syncToken) delHeaders['Authorization'] = 'Bearer ' + syncToken;
+      const delRes = await fetch(`${serverUrl}/api/records/bulk-delete`, {
+        method: 'POST',
+        headers: delHeaders,
+        body: JSON.stringify({ uuids: pendingDeletions })
+      });
+      if (delRes.ok) {
+        localStorage.removeItem('gpon_pending_deletions');
+      }
+    } catch(err) {
+      console.warn('[Sync] Could not process pending deletions:', err);
+    }
+  }
   
   const pendingRecords = records.filter(r => r.sync_status !== 'synced');
   if (pendingRecords.length === 0) {
