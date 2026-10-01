@@ -599,6 +599,73 @@ def get_region_for_center(center_name: str, hierarchy: dict = None) -> str:
                             return olt_data["region"].strip()
     return "Thrissur"
 
+def get_user_jurisdiction(username: str) -> dict:
+    """Returns jurisdiction dictionary for a given username:
+    {
+        'role': str,
+        'is_super_admin': bool,
+        'regions': list[str] (lowercased),
+        'is_all_regions': bool,
+        'centers': list[str] (lowercased),
+        'is_all_centers': bool
+    }
+    """
+    if not username:
+        return {
+            'role': 'field_technician',
+            'is_super_admin': False,
+            'regions': [],
+            'is_all_regions': False,
+            'centers': [],
+            'is_all_centers': False
+        }
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute("SELECT role, assigned_region, assigned_center FROM users WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))", (username.strip(),))
+    row = cur.fetchone()
+    conn.close()
+
+    if not row:
+        return {
+            'role': 'field_technician',
+            'is_super_admin': False,
+            'regions': [],
+            'is_all_regions': False,
+            'centers': [],
+            'is_all_centers': False
+        }
+
+    role = normalize_role(row["role"])
+    if role == "super_admin":
+        return {
+            'role': 'super_admin',
+            'is_super_admin': True,
+            'regions': [],
+            'is_all_regions': True,
+            'centers': [],
+            'is_all_centers': True
+        }
+
+    raw_reg = (row["assigned_region"] or "").strip()
+    raw_cent = (row["assigned_center"] or "").strip()
+
+    regs = [r.strip().lower() for r in raw_reg.split(",") if r.strip()]
+    is_all_reg = ("all" in regs) or (not regs)
+
+    cents = [c.strip().lower() for c in raw_cent.split(",") if c.strip()]
+    is_all_cent = ("all" in cents) or (not cents)
+
+    return {
+        'role': role,
+        'is_super_admin': False,
+        'regions': regs,
+        'is_all_regions': is_all_reg,
+        'centers': cents,
+        'is_all_centers': is_all_cent
+    }
+
 def build_excel_workbook(rows, title="Survey_Data") -> openpyxl.Workbook:
     """Builds and styles an openpyxl Workbook for GPON survey records."""
     headers = [
@@ -1448,11 +1515,24 @@ async def import_users_config(file: UploadFile = File(...), session: dict = Depe
 # ====================
 
 @app.get("/api/hierarchy")
-def get_hierarchy(response: Response):
+def get_hierarchy(response: Response, session: Optional[dict] = Depends(get_current_session)):
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
     hier = load_hierarchy_data()
+    if session and session.get("username"):
+        jur = get_user_jurisdiction(session["username"])
+        if jur["role"] == "rcsm":
+            filtered_hier = {}
+            for center, rts in hier.items():
+                c_clean = center.strip()
+                reg = get_region_for_center(c_clean, hier) or "Thrissur"
+                if not jur["is_all_regions"] and reg.lower() not in jur["regions"]:
+                    continue
+                if not jur["is_all_centers"] and c_clean.lower() not in jur["centers"]:
+                    continue
+                filtered_hier[center] = rts
+            return {"hierarchy": filtered_hier}
     return {"hierarchy": hier if hier else {}}
 
 @app.post("/api/upload-hierarchy")
@@ -2049,18 +2129,25 @@ def get_all_records(
     rts_list = [rt.strip().lower() for rt in raw_rts.split(",") if rt.strip() and rt.strip().upper() != "ALL"]
 
     # Enforce jurisdiction boundaries for RCSM
-    if user_role == "rcsm":
-        cur.execute("SELECT assigned_center FROM users WHERE username = ?", (username,))
-        u_info = cur.fetchone()
-        if u_info and u_info[0] and u_info[0] != "ALL":
-            assigned_list = [c.strip().lower() for c in u_info[0].split(",") if c.strip()]
+    jur = get_user_jurisdiction(username)
+    if jur["role"] == "rcsm":
+        if not jur["is_all_regions"]:
+            if regions_list:
+                for r in regions_list:
+                    if r not in jur["regions"]:
+                        conn.close()
+                        raise HTTPException(status_code=403, detail=f"Permission Denied: Region '{r}' is outside your assigned jurisdiction.")
+            else:
+                regions_list = jur["regions"]
+
+        if not jur["is_all_centers"]:
             if centers_list:
                 for c in centers_list:
-                    if c not in assigned_list:
+                    if c not in jur["centers"]:
                         conn.close()
-                        raise HTTPException(status_code=403, detail=f"Permission denied: Center '{c}' is outside your assigned jurisdiction.")
+                        raise HTTPException(status_code=403, detail=f"Permission Denied: Center '{c}' is outside your assigned jurisdiction.")
             else:
-                centers_list = assigned_list
+                centers_list = jur["centers"]
 
     query = "SELECT * FROM survey_records WHERE 1=1"
     params = []
@@ -2195,21 +2282,41 @@ def clear_center_records(payload: dict, session: dict = Depends(require_admin_au
 
 @app.get("/api/export-excel")
 def export_server_excel(session: dict = Depends(require_management_auth)):
+    username = session.get("username", "")
+    jur = get_user_jurisdiction(username)
+
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
-    cur.execute("SELECT * FROM survey_records ORDER BY rowid ASC")
+
+    query = "SELECT * FROM survey_records WHERE 1=1"
+    params = []
+
+    if jur["role"] == "rcsm":
+        if not jur["is_all_regions"]:
+            placeholders = ",".join(["?"] * len(jur["regions"]))
+            query += f" AND LOWER(TRIM(region)) IN ({placeholders})"
+            params.extend(jur["regions"])
+        if not jur["is_all_centers"]:
+            placeholders = ",".join(["?"] * len(jur["centers"]))
+            query += f" AND LOWER(TRIM(center)) IN ({placeholders})"
+            params.extend(jur["centers"])
+
+    query += " ORDER BY rowid ASC"
+    cur.execute(query, params)
     rows = cur.fetchall()
     conn.close()
 
-    wb = build_excel_workbook(rows, title="Master_Data")
+    sheet_title = "Master_Data" if jur["is_super_admin"] else "Region_Survey_Data"
+    wb = build_excel_workbook(rows, title=sheet_title)
     excel_bytes = workbook_to_bytes(wb)
     today = datetime.date.today().isoformat()
+    filename_prefix = "GPON_Master_Network_Mapping" if jur["is_super_admin"] else f"GPON_{username}_Survey_Data"
     return Response(
         content=excel_bytes,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={
-            "Content-Disposition": f'attachment; filename="GPON_Master_Network_Mapping_{today}.xlsx"'
+            "Content-Disposition": f'attachment; filename="{filename_prefix}_{today}.xlsx"'
         }
     )
 
@@ -2238,19 +2345,20 @@ def export_center_excel(
     regions_list = [r.strip().lower() for r in raw_regions.split(",") if r.strip() and r.strip().upper() != "ALL"]
     rts_list = [rt.strip().lower() for rt in raw_rts.split(",") if rt.strip() and rt.strip().upper() != "ALL"]
 
-    # For non-admin roles (RCSM, ACSO, Field Technician), verify requested center is within assigned jurisdiction
+    # For non-admin roles (RCSM, ACSO, Field Technician), verify requested center and region are within assigned jurisdiction
     if user_role not in ("super_admin", "admin", "supervisor"):
-        conn_u = sqlite3.connect(DB_PATH)
-        cur_u = conn_u.cursor()
-        cur_u.execute("SELECT assigned_center FROM users WHERE username = ?", (username,))
-        urow = cur_u.fetchone()
-        conn_u.close()
-        if urow and urow[0] and urow[0] != "ALL":
-            assigned_centers = [c.strip().lower() for c in urow[0].split(",") if c.strip()]
-            if not centers_list:
-                centers_list = assigned_centers
+        jur = get_user_jurisdiction(username)
+        if not jur["is_all_regions"]:
+            if not regions_list:
+                regions_list = jur["regions"]
             else:
-                if not set(centers_list).issubset(set(assigned_centers)):
+                if not set(regions_list).issubset(set(jur["regions"])):
+                    raise HTTPException(status_code=403, detail="Permission Denied: Region is outside your assigned jurisdiction.")
+        if not jur["is_all_centers"]:
+            if not centers_list:
+                centers_list = jur["centers"]
+            else:
+                if not set(centers_list).issubset(set(jur["centers"])):
                     raise HTTPException(status_code=403, detail="Permission Denied: Center is outside your assigned jurisdiction.")
 
     conn = sqlite3.connect(DB_PATH)
@@ -2303,11 +2411,28 @@ def export_center_excel(
 @app.get("/api/export-data-zip")
 def export_data_zip(session: dict = Depends(require_management_auth)):
     """Generates and downloads a ZIP archive of all region/center Excel files dynamically in-memory."""
+    username = session.get("username", "")
+    jur = get_user_jurisdiction(username)
+
     hierarchy = load_hierarchy_data()
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
-    cur.execute("SELECT * FROM survey_records ORDER BY rowid ASC")
+
+    query = "SELECT * FROM survey_records WHERE 1=1"
+    params = []
+    if jur["role"] == "rcsm":
+        if not jur["is_all_regions"]:
+            placeholders = ",".join(["?"] * len(jur["regions"]))
+            query += f" AND LOWER(TRIM(region)) IN ({placeholders})"
+            params.extend(jur["regions"])
+        if not jur["is_all_centers"]:
+            placeholders = ",".join(["?"] * len(jur["centers"]))
+            query += f" AND LOWER(TRIM(center)) IN ({placeholders})"
+            params.extend(jur["centers"])
+
+    query += " ORDER BY rowid ASC"
+    cur.execute(query, params)
     all_rows = cur.fetchall()
     conn.close()
 
@@ -2323,10 +2448,15 @@ def export_data_zip(session: dict = Depends(require_management_auth)):
             center_rows[key] = []
         center_rows[key].append(r)
 
-    # Also include any centers present in hierarchy
+    # Also include any centers present in hierarchy that match jurisdiction
     for c, rts in hierarchy.items():
         c_clean = c.strip()
         reg = get_region_for_center(c_clean, hierarchy) or "Thrissur"
+        if jur["role"] == "rcsm":
+            if not jur["is_all_regions"] and reg.lower() not in jur["regions"]:
+                continue
+            if not jur["is_all_centers"] and c_clean.lower() not in jur["centers"]:
+                continue
         key = (reg, c_clean)
         if key not in center_rows:
             center_rows[key] = []
@@ -2343,11 +2473,12 @@ def export_data_zip(session: dict = Depends(require_management_auth)):
 
     zip_buffer.seek(0)
     today = datetime.date.today().isoformat()
+    zip_prefix = "GPON_Survey_Data_All_Centers" if jur["is_super_admin"] else f"GPON_Survey_Data_{username}"
     return Response(
         content=zip_buffer.getvalue(),
         media_type="application/zip",
         headers={
-            "Content-Disposition": f'attachment; filename="GPON_Survey_Data_All_Centers_{today}.zip"'
+            "Content-Disposition": f'attachment; filename="{zip_prefix}_{today}.zip"'
         }
     )
 
@@ -2554,19 +2685,26 @@ def get_data_folders_summary(session: dict = Depends(require_management_auth)):
             total_centers += 1
         result_regions[reg] = center_list
         
-    if session.get("role") == "rcsm":
-        user_center = (session.get("center") or "").strip().lower()
-        if user_center and user_center != "all":
-            allowed_centers = [c.strip() for c in user_center.split(",") if c.strip()]
-            filtered_regions = {}
-            filtered_centers_count = 0
-            for reg, clist in result_regions.items():
-                matched = [c for c in clist if c["center"].strip().lower() in allowed_centers]
-                if matched:
-                    filtered_regions[reg] = matched
-                    filtered_centers_count += len(matched)
-            result_regions = filtered_regions
-            total_centers = filtered_centers_count
+    jur = get_user_jurisdiction(session.get("username", ""))
+    if jur["role"] == "rcsm":
+        filtered_regions = {}
+        filtered_centers_count = 0
+        filtered_records_count = 0
+        for reg, clist in result_regions.items():
+            if not jur["is_all_regions"] and reg.strip().lower() not in jur["regions"]:
+                continue
+            matched = []
+            for c in clist:
+                if not jur["is_all_centers"] and c["center"].strip().lower() not in jur["centers"]:
+                    continue
+                matched.append(c)
+                filtered_records_count += c.get("records_count", 0)
+            if matched:
+                filtered_regions[reg] = matched
+                filtered_centers_count += len(matched)
+        result_regions = filtered_regions
+        total_centers = filtered_centers_count
+        total_records = filtered_records_count
 
     return {
         "status": "success",
@@ -2691,7 +2829,7 @@ def admin_dashboard(response: Response):
             <span id="header-user-badge" class="tag" style="background:#6366f1;">Super Admin</span>
           </div>
           <p style="margin:4px 0 0 0; font-size:0.82rem; color:#64748b;">
-            Logged in as: <strong id="header-user-name">Administrator</strong> | Center: <span id="header-user-center">ALL</span>
+            Logged in as: <strong id="header-user-name">Administrator</strong> | <span id="header-user-jurisdiction">Center: <span id="header-user-center">ALL</span></span>
           </p>
         </div>
         <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
@@ -3429,10 +3567,17 @@ def admin_dashboard(response: Response):
           const nameEl = document.getElementById('header-user-name');
           const centerEl = document.getElementById('header-user-center');
           const badgeEl = document.getElementById('header-user-badge');
+          const jurEl = document.getElementById('header-user-jurisdiction');
 
           if (currentAdmin) {
             nameEl.innerText = currentAdmin.full_name || currentAdmin.username;
-            centerEl.innerText = currentAdmin.assigned_center || 'ALL';
+            const regDisplay = currentAdmin.assigned_region || 'ALL';
+            const centDisplay = currentAdmin.assigned_center || 'ALL';
+            if (jurEl) {
+              jurEl.innerHTML = `<strong>Region:</strong> ${escapeHtml(regDisplay)} | <strong>Center:</strong> ${escapeHtml(centDisplay)}`;
+            } else if (centerEl) {
+              centerEl.innerText = centDisplay;
+            }
           }
 
           const btnUsers = document.getElementById('tab-btn-users');
@@ -3640,6 +3785,23 @@ def admin_dashboard(response: Response):
           const centerToRegion = {};
           const rtsByCenter = {};
 
+          // Filter for RCSM jurisdiction
+          let allowedRegions = null;
+          let allowedCenters = null;
+          if (currentAdmin && currentAdmin.role === 'rcsm') {
+            const rawRegs = currentAdmin.assigned_regions || (currentAdmin.assigned_region ? currentAdmin.assigned_region.split(',') : []);
+            const regList = rawRegs.map(r => r.trim()).filter(r => r && r.toUpperCase() !== 'ALL');
+            if (regList.length > 0) {
+              allowedRegions = new Set(regList.map(r => r.toLowerCase()));
+            }
+
+            const rawCents = currentAdmin.assigned_centers || (currentAdmin.assigned_center ? currentAdmin.assigned_center.split(',') : []);
+            const centList = rawCents.map(c => c.trim()).filter(c => c && c.toUpperCase() !== 'ALL');
+            if (centList.length > 0) {
+              allowedCenters = new Set(centList.map(c => c.toLowerCase()));
+            }
+          }
+
           Object.keys(cachedHierarchy).forEach(center => {
             const rts = cachedHierarchy[center] || {};
             let centerRegion = null;
@@ -3648,9 +3810,6 @@ def admin_dashboard(response: Response):
               const olts = rts[rt] || {};
               const oltKeys = Object.keys(olts);
               if (oltKeys.length === 0) return;
-              if (!rtsByCenter[center]) rtsByCenter[center] = new Set();
-              rtsByCenter[center].add(rt);
-              activeRtsInCenter++;
               oltKeys.forEach(oltName => {
                 const entry = olts[oltName];
                 if (entry && typeof entry === 'object' && entry.region) {
@@ -3658,8 +3817,26 @@ def admin_dashboard(response: Response):
                 }
               });
             });
-            if (activeRtsInCenter === 0) return;
             if (!centerRegion) centerRegion = 'Thrissur';
+
+            // Restrict to assigned regions / centers for RCSM
+            if (allowedRegions && !allowedRegions.has(centerRegion.toLowerCase())) {
+              return;
+            }
+            if (allowedCenters && !allowedCenters.has(center.trim().toLowerCase())) {
+              return;
+            }
+
+            Object.keys(rts).forEach(rt => {
+              const olts = rts[rt] || {};
+              const oltKeys = Object.keys(olts);
+              if (oltKeys.length === 0) return;
+              if (!rtsByCenter[center]) rtsByCenter[center] = new Set();
+              rtsByCenter[center].add(rt);
+              activeRtsInCenter++;
+            });
+
+            if (activeRtsInCenter === 0) return;
 
             regionsSet.add(centerRegion);
             if (!centersByRegion[centerRegion]) {
@@ -5461,8 +5638,21 @@ def admin_dashboard(response: Response):
 
         async function initAdminData() {
           await fetchHierarchy();
-          updateFeedFilterDropdowns();
-          filterAndRenderFeed();
+          if (currentAdmin && currentAdmin.role === 'rcsm') {
+            const meta = getHierarchyMeta();
+            meta.regions.forEach(r => selectedFeedRegions.add(r));
+            meta.regions.forEach(r => {
+              if (meta.centersByRegion[r]) {
+                meta.centersByRegion[r].forEach(c => selectedFeedCenters.add(c));
+              }
+            });
+            pruneFeedSelections(meta);
+            updateFeedFilterDropdowns();
+            await fetchData();
+          } else {
+            updateFeedFilterDropdowns();
+            filterAndRenderFeed();
+          }
           if (currentAdmin && currentAdmin.role === 'super_admin') {
             fetchUsers();
           }
