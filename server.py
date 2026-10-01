@@ -1454,13 +1454,35 @@ async def upload_hierarchy_excel(file: UploadFile = File(...), session: dict = D
         if total_olts == 0:
             raise HTTPException(status_code=400, detail="No valid Center and OLT rows found in uploaded sheet.")
 
-        # The uploaded Excel file is the authoritative new Node Master hierarchy
-        clean_hierarchy = prune_hierarchy(new_hierarchy)
+        # Load existing hierarchy and safely merge new regions, centers, RT rooms, and OLTs
+        existing_hierarchy = load_hierarchy_data()
+
+        for c, rts in new_hierarchy.items():
+            matched_c = next((k for k in existing_hierarchy.keys() if k.strip().lower() == c.strip().lower()), None)
+            target_c = matched_c if matched_c else c.strip()
+            if target_c not in existing_hierarchy:
+                existing_hierarchy[target_c] = {}
+
+            for rt, olts in rts.items():
+                matched_rt = next((k for k in existing_hierarchy[target_c].keys() if k.strip().lower() == rt.strip().lower()), None)
+                target_rt = matched_rt if matched_rt else rt.strip()
+                if target_rt not in existing_hierarchy[target_c]:
+                    existing_hierarchy[target_c][target_rt] = {}
+
+                for olt_k, olt_data in olts.items():
+                    matched_olt = next((k for k in existing_hierarchy[target_c][target_rt].keys() if k.strip().lower() == olt_k.strip().lower()), None)
+                    target_olt = matched_olt if matched_olt else olt_k.strip()
+                    existing_hierarchy[target_c][target_rt][target_olt] = olt_data
+
+        clean_hierarchy = prune_hierarchy(existing_hierarchy)
         save_hierarchy_data(clean_hierarchy)
+
+        total_nodes_now = sum(len(olts) for c_data in clean_hierarchy.values() for olts in c_data.values())
+        total_centers_now = len(clean_hierarchy)
 
         return {
             "status": "success",
-            "message": f"Imported {total_olts} unique Nodes across {len(centers_found)} Centers successfully into Node Master!",
+            "message": f"Successfully merged {total_olts} Nodes from {len(centers_found)} Center(s)! Node Master now holds {total_nodes_now} total Nodes across {total_centers_now} Centers.",
             "total_olts": total_olts,
             "centers": list(centers_found),
             "hierarchy": clean_hierarchy
@@ -2828,6 +2850,7 @@ def admin_dashboard(response: Response):
             <input type="file" id="hierarchy-upload-input" accept=".xlsx, .xls, .csv" style="display:none;" onchange="uploadHierarchyExcel(event)">
             <button class="btn btn-green" onclick="document.getElementById('hierarchy-upload-input').click()">📂 Browse & Upload Excel</button>
             <button class="btn" style="background:#0284c7; color:white;" onclick="openAddOltModal()">➕ Add Single Node</button>
+            <button class="btn btn-outline" style="color:#dc2626; border-color:#dc2626;" onclick="clearAllHierarchy()">🗑️ Clear All Nodes</button>
           </div>
         </div>
 
@@ -4988,6 +5011,31 @@ def admin_dashboard(response: Response):
             statusDiv.innerText = `❌ Network Error: ${err.message}`;
           } finally {
             e.target.value = '';
+          }
+        }
+
+        async function clearAllHierarchy() {
+          const confirmed = await showConfirmModal(
+            '⚠️ Confirm Clear All Node Master Data',
+            'Are you sure you want to completely clear ALL Centers, RT Rooms, and Nodes from the Node Master? This action cannot be undone.',
+            'Clear Everything',
+            '#dc2626'
+          );
+          if (!confirmed) return;
+
+          try {
+            const res = await authFetch('/api/hierarchy/clear', {
+              method: 'DELETE'
+            });
+            const data = await res.json();
+            if (res.ok) {
+              alert('✅ ' + (data.message || 'All hierarchy data cleared.'));
+              fetchHierarchy();
+            } else {
+              alert('Error: ' + (data.detail || 'Could not clear hierarchy data.'));
+            }
+          } catch(err) {
+            alert('Network error: ' + err.message);
           }
         }
 
