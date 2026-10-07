@@ -1271,6 +1271,122 @@ function updateAvailableSplitters() {
   handleSplitterSelectionChange();
 }
 
+// Reset customer-specific subscriber inputs and editing state
+function clearCustomerInputs() {
+  if (adlSubInput) adlSubInput.value = '';
+  if (acsSubInput) acsSubInput.value = '';
+  if (custCountInput) custCountInput.value = '1';
+  currentAcsoEditingUuid = null;
+  const banner = document.getElementById('acso-update-banner');
+  if (banner) banner.style.display = 'none';
+  const submitBtn = document.getElementById('btn-save-record') || document.querySelector('.btn-add-row');
+  if (submitBtn) {
+    submitBtn.innerHTML = '<span>➕</span> Submit';
+    submitBtn.style.background = '';
+  }
+}
+
+// Reset pole-specific fields when changing equipment locations
+function resetPoleFields() {
+  if (postInput) postInput.value = '';
+  if (landmarkInput) landmarkInput.value = '';
+  currentLat = null;
+  currentLon = null;
+  currentAccuracy = null;
+  bestAccuracy = Infinity;
+  if (manualCoordsInput) {
+    manualCoordsInput.value = '';
+    manualCoordsInput.placeholder = 'e.g. 10.606650, 76.214490 (Mandatory)';
+  }
+  if (gpsAccText) {
+    gpsAccText.innerHTML = '<span style="color:#d97706; font-weight:600;">⚠️ Tap 🎯 GPS at pole</span>';
+  }
+  if (mapMarker && mapInstance) {
+    mapInstance.removeLayer(mapMarker);
+    mapMarker = null;
+  }
+  if (accuracyCircle && mapInstance) {
+    mapInstance.removeLayer(accuracyCircle);
+    accuracyCircle = null;
+  }
+}
+
+// Retrieve pole info (coordinates, post number, landmark) for an enclosure if already surveyed
+function getEnclosurePoleInfo(eid) {
+  if (!eid) return null;
+  const eidUp = eid.trim().toUpperCase();
+
+  // 1. Search in local records (latest survey first)
+  for (let i = records.length - 1; i >= 0; i--) {
+    const r = records[i];
+    const rEid = (r["Enclosure ID"] || r.enclosure_id || '').trim().toUpperCase();
+    if (rEid === eidUp) {
+      const latLong = r["Lat /Long"] || r.lat_long || '';
+      const kseb = r["KSEB Post Number"] || r.kseb_post_number || '';
+      const lmark = r["Land Mark"] || r.landmark || '';
+      if (latLong || kseb || lmark) {
+        return { lat_long: latLong, kseb_post_number: kseb, landmark: lmark };
+      }
+    }
+  }
+
+  // 2. Search in networkSurveyedPoints
+  if (networkSurveyedPoints) {
+    const matchingKey = Object.keys(networkSurveyedPoints).find(k => k.toUpperCase().startsWith(eidUp + '|'));
+    if (matchingKey && networkSurveyedPoints[matchingKey]) {
+      const pt = networkSurveyedPoints[matchingKey];
+      return {
+        lat_long: pt.lat_long || '',
+        kseb_post_number: pt.kseb_post_number || '',
+        landmark: pt.landmark || ''
+      };
+    }
+  }
+
+  return null;
+}
+
+// Handle Enclosure Selection Change: Loads surveyed pole data if enclosure was surveyed, or resets pole fields for new site
+function handleEnclosureChange() {
+  const olt = oltSelect ? oltSelect.value : '';
+  const port = portSelect ? portSelect.value : '';
+  const enc = enclosureSelect ? enclosureSelect.value : '';
+
+  clearCustomerInputs();
+
+  if (enc && olt && port) {
+    const eid = computeEnclosureId(olt, port, enc);
+    const poleInfo = getEnclosurePoleInfo(eid);
+    if (poleInfo && (poleInfo.lat_long || poleInfo.kseb_post_number || poleInfo.landmark)) {
+      if (postInput) postInput.value = poleInfo.kseb_post_number || '';
+      if (landmarkInput) landmarkInput.value = poleInfo.landmark || '';
+      if (poleInfo.lat_long && poleInfo.lat_long.includes(',')) {
+        if (manualCoordsInput) manualCoordsInput.value = poleInfo.lat_long;
+        const parts = poleInfo.lat_long.split(',').map(s => parseFloat(s.trim()));
+        if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+          currentLat = parts[0];
+          currentLon = parts[1];
+          if (gpsAccText) {
+            gpsAccText.innerHTML = `<span style="color:#0284c7; font-weight:600;">📍 Existing Survey Coords (${poleInfo.lat_long})</span>`;
+          }
+          if (mapInstance && typeof L !== 'undefined') {
+            renderMapMarker(currentLat, currentLon, 10);
+          }
+        }
+      }
+    } else {
+      // New / unmapped enclosure: reset pole fields for the fresh site
+      resetPoleFields();
+    }
+  } else {
+    resetPoleFields();
+  }
+
+  updateEnclosureId();
+  updateAvailableSplitters();
+  handleSplitterSelectionChange();
+}
+
 // Handle Splitter Selection: Auto-fills splitter metadata & triggers color updates
 function handleSplitterSelectionChange() {
   const olt = oltSelect ? oltSelect.value : '';
@@ -1288,17 +1404,17 @@ function handleSplitterSelectionChange() {
 
   if (splSummary) {
     // If splitter already has surveyed leads, pre-fill common splitter ratio and pole details
-    if (splSummary.splitter_ratio && splitterRatioSelect && !splitterRatioSelect.value) {
+    if (splSummary.splitter_ratio && splitterRatioSelect) {
       splitterRatioSelect.value = splSummary.splitter_ratio;
     }
-    if (postInput && !postInput.value.trim() && splSummary.kseb_post_number) {
-      postInput.value = splSummary.kseb_post_number;
+    if (postInput && (!postInput.value.trim() || splSummary.kseb_post_number)) {
+      if (splSummary.kseb_post_number) postInput.value = splSummary.kseb_post_number;
     }
-    if (landmarkInput && !landmarkInput.value.trim() && splSummary.landmark) {
-      landmarkInput.value = splSummary.landmark;
+    if (landmarkInput && (!landmarkInput.value.trim() || splSummary.landmark)) {
+      if (splSummary.landmark) landmarkInput.value = splSummary.landmark;
     }
-    if (splSummary.lat_long && splSummary.lat_long.includes(',') && (!currentLat || !currentLon)) {
-      if (manualCoordsInput && !manualCoordsInput.value.trim()) manualCoordsInput.value = splSummary.lat_long;
+    if (splSummary.lat_long && splSummary.lat_long.includes(',')) {
+      if (manualCoordsInput && (!manualCoordsInput.value.trim() || splSummary.lat_long)) manualCoordsInput.value = splSummary.lat_long;
       const parts = splSummary.lat_long.split(',').map(s => parseFloat(s.trim()));
       if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
         currentLat = parts[0];
@@ -1670,6 +1786,9 @@ function getSelectedPortsArray() {
 
 function updateSelectedPortsFromCheckboxes() {
   const selected = getSelectedPortsArray();
+  if (enclosureSelect) enclosureSelect.value = '';
+  resetPoleFields();
+  clearCustomerInputs();
   syncPortSelection(selected);
 }
 
@@ -1856,14 +1975,39 @@ function handleExcelHierarchyUpload(e) {
 }
 
 // Event Listeners for Cascading
-centerSelect.addEventListener('change', () => { onCenterChange(); fetchSurveyedPoints(); });
-rtRoomSelect.addEventListener('change', onRTRoomChange);
-oltSelect.addEventListener('change', onOLTChange);
+centerSelect.addEventListener('change', () => {
+  resetPoleFields();
+  clearCustomerInputs();
+  onCenterChange();
+  fetchSurveyedPoints();
+});
+rtRoomSelect.addEventListener('change', () => {
+  resetPoleFields();
+  clearCustomerInputs();
+  onRTRoomChange();
+});
+oltSelect.addEventListener('change', () => {
+  resetPoleFields();
+  clearCustomerInputs();
+  onOLTChange();
+});
 if (oltTypeSelect) oltTypeSelect.addEventListener('change', onOLTTypeChange);
-if (portSelect) portSelect.addEventListener('change', () => { updateAvailableEnclosures(); updateAvailableSplitters(); });
-enclosureSelect.addEventListener('change', () => { updateEnclosureId(); updateAvailableSplitters(); handleSplitterSelectionChange(); });
-splitterRatioSelect.addEventListener('change', updateSplitterColorOptions);
-splitterIdSelect.addEventListener('change', handleSplitterSelectionChange);
+if (portSelect) portSelect.addEventListener('change', () => {
+  if (enclosureSelect) enclosureSelect.value = '';
+  resetPoleFields();
+  clearCustomerInputs();
+  updateAvailableEnclosures();
+  updateAvailableSplitters();
+});
+enclosureSelect.addEventListener('change', handleEnclosureChange);
+splitterRatioSelect.addEventListener('change', () => {
+  clearCustomerInputs();
+  updateSplitterColorOptions();
+});
+splitterIdSelect.addEventListener('change', () => {
+  clearCustomerInputs();
+  handleSplitterSelectionChange();
+});
 if (splitterColorSelect) splitterColorSelect.addEventListener('change', handleColorSelectionChange);
 
 // Close port dropdown panel on tap/click outside
@@ -2383,60 +2527,29 @@ function saveRecord() {
   }
   showSubmitConfirmModal(entry, isAcsoUpdate);
 
-  // Clear customer-specific subscriber inputs
-  custCountInput.value = '1';
-  if (adlSubInput) adlSubInput.value = '';
-  if (acsSubInput) acsSubInput.value = '';
+  // Clear customer-specific subscriber inputs only (keep equipment & pole strictly pinned!)
+  clearCustomerInputs();
 
-  // Reset ACSO update state
-  currentAcsoEditingUuid = null;
+  const savedSpl = splitterIdSelect ? splitterIdSelect.value : '';
+  const savedRatio = splitterRatioSelect ? splitterRatioSelect.value : '';
 
-  // Check if current splitter still has unmapped leads available
-  const currentRatio = splitterRatioSelect ? splitterRatioSelect.value : '';
-  const totalLeadsForRatio = (currentRatio && DEFAULT_PRELOAD.color_codes_by_ratio && DEFAULT_PRELOAD.color_codes_by_ratio[currentRatio])
-    ? DEFAULT_PRELOAD.color_codes_by_ratio[currentRatio].length
-    : 0;
-  const currentSummary = getSplitterSummary(eid, spl);
-  const mappedCount = currentSummary ? currentSummary.count : 0;
-  const hasMoreLeads = totalLeadsForRatio > 0 && mappedCount < totalLeadsForRatio;
+  // Refresh available splitters to reflect new capacity count
+  updateAvailableSplitters();
 
-  if (hasMoreLeads) {
-    // Keep Enclosure, Splitter, Ratio, and Pole info intact for seamless multi-customer mapping on same pole!
-    updateAvailableSplitters();
-    updateSplitterColorOptions();
-    if (adlSubInput) setTimeout(() => adlSubInput.focus(), 300);
-  } else {
-    // Splitter is full or completed: Reset pole-specific fields for the next equipment point
-    postInput.value = '';
-    landmarkInput.value = '';
-    currentLat = null;
-    currentLon = null;
-    currentAccuracy = null;
-    bestAccuracy = Infinity;
-    if (manualCoordsInput) {
-      manualCoordsInput.value = '';
-      manualCoordsInput.placeholder = 'e.g. 10.606650, 76.214490 (Mandatory)';
-    }
-    if (gpsAccText) {
-      gpsAccText.innerHTML = '<span style="color:#d97706; font-weight:600;">⚠️ Tap 🎯 GPS at next pole</span>';
-    }
-    if (mapMarker && mapInstance) {
-      mapInstance.removeLayer(mapMarker);
-      mapMarker = null;
-    }
-    if (accuracyCircle && mapInstance) {
-      mapInstance.removeLayer(accuracyCircle);
-      accuracyCircle = null;
-    }
+  // Retain Splitter Ratio
+  if (savedRatio && splitterRatioSelect) {
+    splitterRatioSelect.value = savedRatio;
+  }
 
-    enclosureSelect.value = '';
-    splitterRatioSelect.value = '';
-    splitterIdSelect.value = '';
-    enclosureIdPreview.innerText = '---';
-    updateSplitterColorOptions();
-    updateAvailableEnclosures();
-    updateAvailableSplitters();
-    updateEnclosureId();
+  // Clear color selection so updateSplitterColorOptions() auto-advances to the next available lead
+  if (splitterColorSelect) splitterColorSelect.value = '';
+  updateSplitterColorOptions();
+
+  // Focus on ADL subscriber input for rapid successive entries
+  if (adlSubInput) {
+    setTimeout(() => {
+      try { adlSubInput.focus(); } catch (e) {}
+    }, 300);
   }
 
   // Trigger silent background sync if server is reachable
