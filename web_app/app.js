@@ -1317,6 +1317,38 @@ function clearCustomerInputs() {
     submitBtn.innerHTML = '<span>➕</span> Submit';
     submitBtn.style.background = '';
   }
+  updateSubscriberInputsState();
+}
+
+// Toggle customer subscriber inputs editable state: only editable when a Splitter Out Colour Code is selected
+function updateSubscriberInputsState() {
+  const hasColor = !!(splitterColorSelect && splitterColorSelect.value);
+  if (adlSubInput) {
+    adlSubInput.disabled = !hasColor;
+    if (!hasColor) {
+      adlSubInput.value = '';
+      adlSubInput.placeholder = 'Select Splitter Out first';
+      adlSubInput.style.backgroundColor = '#f1f5f9';
+      adlSubInput.style.cursor = 'not-allowed';
+    } else {
+      adlSubInput.placeholder = 'e.g. ADL10234';
+      adlSubInput.style.backgroundColor = '';
+      adlSubInput.style.cursor = '';
+    }
+  }
+  if (acsSubInput) {
+    acsSubInput.disabled = !hasColor;
+    if (!hasColor) {
+      acsSubInput.value = '';
+      acsSubInput.placeholder = 'Select Splitter Out first';
+      acsSubInput.style.backgroundColor = '#f1f5f9';
+      acsSubInput.style.cursor = 'not-allowed';
+    } else {
+      acsSubInput.placeholder = 'e.g. ACS56789';
+      acsSubInput.style.backgroundColor = '';
+      acsSubInput.style.cursor = '';
+    }
+  }
 }
 
 // Reset pole-specific fields when changing equipment locations
@@ -1489,6 +1521,7 @@ function handleColorSelectionChange() {
       submitBtn.style.background = '';
     }
     currentAcsoEditingUuid = null;
+    updateSubscriberInputsState();
     return;
   }
 
@@ -1525,6 +1558,12 @@ function handleColorSelectionChange() {
     if (acsSubInput) acsSubInput.value = '';
     // Total connected customers in the splitter continues its last status across leads!
   }
+
+  // Splitter Out is selected: enable subscriber inputs and auto-focus ADL input
+  updateSubscriberInputsState();
+  if (adlSubInput && !adlSubInput.disabled) {
+    try { adlSubInput.focus(); } catch (e) {}
+  }
 }
 
 function populateFieldsFromExistingRecord(info) {
@@ -1538,13 +1577,6 @@ function populateFieldsFromExistingRecord(info) {
   if (custCountInput) {
     custCountInput.value = (info.customers_connected !== undefined ? info.customers_connected : info["No: Of Customer Connected"]) || 0;
   }
-  if (adlSubInput) {
-    adlSubInput.value = info.adl_subscriber_id || info["ADL Subscriber ID"] || '';
-  }
-  if (acsSubInput) {
-    acsSubInput.value = info.acs_subscriber_id || info["ACS Subscriber ID"] || '';
-  }
-
   const ratio = info.splitter_ratio || info["Splitter Ratio"];
   if (ratio && splitterRatioSelect && !splitterRatioSelect.value) {
     splitterRatioSelect.value = ratio;
@@ -1552,8 +1584,17 @@ function populateFieldsFromExistingRecord(info) {
   }
 
   const color = info.splitter_lead_color || info["Splitter Lead Colour Code"];
-  if (color && splitterColorSelect && !splitterColorSelect.value) {
+  if (color && splitterColorSelect) {
     splitterColorSelect.value = color;
+  }
+
+  updateSubscriberInputsState();
+
+  if (adlSubInput) {
+    adlSubInput.value = info.adl_subscriber_id || info["ADL Subscriber ID"] || '';
+  }
+  if (acsSubInput) {
+    acsSubInput.value = info.acs_subscriber_id || info["ACS Subscriber ID"] || '';
   }
 
   const coords = info.lat_long || info["Lat /Long"];
@@ -2404,8 +2445,28 @@ function saveRecord() {
   const eid = computeEnclosureId(olt, port, enc);
   const spl = splitterIdSelect.value;
   const colorCode = splitterColorSelect ? splitterColorSelect.value : '';
-  const adlId = adlSubInput ? adlSubInput.value.trim() : '';
-  const acsId = acsSubInput ? acsSubInput.value.trim() : '';
+  const adlId = (colorCode && adlSubInput) ? adlSubInput.value.trim() : '';
+  const acsId = (colorCode && acsSubInput) ? acsSubInput.value.trim() : '';
+
+  // Mandatory check: Splitter Out Colour Code is strictly required if entering a Subscriber ID
+  const rawAdl = adlSubInput ? adlSubInput.value.trim() : '';
+  const rawAcs = acsSubInput ? acsSubInput.value.trim() : '';
+  if ((rawAdl || rawAcs) && !colorCode) {
+    showToast('⚠️ Splitter Out Colour Code is mandatory to enter a Subscriber ID!', false);
+    if (splitterColorSelect) {
+      splitterColorSelect.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      splitterColorSelect.focus();
+      splitterColorSelect.style.borderColor = '#ef4444';
+      splitterColorSelect.style.boxShadow = '0 0 0 3px rgba(239,68,68,0.2)';
+      setTimeout(() => {
+        if (splitterColorSelect) {
+          splitterColorSelect.style.borderColor = '';
+          splitterColorSelect.style.boxShadow = '';
+        }
+      }, 2500);
+    }
+    return;
+  }
 
   const role = currentUser ? normalizeClientRole(currentUser.role) : 'field_technician';
   const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'super_admin');
@@ -2582,14 +2643,14 @@ function saveRecord() {
     splitterRatioSelect.value = savedRatio;
   }
 
-  // Clear color selection so updateSplitterColorOptions() auto-advances to the next available lead
+  // Clear color selection so surveyor must explicitly select the next splitter lead
   if (splitterColorSelect) splitterColorSelect.value = '';
   updateSplitterColorOptions();
 
-  // Focus on ADL subscriber input for rapid successive entries
-  if (adlSubInput) {
+  // Prompt surveyor to select the next Splitter Out lead
+  if (splitterColorSelect) {
     setTimeout(() => {
-      try { adlSubInput.focus(); } catch (e) {}
+      try { splitterColorSelect.focus(); } catch (e) {}
     }, 300);
   }
 
@@ -3500,6 +3561,7 @@ function bootApp() {
     fetchSurveyedPoints();
   }
 
+  updateSubscriberInputsState();
   updateRecordsBadge();
   updateSyncUI();
   checkServerConnection();

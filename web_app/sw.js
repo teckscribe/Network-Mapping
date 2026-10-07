@@ -1,4 +1,4 @@
-const CACHE_NAME = 'gpon-survey-v58';
+const CACHE_NAME = 'gpon-survey-v59';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
