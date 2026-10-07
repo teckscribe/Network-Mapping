@@ -1095,7 +1095,7 @@ function updateSplitterColorOptions() {
 
   const defOpt = document.createElement('option');
   defOpt.value = '';
-  defOpt.innerText = ratio ? `-- Select Out Color (${ratio}) --` : '-- Select Ratio First --';
+  defOpt.innerText = ratio ? `-- Select Out Color (Optional) --` : '-- Select Ratio First --';
   splitterColorSelect.appendChild(defOpt);
 
   if (!ratio) {
@@ -1139,16 +1139,17 @@ function updateSplitterColorOptions() {
     splitterColorSelect.appendChild(opt);
   });
 
-  // Preserve previous selection if still valid and not disabled, otherwise auto-select first available lead
+  // Preserve previous selection only if still valid and not disabled.
+  // NEVER auto-select a lead color: user must explicitly choose a color, or leave empty if 0 connections.
   if (prev) {
     const optMatch = Array.from(splitterColorSelect.options).find(o => o.value === prev && !o.disabled);
     if (optMatch) {
       splitterColorSelect.value = prev;
-    } else if (firstAvailableVal) {
-      splitterColorSelect.value = firstAvailableVal;
+    } else {
+      splitterColorSelect.value = '';
     }
-  } else if (firstAvailableVal) {
-    splitterColorSelect.value = firstAvailableVal;
+  } else {
+    splitterColorSelect.value = '';
   }
 
   handleColorSelectionChange();
@@ -1260,13 +1261,18 @@ function updateAvailableSplitters() {
           opt.style.color = '#0f172a';
           opt.style.fontWeight = '500';
         }
+      } else if (splSummary) {
+        // Splitter surveyed with 0 leads mapped (zero connections recorded)
+        opt.innerText = `${s} (0 mapped)`;
+        opt.style.color = '#0f172a';
+        opt.style.fontWeight = '500';
       } else {
         // Brand new splitter with 0 mapped leads
         // Enforce sequential splitter addition (S2 requires S1, S3 requires S2, etc.)
         if (idx > 0) {
           const prevSplitter = DEFAULT_PRELOAD.splitters[idx - 1];
           const prevSummary = getSplitterSummary(eid, prevSplitter);
-          if (!prevSummary || prevSummary.count === 0) {
+          if (!prevSummary) {
             opt.innerText = `${s} — 🔒 Add ${prevSplitter} first`;
             opt.disabled = true;
             opt.style.color = '#94a3b8';
@@ -1317,7 +1323,7 @@ function clearCustomerInputs() {
 function resetPoleFields() {
   if (postInput) postInput.value = '';
   if (landmarkInput) landmarkInput.value = '';
-  if (custCountInput) custCountInput.value = '1';
+  if (custCountInput) custCountInput.value = '0';
   currentLat = null;
   currentLon = null;
   currentAccuracy = null;
@@ -1435,9 +1441,7 @@ function handleSplitterSelectionChange() {
     if (splSummary.splitter_ratio && splitterRatioSelect) {
       splitterRatioSelect.value = splSummary.splitter_ratio;
     }
-    if (custCountInput && splSummary.customers_connected !== undefined && splSummary.customers_connected !== null && splSummary.customers_connected !== '') {
-      custCountInput.value = splSummary.customers_connected;
-    }
+    // Note: Do not auto-fetch customers_connected (user controls manually or leaves 0)
     if (postInput && (!postInput.value.trim() || splSummary.kseb_post_number)) {
       if (splSummary.kseb_post_number) postInput.value = splSummary.kseb_post_number;
     }
@@ -1509,10 +1513,6 @@ function handleColorSelectionChange() {
     // Pre-populate subscriber inputs from existing record
     if (adlSubInput) adlSubInput.value = leadSurvey.adl_subscriber_id || leadSurvey["ADL Subscriber ID"] || '';
     if (acsSubInput) acsSubInput.value = leadSurvey.acs_subscriber_id || leadSurvey["ACS Subscriber ID"] || '';
-    const leadCount = (leadSurvey.customers_connected !== undefined ? leadSurvey.customers_connected : leadSurvey["No: Of Customer Connected"]);
-    if (custCountInput && leadCount !== undefined && leadCount !== null && leadCount !== '') {
-      custCountInput.value = leadCount;
-    }
   } else {
     // Normal / Brand-New Lead Entry Mode!
     currentAcsoEditingUuid = null;
@@ -1536,7 +1536,7 @@ function populateFieldsFromExistingRecord(info) {
     landmarkInput.value = info.landmark || info["Land Mark"] || '';
   }
   if (custCountInput) {
-    custCountInput.value = (info.customers_connected !== undefined ? info.customers_connected : info["No: Of Customer Connected"]) || 1;
+    custCountInput.value = (info.customers_connected !== undefined ? info.customers_connected : info["No: Of Customer Connected"]) || 0;
   }
   if (adlSubInput) {
     adlSubInput.value = info.adl_subscriber_id || info["ADL Subscriber ID"] || '';
@@ -2381,8 +2381,7 @@ function saveRecord() {
     { el: portSelect, label: 'Port Number', triggerEl: document.getElementById('btn-port-picker') },
     { el: enclosureSelect, label: 'Enclosure #' },
     { el: splitterRatioSelect, label: 'Splitter Ratio' },
-    { el: splitterIdSelect, label: 'Splitter ID' },
-    { el: splitterColorSelect, label: 'Splitter Out Colour Code' }
+    { el: splitterIdSelect, label: 'Splitter ID' }
   ];
   for (const dd of mandatoryDropdowns) {
     if (!dd.el || !dd.el.value) {
@@ -2411,13 +2410,16 @@ function saveRecord() {
   const role = currentUser ? normalizeClientRole(currentUser.role) : 'field_technician';
   const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'super_admin');
 
-  // Check if this SPECIFIC lead is already surveyed
+  // Check if this SPECIFIC lead (or zero-connection splitter) is already surveyed
   const existingLeadSurvey = getLeadSurveyedInfo(eid, spl, colorCode);
 
-  // OPTION D: Field Technician Hard Block on already surveyed lead
+  // OPTION D: Field Technician Hard Block on already surveyed lead or splitter
   if (existingLeadSurvey && !isSupervisor) {
     const surveyor = existingLeadSurvey.surveyor_name || existingLeadSurvey.surveyor_username || 'another surveyor';
-    showToast(`❌ Lead "${colorCode}" of Splitter ${spl} under Enclosure ${eid} was already surveyed by ${surveyor}! Field technicians cannot overwrite existing records.`, false);
+    const blockedMsg = colorCode
+      ? `❌ Lead "${colorCode}" of Splitter ${spl} under Enclosure ${eid} was already surveyed by ${surveyor}! Field technicians cannot overwrite existing records.`
+      : `❌ Splitter ${spl} under Enclosure ${eid} was already surveyed by ${surveyor}! Field technicians cannot overwrite existing records.`;
+    showToast(blockedMsg, false);
     if (splitterColorSelect) splitterColorSelect.focus();
     return;
   }
@@ -2433,13 +2435,17 @@ function saveRecord() {
       if (rEid !== eid.toUpperCase() || rSpl !== spl.toUpperCase()) return false;
       const rCol = (r["Splitter Lead Colour Code"] || r.splitter_lead_color || '').trim().toUpperCase();
       if (!colorCode && !rCol) return true;
+      if (!colorCode || !rCol) return false;
       const colVars = getColorVariants(colorCode);
       const rVars = getColorVariants(rCol);
       return colVars.some(v => rVars.includes(v));
     });
 
     if (isDuplicateLead) {
-      showToast(`❌ Lead "${colorCode}" of Splitter ${spl} is already in your pending records! Duplicate entry not allowed.`, false);
+      const msg = colorCode
+        ? `❌ Lead "${colorCode}" of Splitter ${spl} is already in your pending records! Duplicate entry not allowed.`
+        : `❌ Splitter ${spl} is already in your pending records with zero connections!`;
+      showToast(msg, false);
       if (splitterColorSelect) splitterColorSelect.focus();
       return;
     }
@@ -2450,7 +2456,7 @@ function saveRecord() {
       if (sIndex > 0) {
         const prevSplitter = DEFAULT_PRELOAD.splitters[sIndex - 1];
         const prevSummary = getSplitterSummary(eid, prevSplitter);
-        if (!prevSummary || prevSummary.count === 0) {
+        if (!prevSummary) {
           showToast(`❌ Splitter ${prevSplitter} must be added first before adding ${spl} in Enclosure ${enc}!`, false);
           splitterIdSelect.focus();
           return;
@@ -2646,7 +2652,7 @@ function showSubmitConfirmModal(entry, isAcsoUpdate = false) {
     </div>
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
       <span style="color:#64748b;">Splitter & Lead:</span>
-      <strong style="color:#334155;">${splitInfo} • ${entry["Splitter Lead Colour Code"] || '-'}</strong>
+      <strong style="color:#334155;">${splitInfo} • ${entry["Splitter Lead Colour Code"] || 'No Lead (0 Connected)'}</strong>
     </div>
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
       <span style="color:#64748b;">Subscriber ID:</span>
@@ -2977,7 +2983,9 @@ function deleteRecord(index) {
 
 function confirmDeleteRecord() {
   if (pendingDeleteIndex !== null && pendingDeleteIndex !== undefined) {
-    executeDeleteRecord(pendingDeleteIndex);
+    const idx = pendingDeleteIndex;
+    closeDeleteConfirmModal();
+    executeDeleteRecord(idx);
   }
 }
 
@@ -2993,9 +3001,13 @@ async function executeDeleteRecord(index) {
     return;
   }
   const r = records[index];
-  const clientUuid = r.client_uuid;
-  const eid = r["Enclosure ID"] || r.enclosure_id;
-  const spl = r["Splitter ID"] || r.splitter_id;
+  const clientUuid = r.client_uuid || '';
+  const eid = (r["Enclosure ID"] || r.enclosure_id || '').trim();
+  const spl = (r["Splitter ID"] || r.splitter_id || '').trim();
+  const col = (r["Splitter Lead Colour Code"] || r.splitter_lead_color || '').trim();
+
+  // Guarantee modal is closed immediately
+  closeDeleteConfirmModal();
 
   try {
     // 1. Remove from local array & localStorage
@@ -3004,21 +3016,23 @@ async function executeDeleteRecord(index) {
 
     // 2. Clear from local surveyed points cache so UI unlocks immediately
     if (eid && spl) {
-      const col = r["Splitter Lead Colour Code"] || r.splitter_lead_color;
       if (typeof networkSurveyedPoints !== 'undefined') {
         const variants = getColorVariants(col);
         variants.forEach(v => {
           const k = `${eid}|${spl}|${v}`.toUpperCase();
           delete networkSurveyedPoints[k];
         });
+        const kEmpty = `${eid}|${spl}|`.toUpperCase();
+        if (!col) delete networkSurveyedPoints[kEmpty];
+
         const splKey = `${eid}|${spl}`.toUpperCase();
         if (networkSurveyedPoints[splKey]) {
           const s = networkSurveyedPoints[splKey];
           if (Array.isArray(s.leads)) {
-            const normC = (col || '').trim().toUpperCase();
+            const normC = col.toUpperCase();
             s.leads = s.leads.filter(l => l !== normC);
             s.count = s.leads.length;
-            if (s.count === 0) {
+            if (s.count === 0 && !col) {
               delete networkSurveyedPoints[splKey];
             }
           }
@@ -3039,37 +3053,46 @@ async function executeDeleteRecord(index) {
       openRecordsModal();
     }
   } catch (err) {
-    console.error('Error during record deletion:', err);
-  } finally {
-    closeDeleteConfirmModal();
+    console.error('Error during local record deletion:', err);
   }
 
-  // 4. Send DELETE to server if client_uuid exists
-  if (clientUuid) {
-    let serverDeleted = false;
-    try {
-      const authToken = localStorage.getItem('gpon_auth_token') || (currentUser && currentUser.token) || '';
-      const headers = authToken ? { 'Authorization': `Bearer ${authToken}` } : {};
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 6000);
+  // 4. Send DELETE to server with both UUID and natural key fallback
+  let serverDeleted = false;
+  try {
+    const authToken = localStorage.getItem('gpon_auth_token') || (currentUser && currentUser.token) || '';
+    const headers = authToken ? { 'Authorization': `Bearer ${authToken}` } : {};
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
 
-      const res = await fetch(`${serverUrl}/api/records/${clientUuid}`, {
-        method: 'DELETE',
-        headers: headers,
-        signal: controller.signal
-      });
-      clearTimeout(timeoutId);
-      if (res.ok) {
-        serverDeleted = true;
-      }
-    } catch (err) {
-      console.warn('[Delete] Could not delete from server right now (network offline):', err);
+    const uuidParam = encodeURIComponent(clientUuid || 'by-point');
+    const qParams = new URLSearchParams();
+    if (eid) qParams.append('enclosure_id', eid);
+    if (spl) qParams.append('splitter_id', spl);
+    if (col) qParams.append('splitter_lead_color', col);
+
+    const deleteUrl = `${serverUrl}/api/records/${uuidParam}?${qParams.toString()}`;
+    const res = await fetch(deleteUrl, {
+      method: 'DELETE',
+      headers: headers,
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+    if (res.ok) {
+      serverDeleted = true;
     }
+  } catch (err) {
+    console.warn('[Delete] Could not delete from server right now (network offline):', err);
+  }
 
-    if (serverDeleted) {
-      showToast('✓ Record permanently deleted from device and server');
-    } else {
-      // Offline fallback: queue clientUuid for deletion on next server sync
+  if (serverDeleted) {
+    showToast('✓ Record permanently deleted from device and server');
+    // Refresh surveyed points in background
+    if (typeof fetchSurveyedPoints === 'function') {
+      fetchSurveyedPoints().catch(() => {});
+    }
+  } else {
+    // Offline fallback: queue clientUuid for deletion on next server sync
+    if (clientUuid) {
       let pendingDeletions = [];
       try {
         pendingDeletions = JSON.parse(localStorage.getItem('gpon_pending_deletions') || '[]');
@@ -3078,10 +3101,8 @@ async function executeDeleteRecord(index) {
         pendingDeletions.push(clientUuid);
         localStorage.setItem('gpon_pending_deletions', JSON.stringify(pendingDeletions));
       }
-      showToast('✓ Record deleted locally (will delete from server when connected)');
     }
-  } else {
-    showToast('✓ Record deleted locally');
+    showToast('✓ Record deleted locally (will delete from server when connected)');
   }
 }
 

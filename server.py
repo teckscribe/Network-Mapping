@@ -2126,6 +2126,7 @@ def sync_records(payload: SyncPayload, session: dict = Depends(require_any_auth)
                     # OPTION C: Supervisor update rights! Overwrite master record cleanly in-place
                     cur.execute("""
                     UPDATE survey_records SET
+                        client_uuid = ?,
                         region = ?, center = ?, rt_room = ?, technology = ?,
                         olt_name = ?, port_number = ?, kseb_post_number = ?, landmark = ?,
                         enclosure_number = ?, enclosure_id = ?, lat_long = ?, splitter_id = ?,
@@ -2134,6 +2135,7 @@ def sync_records(payload: SyncPayload, session: dict = Depends(require_any_auth)
                         device_id = ?, surveyor_username = ?, surveyor_name = ?, synced_at = ?
                     WHERE client_uuid = ?
                     """, (
+                        r.client_uuid,
                         r.region, r.center, r.rt_room, r.technology,
                         r.olt_name, r.port_number, r.kseb_post_number, r.landmark,
                         r.enclosure_number, r.enclosure_id, r.lat_long, r.splitter_id,
@@ -2302,11 +2304,44 @@ def update_survey_record(client_uuid: str, record: UpdateSurveyRecordModel, sess
     return {"status": "success", "message": "Record updated successfully."}
 
 @app.delete("/api/records/{client_uuid}")
-def delete_record(client_uuid: str, session: dict = Depends(require_any_auth)):
+def delete_record(
+    client_uuid: str,
+    enclosure_id: Optional[str] = Query(None),
+    splitter_id: Optional[str] = Query(None),
+    splitter_lead_color: Optional[str] = Query(None),
+    session: dict = Depends(require_any_auth)
+):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    cur.execute("DELETE FROM survey_records WHERE client_uuid = ?", (client_uuid,))
-    deleted = cur.rowcount
+    deleted = 0
+    clean_uuid = (client_uuid or "").strip()
+    if clean_uuid and clean_uuid != "by-point":
+        cur.execute("DELETE FROM survey_records WHERE client_uuid = ? OR LOWER(client_uuid) = LOWER(?)", (clean_uuid, clean_uuid))
+        deleted = cur.rowcount
+
+    # Fallback to natural key (enclosure_id + splitter_id + lead_color) if UUID did not match
+    if deleted == 0 and enclosure_id and splitter_id:
+        enc_clean = enclosure_id.strip()
+        spl_clean = splitter_id.strip()
+        col_clean = (splitter_lead_color or "").strip()
+        if col_clean:
+            c_variants = get_color_variants(col_clean)
+            placeholders = ",".join(["?"] * len(c_variants))
+            cur.execute(f"""
+                DELETE FROM survey_records
+                WHERE UPPER(TRIM(enclosure_id)) = UPPER(TRIM(?))
+                  AND UPPER(TRIM(splitter_id)) = UPPER(TRIM(?))
+                  AND UPPER(TRIM(splitter_lead_color)) IN ({placeholders})
+            """, (enc_clean, spl_clean, *c_variants))
+        else:
+            cur.execute("""
+                DELETE FROM survey_records
+                WHERE UPPER(TRIM(enclosure_id)) = UPPER(TRIM(?))
+                  AND UPPER(TRIM(splitter_id)) = UPPER(TRIM(?))
+                  AND (splitter_lead_color IS NULL OR TRIM(splitter_lead_color) = '')
+            """, (enc_clean, spl_clean))
+        deleted = cur.rowcount
+
     conn.commit()
     conn.close()
     return {"status": "success", "message": "Record deleted successfully.", "deleted": deleted}
