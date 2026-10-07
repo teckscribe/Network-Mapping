@@ -3263,6 +3263,7 @@ async function syncWithServer(silent = false) {
   if (pendingRecords.length === 0) {
     if (!silent) showToast('All records are already synced with Ubuntu server!');
     checkServerConnection();
+    updateRecordsBadge();
     return;
   }
 
@@ -3343,6 +3344,7 @@ async function syncWithServer(silent = false) {
 
       // Re-fetch network surveyed points so dropdown locks immediately reflect all newly synced data
       fetchSurveyedPoints();
+      updateRecordsBadge();
     } else {
       isServerReachable = false;
       serverConnectionChecked = true;
@@ -3356,6 +3358,7 @@ async function syncWithServer(silent = false) {
     isSyncing = false;
     serverConnectionChecked = true;
     updateSyncUI();
+    updateRecordsBadge();
   }
 }
 
