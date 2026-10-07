@@ -158,7 +158,7 @@ function getSplitterSummary(eid, spl) {
   if (networkSurveyedPoints) {
     if (networkSurveyedPoints[splKey]) {
       const s = networkSurveyedPoints[splKey];
-      latestInfo = s;
+      latestInfo = Object.assign({}, s);
       if (Array.isArray(s.leads)) {
         s.leads.forEach(l => leadsSet.add(l.toUpperCase()));
       }
@@ -168,7 +168,20 @@ function getSplitterSummary(eid, spl) {
       if (k.startsWith(prefix)) {
         const item = networkSurveyedPoints[k];
         if (item && !item.is_summary) {
-          latestInfo = latestInfo || item;
+          if (!latestInfo) {
+            latestInfo = Object.assign({}, item);
+          } else {
+            // Fill any missing properties from individual lead items
+            if (latestInfo.customers_connected === undefined || latestInfo.customers_connected === null || latestInfo.customers_connected === '') {
+              if (item.customers_connected !== undefined && item.customers_connected !== null && item.customers_connected !== '') {
+                latestInfo.customers_connected = item.customers_connected;
+              }
+            }
+            if (!latestInfo.splitter_ratio && item.splitter_ratio) latestInfo.splitter_ratio = item.splitter_ratio;
+            if (!latestInfo.kseb_post_number && item.kseb_post_number) latestInfo.kseb_post_number = item.kseb_post_number;
+            if (!latestInfo.landmark && item.landmark) latestInfo.landmark = item.landmark;
+            if (!latestInfo.lat_long && item.lat_long) latestInfo.lat_long = item.lat_long;
+          }
           const col = (item.splitter_lead_color || '').trim().toUpperCase();
           if (col) leadsSet.add(col);
         }
@@ -180,15 +193,26 @@ function getSplitterSummary(eid, spl) {
     const rEid = (r["Enclosure ID"] || r.enclosure_id || '').trim().toUpperCase();
     const rSpl = (r["Splitter ID"] || r.splitter_id || '').trim().toUpperCase();
     if (rEid === eidUp && rSpl === splUp) {
-      latestInfo = latestInfo || {
-        splitter_ratio: r["Splitter Ratio"] || r.splitter_ratio,
-        customers_connected: (r["No: Of Customer Connected"] !== undefined ? r["No: Of Customer Connected"] : r.customers_connected),
-        kseb_post_number: r["KSEB Post Number"] || r.kseb_post_number,
-        landmark: r["Land Mark"] || r.landmark,
-        lat_long: r["Lat /Long"] || r.lat_long,
-        surveyor_name: r.surveyor_name || r.surveyor_username,
-        survey_date_time: r["Date & Time"] || r.survey_date_time
-      };
+      const rCust = (r["No: Of Customer Connected"] !== undefined ? r["No: Of Customer Connected"] : r.customers_connected);
+      if (!latestInfo) {
+        latestInfo = {
+          splitter_ratio: r["Splitter Ratio"] || r.splitter_ratio,
+          customers_connected: rCust,
+          kseb_post_number: r["KSEB Post Number"] || r.kseb_post_number,
+          landmark: r["Land Mark"] || r.landmark,
+          lat_long: r["Lat /Long"] || r.lat_long,
+          surveyor_name: r.surveyor_name || r.surveyor_username,
+          survey_date_time: r["Date & Time"] || r.survey_date_time
+        };
+      } else {
+        if (rCust !== undefined && rCust !== null && rCust !== '') {
+          latestInfo.customers_connected = rCust;
+        }
+        if (!latestInfo.splitter_ratio) latestInfo.splitter_ratio = r["Splitter Ratio"] || r.splitter_ratio;
+        if (!latestInfo.kseb_post_number) latestInfo.kseb_post_number = r["KSEB Post Number"] || r.kseb_post_number;
+        if (!latestInfo.landmark) latestInfo.landmark = r["Land Mark"] || r.landmark;
+        if (!latestInfo.lat_long) latestInfo.lat_long = r["Lat /Long"] || r.lat_long;
+      }
       const col = (r["Splitter Lead Colour Code"] || r.splitter_lead_color || '').trim().toUpperCase();
       if (col) leadsSet.add(col);
     }
@@ -197,11 +221,13 @@ function getSplitterSummary(eid, spl) {
   const leadsList = Array.from(leadsSet);
   if (leadsList.length === 0 && !latestInfo) return null;
 
+  const resolvedCustomers = (latestInfo && (latestInfo.customers_connected !== undefined ? latestInfo.customers_connected : latestInfo["No: Of Customer Connected"]));
+
   return {
     count: leadsList.length,
     leads: leadsList,
     splitter_ratio: (latestInfo && latestInfo.splitter_ratio) || '',
-    customers_connected: (latestInfo && (latestInfo.customers_connected !== undefined ? latestInfo.customers_connected : latestInfo["No: Of Customer Connected"])) !== undefined ? (latestInfo.customers_connected !== undefined ? latestInfo.customers_connected : latestInfo["No: Of Customer Connected"]) : '',
+    customers_connected: (resolvedCustomers !== undefined && resolvedCustomers !== null && resolvedCustomers !== '') ? resolvedCustomers : '',
     kseb_post_number: (latestInfo && latestInfo.kseb_post_number) || '',
     landmark: (latestInfo && latestInfo.landmark) || '',
     lat_long: (latestInfo && latestInfo.lat_long) || '',

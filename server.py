@@ -1995,6 +1995,7 @@ def get_surveyed_points(center: Optional[str] = None, session: dict = Depends(re
                     "enclosure_id": enc_id,
                     "splitter_id": spl_id,
                     "splitter_ratio": r["splitter_ratio"] or "",
+                    "customers_connected": r["customers_connected"] if r["customers_connected"] is not None else 0,
                     "leads": [],
                     "count": 0,
                     "kseb_post_number": r["kseb_post_number"] or "",
@@ -2008,6 +2009,8 @@ def get_surveyed_points(center: Optional[str] = None, session: dict = Depends(re
                 if norm_c and norm_c not in summary["leads"]:
                     summary["leads"].append(norm_c)
                 summary["count"] = len(summary["leads"])
+                if r["customers_connected"] is not None and r["customers_connected"] != "":
+                    summary["customers_connected"] = r["customers_connected"]
                 if r["splitter_ratio"] and not summary.get("splitter_ratio"):
                     summary["splitter_ratio"] = r["splitter_ratio"]
                 if r["lat_long"] and not summary.get("lat_long"):
