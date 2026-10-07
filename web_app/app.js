@@ -182,6 +182,7 @@ function getSplitterSummary(eid, spl) {
     if (rEid === eidUp && rSpl === splUp) {
       latestInfo = latestInfo || {
         splitter_ratio: r["Splitter Ratio"] || r.splitter_ratio,
+        customers_connected: (r["No: Of Customer Connected"] !== undefined ? r["No: Of Customer Connected"] : r.customers_connected),
         kseb_post_number: r["KSEB Post Number"] || r.kseb_post_number,
         landmark: r["Land Mark"] || r.landmark,
         lat_long: r["Lat /Long"] || r.lat_long,
@@ -200,6 +201,7 @@ function getSplitterSummary(eid, spl) {
     count: leadsList.length,
     leads: leadsList,
     splitter_ratio: (latestInfo && latestInfo.splitter_ratio) || '',
+    customers_connected: (latestInfo && (latestInfo.customers_connected !== undefined ? latestInfo.customers_connected : latestInfo["No: Of Customer Connected"])) !== undefined ? (latestInfo.customers_connected !== undefined ? latestInfo.customers_connected : latestInfo["No: Of Customer Connected"]) : '',
     kseb_post_number: (latestInfo && latestInfo.kseb_post_number) || '',
     landmark: (latestInfo && latestInfo.landmark) || '',
     lat_long: (latestInfo && latestInfo.lat_long) || '',
@@ -1271,11 +1273,10 @@ function updateAvailableSplitters() {
   handleSplitterSelectionChange();
 }
 
-// Reset customer-specific subscriber inputs and editing state
+// Reset customer-specific subscriber inputs and editing state (preserves splitter-level connected customers)
 function clearCustomerInputs() {
   if (adlSubInput) adlSubInput.value = '';
   if (acsSubInput) acsSubInput.value = '';
-  if (custCountInput) custCountInput.value = '1';
   currentAcsoEditingUuid = null;
   const banner = document.getElementById('acso-update-banner');
   if (banner) banner.style.display = 'none';
@@ -1290,6 +1291,7 @@ function clearCustomerInputs() {
 function resetPoleFields() {
   if (postInput) postInput.value = '';
   if (landmarkInput) landmarkInput.value = '';
+  if (custCountInput) custCountInput.value = '1';
   currentLat = null;
   currentLon = null;
   currentAccuracy = null;
@@ -1407,6 +1409,9 @@ function handleSplitterSelectionChange() {
     if (splSummary.splitter_ratio && splitterRatioSelect) {
       splitterRatioSelect.value = splSummary.splitter_ratio;
     }
+    if (custCountInput && splSummary.customers_connected !== undefined && splSummary.customers_connected !== null && splSummary.customers_connected !== '') {
+      custCountInput.value = splSummary.customers_connected;
+    }
     if (postInput && (!postInput.value.trim() || splSummary.kseb_post_number)) {
       if (splSummary.kseb_post_number) postInput.value = splSummary.kseb_post_number;
     }
@@ -1475,10 +1480,13 @@ function handleColorSelectionChange() {
       submitBtn.style.background = '#0284c7';
     }
 
-    // Pre-populate customer inputs from existing record
+    // Pre-populate subscriber inputs from existing record
     if (adlSubInput) adlSubInput.value = leadSurvey.adl_subscriber_id || leadSurvey["ADL Subscriber ID"] || '';
     if (acsSubInput) acsSubInput.value = leadSurvey.acs_subscriber_id || leadSurvey["ACS Subscriber ID"] || '';
-    if (custCountInput) custCountInput.value = (leadSurvey.customers_connected !== undefined ? leadSurvey.customers_connected : leadSurvey["No: Of Customer Connected"]) || 1;
+    const leadCount = (leadSurvey.customers_connected !== undefined ? leadSurvey.customers_connected : leadSurvey["No: Of Customer Connected"]);
+    if (custCountInput && leadCount !== undefined && leadCount !== null && leadCount !== '') {
+      custCountInput.value = leadCount;
+    }
   } else {
     // Normal / Brand-New Lead Entry Mode!
     currentAcsoEditingUuid = null;
@@ -1489,7 +1497,7 @@ function handleColorSelectionChange() {
     }
     if (adlSubInput) adlSubInput.value = '';
     if (acsSubInput) acsSubInput.value = '';
-    if (custCountInput) custCountInput.value = '1';
+    // Total connected customers in the splitter continues its last status across leads!
   }
 }
 
@@ -2511,6 +2519,7 @@ function saveRecord() {
       networkSurveyedPoints[splKey].leads.push(normC);
     }
     networkSurveyedPoints[splKey].count = networkSurveyedPoints[splKey].leads.length;
+    networkSurveyedPoints[splKey].customers_connected = entry["No: Of Customer Connected"];
     localStorage.setItem('gpon_network_surveyed_points', JSON.stringify(networkSurveyedPoints));
   } catch (err) {
     console.error('Local storage write failed:', err);
