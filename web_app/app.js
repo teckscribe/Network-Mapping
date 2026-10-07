@@ -2942,11 +2942,17 @@ function deleteRecord(index) {
   const confirmBtn = document.getElementById('btn-confirm-delete-action');
   if (confirmBtn) {
     confirmBtn.onclick = () => {
-      executeDeleteRecord(pendingDeleteIndex);
+      confirmDeleteRecord();
     };
   }
 
   modal.style.display = 'flex';
+}
+
+function confirmDeleteRecord() {
+  if (pendingDeleteIndex !== null && pendingDeleteIndex !== undefined) {
+    executeDeleteRecord(pendingDeleteIndex);
+  }
 }
 
 function closeDeleteConfirmModal() {
@@ -2956,53 +2962,60 @@ function closeDeleteConfirmModal() {
 }
 
 async function executeDeleteRecord(index) {
-  if (index === null || index < 0 || index >= records.length) return;
+  if (index === null || index < 0 || index >= records.length) {
+    closeDeleteConfirmModal();
+    return;
+  }
   const r = records[index];
   const clientUuid = r.client_uuid;
   const eid = r["Enclosure ID"] || r.enclosure_id;
   const spl = r["Splitter ID"] || r.splitter_id;
 
-  // 1. Remove from local array & localStorage
-  records.splice(index, 1);
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+  try {
+    // 1. Remove from local array & localStorage
+    records.splice(index, 1);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
 
-  // 2. Clear from local surveyed points cache so UI unlocks immediately
-  if (eid && spl) {
-    const col = r["Splitter Lead Colour Code"] || r.splitter_lead_color;
-    if (typeof networkSurveyedPoints !== 'undefined') {
-      const variants = getColorVariants(col);
-      variants.forEach(v => {
-        const k = `${eid}|${spl}|${v}`.toUpperCase();
-        delete networkSurveyedPoints[k];
-      });
-      const splKey = `${eid}|${spl}`.toUpperCase();
-      if (networkSurveyedPoints[splKey]) {
-        const s = networkSurveyedPoints[splKey];
-        if (Array.isArray(s.leads)) {
-          const normC = (col || '').trim().toUpperCase();
-          s.leads = s.leads.filter(l => l !== normC);
-          s.count = s.leads.length;
-          if (s.count === 0) {
-            delete networkSurveyedPoints[splKey];
+    // 2. Clear from local surveyed points cache so UI unlocks immediately
+    if (eid && spl) {
+      const col = r["Splitter Lead Colour Code"] || r.splitter_lead_color;
+      if (typeof networkSurveyedPoints !== 'undefined') {
+        const variants = getColorVariants(col);
+        variants.forEach(v => {
+          const k = `${eid}|${spl}|${v}`.toUpperCase();
+          delete networkSurveyedPoints[k];
+        });
+        const splKey = `${eid}|${spl}`.toUpperCase();
+        if (networkSurveyedPoints[splKey]) {
+          const s = networkSurveyedPoints[splKey];
+          if (Array.isArray(s.leads)) {
+            const normC = (col || '').trim().toUpperCase();
+            s.leads = s.leads.filter(l => l !== normC);
+            s.count = s.leads.length;
+            if (s.count === 0) {
+              delete networkSurveyedPoints[splKey];
+            }
           }
         }
+        localStorage.setItem('gpon_network_surveyed_points', JSON.stringify(networkSurveyedPoints));
       }
-      localStorage.setItem('gpon_network_surveyed_points', JSON.stringify(networkSurveyedPoints));
     }
-  }
 
-  // 3. Update UI
-  renderTable();
-  updateRecordsBadge();
-  updateSyncUI();
-  updateAvailableEnclosures();
-  updateAvailableSplitters();
-  closeDeleteConfirmModal();
+    // 3. Update UI
+    updateRecordsBadge();
+    updateSyncUI();
+    updateAvailableEnclosures();
+    updateAvailableSplitters();
 
-  // If records modal was open, refresh it
-  const recModal = document.getElementById('records-modal');
-  if (recModal && recModal.style.display === 'block') {
-    openRecordsModal();
+    // If records modal was open, refresh it
+    const recModal = document.getElementById('records-modal');
+    if (recModal && recModal.style.display === 'block') {
+      openRecordsModal();
+    }
+  } catch (err) {
+    console.error('Error during record deletion:', err);
+  } finally {
+    closeDeleteConfirmModal();
   }
 
   // 4. Send DELETE to server if client_uuid exists
@@ -3058,7 +3071,6 @@ async function clearAllRecords() {
   if (typeof networkSurveyedPoints !== 'undefined') {
     networkSurveyedPoints = {};
   }
-  renderTable();
   updateRecordsBadge();
   updateSyncUI();
   updateAvailableEnclosures();
