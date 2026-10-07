@@ -65,9 +65,19 @@ function getColorVariants(color) {
   const c = String(color || '').trim().toUpperCase();
   if (!c) return [];
   const variants = [c];
-  if (c.includes(' - ')) {
-    const suffix = c.split(' - ').pop().trim();
-    if (suffix && !variants.includes(suffix)) variants.push(suffix);
+  const m = c.match(/^OUT\s+(\d+)\s*-\s*(.+)$/);
+  if (m) {
+    const portNum = parseInt(m[1], 10);
+    const colName = m[2].trim();
+    // Only ports 1-12 alias to plain color name (prevents Out 13/25 from colliding with Out 1)
+    if (portNum <= 12 && !variants.includes(colName)) {
+      variants.push(colName);
+    }
+  } else {
+    const out1Variant = `OUT 1 - ${c}`;
+    if (!variants.includes(out1Variant)) {
+      variants.push(out1Variant);
+    }
   }
   return variants;
 }

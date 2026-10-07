@@ -1908,10 +1908,18 @@ def get_color_variants(color: Optional[str]) -> list:
     if not c:
         return []
     variants = [c]
-    if " - " in c:
-        suffix = c.split(" - ")[-1].strip()
-        if suffix and suffix not in variants:
-            variants.append(suffix)
+    import re
+    m = re.match(r"^OUT\s+(\d+)\s*-\s*(.+)$", c)
+    if m:
+        port_num = int(m.group(1))
+        col_name = m.group(2).strip()
+        # Only port 1-12 can alias to plain color name (prevents Out 13/25 colliding with Out 1)
+        if port_num <= 12 and col_name not in variants:
+            variants.append(col_name)
+    else:
+        out1 = f"OUT 1 - {c}"
+        if out1 not in variants:
+            variants.append(out1)
     return variants
 
 @app.get("/api/surveyed-points")
@@ -2043,18 +2051,15 @@ def sync_records(payload: SyncPayload, session: dict = Depends(require_any_auth)
             existing = None
             if enc_id and spl_id:
                 if lead_color:
-                    norm_c = lead_color.strip().upper()
-                    c_suffix = norm_c.split(" - ")[-1].strip() if " - " in norm_c else norm_c
-                    cur.execute("""
+                    c_variants = get_color_variants(lead_color)
+                    placeholders = ",".join(["?"] * len(c_variants))
+                    cur.execute(f"""
                         SELECT client_uuid, surveyor_username, surveyor_name, survey_date_time, splitter_lead_color
                         FROM survey_records
                         WHERE UPPER(TRIM(enclosure_id)) = UPPER(TRIM(?))
                           AND UPPER(TRIM(splitter_id)) = UPPER(TRIM(?))
-                          AND (
-                              UPPER(TRIM(splitter_lead_color)) = UPPER(TRIM(?))
-                              OR UPPER(TRIM(splitter_lead_color)) = UPPER(TRIM(?))
-                          )
-                    """, (enc_id, spl_id, lead_color, c_suffix))
+                          AND UPPER(TRIM(splitter_lead_color)) IN ({placeholders})
+                    """, (enc_id, spl_id, *c_variants))
                     existing = cur.fetchone()
                 else:
                     cur.execute("""
