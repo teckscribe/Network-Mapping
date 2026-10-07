@@ -1901,11 +1901,24 @@ def health_check():
         "server_time": datetime.datetime.now().isoformat()
     }
 
+def get_color_variants(color: Optional[str]) -> list:
+    if not color:
+        return []
+    c = str(color).strip().upper()
+    if not c:
+        return []
+    variants = [c]
+    if " - " in c:
+        suffix = c.split(" - ")[-1].strip()
+        if suffix and suffix not in variants:
+            variants.append(suffix)
+    return variants
+
 @app.get("/api/surveyed-points")
 def get_surveyed_points(center: Optional[str] = None, session: dict = Depends(require_any_auth)):
     """
     Returns an index map of all surveyed enclosure/splitter points across the network.
-    Used by mobile clients for duplicate detection, locking, and ACSO supervisor updates.
+    Used by mobile clients for duplicate detection, locking, multi-lead customer mapping, and ACSO supervisor updates.
     """
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -1932,9 +1945,9 @@ def get_surveyed_points(center: Optional[str] = None, session: dict = Depends(re
     for r in rows:
         enc_id = (r["enclosure_id"] or "").strip()
         spl_id = (r["splitter_id"] or "").strip()
+        lead_color = (r["splitter_lead_color"] or "").strip()
         if enc_id and spl_id:
-            key = f"{enc_id}|{spl_id}".upper()
-            points[key] = {
+            item = {
                 "client_uuid": r["client_uuid"],
                 "region": r["region"] or "",
                 "center": r["center"] or "",
@@ -1947,7 +1960,7 @@ def get_surveyed_points(center: Optional[str] = None, session: dict = Depends(re
                 "splitter_id": spl_id,
                 "splitter_ratio": r["splitter_ratio"] or "",
                 "customers_connected": r["customers_connected"] or 0,
-                "splitter_lead_color": r["splitter_lead_color"] or "",
+                "splitter_lead_color": lead_color,
                 "adl_subscriber_id": r["adl_subscriber_id"] or "",
                 "acs_subscriber_id": r["acs_subscriber_id"] or "",
                 "kseb_post_number": r["kseb_post_number"] or "",
@@ -1957,6 +1970,45 @@ def get_surveyed_points(center: Optional[str] = None, session: dict = Depends(re
                 "surveyor_username": r["surveyor_username"] or "",
                 "surveyor_name": r["surveyor_name"] or r["surveyor_username"] or "Surveyor"
             }
+            # 1. Lead-specific keys (including variants)
+            variants = get_color_variants(lead_color)
+            for v in variants:
+                lead_key = f"{enc_id}|{spl_id}|{v}".upper()
+                points[lead_key] = item
+            if not variants:
+                lead_key = f"{enc_id}|{spl_id}|".upper()
+                points[lead_key] = item
+
+            # 2. Splitter-level aggregate summary key: f"{enc_id}|{spl_id}".upper()
+            spl_key = f"{enc_id}|{spl_id}".upper()
+            if spl_key not in points or points[spl_key].get("is_summary"):
+                summary = points.get(spl_key, {
+                    "is_summary": True,
+                    "enclosure_id": enc_id,
+                    "splitter_id": spl_id,
+                    "splitter_ratio": r["splitter_ratio"] or "",
+                    "leads": [],
+                    "count": 0,
+                    "kseb_post_number": r["kseb_post_number"] or "",
+                    "landmark": r["landmark"] or "",
+                    "lat_long": r["lat_long"] or "",
+                    "surveyor_username": r["surveyor_username"] or "",
+                    "surveyor_name": r["surveyor_name"] or r["surveyor_username"] or "Surveyor",
+                    "survey_date_time": r["survey_date_time"] or ""
+                })
+                norm_c = lead_color.strip().upper()
+                if norm_c and norm_c not in summary["leads"]:
+                    summary["leads"].append(norm_c)
+                summary["count"] = len(summary["leads"])
+                if r["splitter_ratio"] and not summary.get("splitter_ratio"):
+                    summary["splitter_ratio"] = r["splitter_ratio"]
+                if r["lat_long"] and not summary.get("lat_long"):
+                    summary["lat_long"] = r["lat_long"]
+                if r["landmark"] and not summary.get("landmark"):
+                    summary["landmark"] = r["landmark"]
+                if r["kseb_post_number"] and not summary.get("kseb_post_number"):
+                    summary["kseb_post_number"] = r["kseb_post_number"]
+                points[spl_key] = summary
             
     return {
         "status": "success",
@@ -1985,17 +2037,34 @@ def sync_records(payload: SyncPayload, session: dict = Depends(require_any_auth)
 
             enc_id = (r.enclosure_id or "").strip()
             spl_id = (r.splitter_id or "").strip()
+            lead_color = (r.splitter_lead_color or "").strip()
 
-            # Check if (enclosure_id, splitter_id) already exists in database
+            # Check if this specific enclosure, splitter, AND lead color already exists in database
             existing = None
             if enc_id and spl_id:
-                cur.execute("""
-                    SELECT client_uuid, surveyor_username, surveyor_name, survey_date_time
-                    FROM survey_records
-                    WHERE UPPER(TRIM(enclosure_id)) = UPPER(TRIM(?))
-                      AND UPPER(TRIM(splitter_id)) = UPPER(TRIM(?))
-                """, (enc_id, spl_id))
-                existing = cur.fetchone()
+                if lead_color:
+                    norm_c = lead_color.strip().upper()
+                    c_suffix = norm_c.split(" - ")[-1].strip() if " - " in norm_c else norm_c
+                    cur.execute("""
+                        SELECT client_uuid, surveyor_username, surveyor_name, survey_date_time, splitter_lead_color
+                        FROM survey_records
+                        WHERE UPPER(TRIM(enclosure_id)) = UPPER(TRIM(?))
+                          AND UPPER(TRIM(splitter_id)) = UPPER(TRIM(?))
+                          AND (
+                              UPPER(TRIM(splitter_lead_color)) = UPPER(TRIM(?))
+                              OR UPPER(TRIM(splitter_lead_color)) = UPPER(TRIM(?))
+                          )
+                    """, (enc_id, spl_id, lead_color, c_suffix))
+                    existing = cur.fetchone()
+                else:
+                    cur.execute("""
+                        SELECT client_uuid, surveyor_username, surveyor_name, survey_date_time, splitter_lead_color
+                        FROM survey_records
+                        WHERE UPPER(TRIM(enclosure_id)) = UPPER(TRIM(?))
+                          AND UPPER(TRIM(splitter_id)) = UPPER(TRIM(?))
+                          AND (splitter_lead_color IS NULL OR TRIM(splitter_lead_color) = '')
+                    """, (enc_id, spl_id))
+                    existing = cur.fetchone()
 
             # Case A: Brand-new record OR re-sync of existing record with matching client_uuid
             if not existing or existing[0] == r.client_uuid:
@@ -2042,9 +2111,9 @@ def sync_records(payload: SyncPayload, session: dict = Depends(require_any_auth)
                 ))
                 synced_uuids.append(r.client_uuid)
 
-            # Case B: Record exists with a DIFFERENT client_uuid
+            # Case B: Record exists with a DIFFERENT client_uuid for this specific lead
             else:
-                existing_uuid, orig_user, orig_name, orig_date = existing
+                existing_uuid, orig_user, orig_name, orig_date, orig_color = existing
                 if is_supervisor:
                     # OPTION C: Supervisor update rights! Overwrite master record cleanly in-place
                     cur.execute("""
@@ -2071,7 +2140,8 @@ def sync_records(payload: SyncPayload, session: dict = Depends(require_any_auth)
                         "client_uuid": r.client_uuid,
                         "master_uuid": existing_uuid,
                         "enclosure_id": enc_id,
-                        "splitter_id": spl_id
+                        "splitter_id": spl_id,
+                        "splitter_lead_color": lead_color
                     })
                 else:
                     # OPTION D: Field Tech duplicate prevention! Block duplicate insertion
@@ -2079,9 +2149,10 @@ def sync_records(payload: SyncPayload, session: dict = Depends(require_any_auth)
                         "client_uuid": r.client_uuid,
                         "enclosure_id": enc_id,
                         "splitter_id": spl_id,
+                        "splitter_lead_color": lead_color,
                         "surveyor_name": orig_name or orig_user or "another technician",
                         "survey_date_time": orig_date or "",
-                        "reason": f"Splitter {spl_id} under Enclosure {enc_id} was already surveyed by {orig_name or orig_user}."
+                        "reason": f"Lead '{lead_color}' of Splitter {spl_id} under Enclosure {enc_id} was already surveyed by {orig_name or orig_user}."
                     })
         except Exception as e:
             print(f"Error syncing record {r.client_uuid}: {e}")

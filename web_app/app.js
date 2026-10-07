@@ -61,29 +61,74 @@ try {
   networkSurveyedPoints = {};
 }
 
-function getSurveyedInfo(eid, spl) {
-  if (!eid || !spl) return null;
-  const key = `${eid}|${spl}`.toUpperCase();
-  if (networkSurveyedPoints[key]) {
-    return networkSurveyedPoints[key];
+function getColorVariants(color) {
+  const c = String(color || '').trim().toUpperCase();
+  if (!c) return [];
+  const variants = [c];
+  if (c.includes(' - ')) {
+    const suffix = c.split(' - ').pop().trim();
+    if (suffix && !variants.includes(suffix)) variants.push(suffix);
   }
-  const local = records.find(r => 
-    (r["Enclosure ID"] || r.enclosure_id || '').toUpperCase() === eid.toUpperCase() &&
-    (r["Splitter ID"] || r.splitter_id || '').toUpperCase() === spl.toUpperCase()
-  );
+  return variants;
+}
+
+function getLeadKey(eid, spl, color) {
+  if (!eid || !spl) return '';
+  const c = color ? String(color).trim().toUpperCase() : '';
+  return `${eid}|${spl}|${c}`.toUpperCase();
+}
+
+function getSplitterKey(eid, spl) {
+  if (!eid || !spl) return '';
+  return `${eid}|${spl}`.toUpperCase();
+}
+
+function getLeadSurveyedInfo(eid, spl, color) {
+  if (!eid || !spl) return null;
+  const eidUp = eid.trim().toUpperCase();
+  const splUp = spl.trim().toUpperCase();
+  const colVariants = getColorVariants(color);
+
+  // 1. Check in networkSurveyedPoints
+  if (networkSurveyedPoints) {
+    for (const cv of colVariants) {
+      const k = `${eidUp}|${splUp}|${cv}`;
+      if (networkSurveyedPoints[k] && !networkSurveyedPoints[k].is_summary) {
+        return networkSurveyedPoints[k];
+      }
+    }
+    if (colVariants.length === 0) {
+      const kEmpty = `${eidUp}|${splUp}|`;
+      if (networkSurveyedPoints[kEmpty] && !networkSurveyedPoints[kEmpty].is_summary) {
+        return networkSurveyedPoints[kEmpty];
+      }
+    }
+  }
+
+  // 2. Check in local records array
+  const local = records.find(r => {
+    const rEid = (r["Enclosure ID"] || r.enclosure_id || '').trim().toUpperCase();
+    const rSpl = (r["Splitter ID"] || r.splitter_id || '').trim().toUpperCase();
+    if (rEid !== eidUp || rSpl !== splUp) return false;
+    const rCol = (r["Splitter Lead Colour Code"] || r.splitter_lead_color || '').trim().toUpperCase();
+    if (colVariants.length === 0 && !rCol) return true;
+    const rVariants = getColorVariants(rCol);
+    return colVariants.some(v => rVariants.includes(v));
+  });
+
   if (local) {
     return {
       client_uuid: local.client_uuid,
       enclosure_id: local["Enclosure ID"] || local.enclosure_id,
       splitter_id: local["Splitter ID"] || local.splitter_id,
+      splitter_ratio: local["Splitter Ratio"] || local.splitter_ratio || '',
+      splitter_lead_color: local["Splitter Lead Colour Code"] || local.splitter_lead_color || '',
       surveyor_name: local.surveyor_name || local.surveyor_username || 'Local',
       survey_date_time: local["Date & Time"] || local.survey_date_time || '',
       kseb_post_number: local["KSEB Post Number"] || local.kseb_post_number || '',
       landmark: local["Land Mark"] || local.landmark || '',
       lat_long: local["Lat /Long"] || local.lat_long || '',
-      splitter_ratio: local["Splitter Ratio"] || local.splitter_ratio || '',
       customers_connected: (local["No: Of Customer Connected"] !== undefined ? local["No: Of Customer Connected"] : local.customers_connected) || 0,
-      splitter_lead_color: local["Splitter Lead Colour Code"] || local.splitter_lead_color || '',
       adl_subscriber_id: local["ADL Subscriber ID"] || local.adl_subscriber_id || '',
       acs_subscriber_id: local["ACS Subscriber ID"] || local.acs_subscriber_id || ''
     };
@@ -91,17 +136,89 @@ function getSurveyedInfo(eid, spl) {
   return null;
 }
 
+function getSplitterSummary(eid, spl) {
+  if (!eid || !spl) return null;
+  const eidUp = eid.trim().toUpperCase();
+  const splUp = spl.trim().toUpperCase();
+  const splKey = `${eidUp}|${splUp}`;
+
+  const leadsSet = new Set();
+  let latestInfo = null;
+
+  if (networkSurveyedPoints) {
+    if (networkSurveyedPoints[splKey]) {
+      const s = networkSurveyedPoints[splKey];
+      latestInfo = s;
+      if (Array.isArray(s.leads)) {
+        s.leads.forEach(l => leadsSet.add(l.toUpperCase()));
+      }
+    }
+    const prefix = splKey + '|';
+    Object.keys(networkSurveyedPoints).forEach(k => {
+      if (k.startsWith(prefix)) {
+        const item = networkSurveyedPoints[k];
+        if (item && !item.is_summary) {
+          latestInfo = latestInfo || item;
+          const col = (item.splitter_lead_color || '').trim().toUpperCase();
+          if (col) leadsSet.add(col);
+        }
+      }
+    });
+  }
+
+  records.forEach(r => {
+    const rEid = (r["Enclosure ID"] || r.enclosure_id || '').trim().toUpperCase();
+    const rSpl = (r["Splitter ID"] || r.splitter_id || '').trim().toUpperCase();
+    if (rEid === eidUp && rSpl === splUp) {
+      latestInfo = latestInfo || {
+        splitter_ratio: r["Splitter Ratio"] || r.splitter_ratio,
+        kseb_post_number: r["KSEB Post Number"] || r.kseb_post_number,
+        landmark: r["Land Mark"] || r.landmark,
+        lat_long: r["Lat /Long"] || r.lat_long,
+        surveyor_name: r.surveyor_name || r.surveyor_username,
+        survey_date_time: r["Date & Time"] || r.survey_date_time
+      };
+      const col = (r["Splitter Lead Colour Code"] || r.splitter_lead_color || '').trim().toUpperCase();
+      if (col) leadsSet.add(col);
+    }
+  });
+
+  const leadsList = Array.from(leadsSet);
+  if (leadsList.length === 0 && !latestInfo) return null;
+
+  return {
+    count: leadsList.length,
+    leads: leadsList,
+    splitter_ratio: (latestInfo && latestInfo.splitter_ratio) || '',
+    kseb_post_number: (latestInfo && latestInfo.kseb_post_number) || '',
+    landmark: (latestInfo && latestInfo.landmark) || '',
+    lat_long: (latestInfo && latestInfo.lat_long) || '',
+    surveyor_name: (latestInfo && (latestInfo.surveyor_name || latestInfo.surveyor_username)) || 'Surveyor',
+    survey_date_time: (latestInfo && latestInfo.survey_date_time) || ''
+  };
+}
+
+function getSurveyedInfo(eid, spl, color = '') {
+  if (!eid || !spl) return null;
+  if (color) {
+    return getLeadSurveyedInfo(eid, spl, color);
+  }
+  return getSplitterSummary(eid, spl) || getLeadSurveyedInfo(eid, spl, '');
+}
+
 function getSurveyedSplittersForEnclosure(eid) {
   const surveyed = new Set();
   const eidUpper = (eid || '').toUpperCase();
   if (!eidUpper) return [];
 
-  Object.keys(networkSurveyedPoints).forEach(key => {
-    if (key.startsWith(eidUpper + '|')) {
-      const parts = key.split('|');
-      if (parts[1]) surveyed.add(parts[1]);
-    }
-  });
+  if (networkSurveyedPoints) {
+    Object.keys(networkSurveyedPoints).forEach(key => {
+      if (key.startsWith(eidUpper + '|')) {
+        const parts = key.split('|');
+        if (parts[1]) surveyed.add(parts[1]);
+      }
+    });
+  }
 
   records.forEach(r => {
     const rEid = (r["Enclosure ID"] || r.enclosure_id || '').toUpperCase();
@@ -925,10 +1042,15 @@ function initDropdowns(preserveSelection = false) {
   onCenterChange(prevRt, prevOlt);
 }
 
-// Splitter Lead Colour Code dynamically based on Splitter Ratio
+// Splitter Lead Colour Code dynamically based on Splitter Ratio and Survey Status
 function updateSplitterColorOptions() {
   if (!splitterColorSelect) return;
+  const olt = oltSelect ? oltSelect.value : '';
+  const port = portSelect ? portSelect.value : '';
+  const enc = enclosureSelect ? enclosureSelect.value : '';
+  const spl = splitterIdSelect ? splitterIdSelect.value : '';
   const ratio = splitterRatioSelect ? splitterRatioSelect.value : '';
+  const eid = (olt && port && enc) ? computeEnclosureId(olt, port, enc) : '';
 
   const prev = splitterColorSelect.value;
   splitterColorSelect.innerHTML = '';
@@ -938,22 +1060,60 @@ function updateSplitterColorOptions() {
   defOpt.innerText = ratio ? `-- Select Out Color (${ratio}) --` : '-- Select Ratio First --';
   splitterColorSelect.appendChild(defOpt);
 
-  if (!ratio) return; // No ratio selected, don't show color options
+  if (!ratio) {
+    handleColorSelectionChange();
+    return;
+  }
 
   const colorList = (DEFAULT_PRELOAD.color_codes_by_ratio && DEFAULT_PRELOAD.color_codes_by_ratio[ratio])
     ? DEFAULT_PRELOAD.color_codes_by_ratio[ratio]
     : (DEFAULT_PRELOAD.color_codes || []);
 
+  const role = currentUser ? normalizeClientRole(currentUser.role) : 'field_technician';
+  const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'super_admin');
+
+  let firstAvailableVal = '';
+
   colorList.forEach(col => {
     const opt = document.createElement('option');
     opt.value = col;
-    opt.innerText = col;
+
+    const leadSurvey = (eid && spl) ? getLeadSurveyedInfo(eid, spl, col) : null;
+    if (leadSurvey) {
+      const byWho = leadSurvey.surveyor_name || leadSurvey.surveyor_username || 'Surveyor';
+      if (isSupervisor) {
+        opt.innerText = `${col} — ✏️ Surveyed (${byWho})`;
+        opt.style.color = '#0284c7';
+        opt.style.fontWeight = '600';
+      } else {
+        opt.innerText = `${col} — 🔒 Surveyed (${byWho})`;
+        opt.disabled = true;
+        opt.style.color = '#94a3b8';
+        opt.style.backgroundColor = '#f1f5f9';
+      }
+    } else {
+      opt.innerText = `${col} — ✅ Available`;
+      opt.style.color = '#15803d';
+      opt.style.fontWeight = '600';
+      if (!firstAvailableVal) firstAvailableVal = col;
+    }
+
     splitterColorSelect.appendChild(opt);
   });
 
-  if (prev && colorList.includes(prev)) {
-    splitterColorSelect.value = prev;
+  // Preserve previous selection if still valid and not disabled, otherwise auto-select first available lead
+  if (prev) {
+    const optMatch = Array.from(splitterColorSelect.options).find(o => o.value === prev && !o.disabled);
+    if (optMatch) {
+      splitterColorSelect.value = prev;
+    } else if (firstAvailableVal) {
+      splitterColorSelect.value = firstAvailableVal;
+    }
+  } else if (firstAvailableVal) {
+    splitterColorSelect.value = firstAvailableVal;
   }
+
+  handleColorSelectionChange();
 }
 
 // Filter Enclosures to reflect survey status and role rights
@@ -984,19 +1144,11 @@ function updateAvailableEnclosures() {
 
       if (hasSurvey) {
         if (isSupervisor) {
-          // ACSO: Always selectable for supervisor updates
-          opt.innerText = `${e} (✏️ ${surveyedSplitters.length} Surveyed)`;
+          opt.innerText = `${e} (✏️ ${surveyedSplitters.length} Splitter${surveyedSplitters.length > 1 ? 's' : ''} Mapped)`;
           opt.style.color = '#0284c7';
         } else {
-          // Field Tech:
-          const totalSplitters = (DEFAULT_PRELOAD.splitters && DEFAULT_PRELOAD.splitters.length) || 4;
-          if (surveyedSplitters.length >= totalSplitters) {
-            opt.innerText = `${e} (🔒 Fully Surveyed)`;
-            opt.disabled = true;
-            opt.style.color = '#94a3b8';
-          } else {
-            opt.innerText = `${e} (${surveyedSplitters.length} Surveyed)`;
-          }
+          opt.innerText = `${e} (${surveyedSplitters.length} Splitter${surveyedSplitters.length > 1 ? 's' : ''} Mapped)`;
+          opt.style.color = '#0f172a';
         }
       } else {
         opt.innerText = e;
@@ -1017,7 +1169,7 @@ function updateAvailableEnclosures() {
   updateAvailableSplitters();
 }
 
-// Filter Splitter IDs to enforce Field Tech lock (Option D) and ACSO update (Option C)
+// Filter Splitter IDs to enforce Field Tech capacity lock and ACSO update rights
 function updateAvailableSplitters() {
   const olt = oltSelect ? oltSelect.value : '';
   const port = portSelect ? portSelect.value : '';
@@ -1039,31 +1191,44 @@ function updateAvailableSplitters() {
     const eid = computeEnclosureId(olt, port, enc);
 
     DEFAULT_PRELOAD.splitters.forEach((s, idx) => {
-      const surveyInfo = getSurveyedInfo(eid, s);
-
+      const splSummary = getSplitterSummary(eid, s);
       const opt = document.createElement('option');
       opt.value = s;
 
-      if (surveyInfo) {
-        const byWho = surveyInfo.surveyor_name || surveyInfo.surveyor_username || 'Surveyor';
-        if (isSupervisor) {
-          // OPTION C: Supervisor update rights
-          opt.innerText = `${s} — ✏️ Update Existing (${byWho})`;
-          opt.style.color = '#0284c7';
-          opt.style.fontWeight = '600';
+      const count = splSummary ? splSummary.count : 0;
+      const ratio = (splSummary && splSummary.splitter_ratio) || (splitterRatioSelect ? splitterRatioSelect.value : '');
+      const totalLeads = (ratio && DEFAULT_PRELOAD.color_codes_by_ratio && DEFAULT_PRELOAD.color_codes_by_ratio[ratio])
+        ? DEFAULT_PRELOAD.color_codes_by_ratio[ratio].length
+        : 0;
+
+      if (count > 0) {
+        const capText = totalLeads ? `${count}/${totalLeads} mapped` : `${count} lead${count > 1 ? 's' : ''} mapped`;
+        const isFull = totalLeads > 0 && count >= totalLeads;
+
+        if (isFull) {
+          if (isSupervisor) {
+            opt.innerText = `${s} — ✏️ Full (${capText})`;
+            opt.style.color = '#0284c7';
+            opt.style.fontWeight = '600';
+          } else {
+            opt.innerText = `${s} — 🔒 Full (${capText})`;
+            opt.disabled = true;
+            opt.style.color = '#94a3b8';
+            opt.style.backgroundColor = '#f1f5f9';
+          }
         } else {
-          // OPTION D: Field Tech duplicate prevention
-          opt.innerText = `${s} — 🔒 Already Surveyed (${byWho})`;
-          opt.disabled = true;
-          opt.style.color = '#94a3b8';
-          opt.style.backgroundColor = '#f1f5f9';
+          // Open leads available! Both tech and supervisor can select!
+          opt.innerText = `${s} (${capText})`;
+          opt.style.color = '#0f172a';
+          opt.style.fontWeight = '500';
         }
       } else {
+        // Brand new splitter with 0 mapped leads
         // Enforce sequential splitter addition (S2 requires S1, S3 requires S2, etc.)
         if (idx > 0) {
           const prevSplitter = DEFAULT_PRELOAD.splitters[idx - 1];
-          const prevSurveyed = getSurveyedInfo(eid, prevSplitter);
-          if (!prevSurveyed) {
+          const prevSummary = getSplitterSummary(eid, prevSplitter);
+          if (!prevSummary || prevSummary.count === 0) {
             opt.innerText = `${s} — 🔒 Add ${prevSplitter} first`;
             opt.disabled = true;
             opt.style.color = '#94a3b8';
@@ -1096,8 +1261,53 @@ function updateAvailableSplitters() {
   handleSplitterSelectionChange();
 }
 
-// Handle Splitter Selection: Toggles ACSO Update Banner & Pre-fills Existing Survey Data
+// Handle Splitter Selection: Auto-fills splitter metadata & triggers color updates
 function handleSplitterSelectionChange() {
+  const olt = oltSelect ? oltSelect.value : '';
+  const port = portSelect ? portSelect.value : '';
+  const enc = enclosureSelect ? enclosureSelect.value : '';
+  const spl = splitterIdSelect ? splitterIdSelect.value : '';
+
+  if (!olt || !port || !enc || !spl) {
+    updateSplitterColorOptions();
+    return;
+  }
+
+  const eid = computeEnclosureId(olt, port, enc);
+  const splSummary = getSplitterSummary(eid, spl);
+
+  if (splSummary) {
+    // If splitter already has surveyed leads, pre-fill common splitter ratio and pole details
+    if (splSummary.splitter_ratio && splitterRatioSelect && !splitterRatioSelect.value) {
+      splitterRatioSelect.value = splSummary.splitter_ratio;
+    }
+    if (postInput && !postInput.value.trim() && splSummary.kseb_post_number) {
+      postInput.value = splSummary.kseb_post_number;
+    }
+    if (landmarkInput && !landmarkInput.value.trim() && splSummary.landmark) {
+      landmarkInput.value = splSummary.landmark;
+    }
+    if (splSummary.lat_long && splSummary.lat_long.includes(',') && (!currentLat || !currentLon)) {
+      if (manualCoordsInput && !manualCoordsInput.value.trim()) manualCoordsInput.value = splSummary.lat_long;
+      const parts = splSummary.lat_long.split(',').map(s => parseFloat(s.trim()));
+      if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+        currentLat = parts[0];
+        currentLon = parts[1];
+        if (gpsAccText) {
+          gpsAccText.innerHTML = `<span style="color:#0284c7; font-weight:600;">📍 Existing Survey Coords (${splSummary.lat_long})</span>`;
+        }
+        if (mapInstance && typeof L !== 'undefined') {
+          renderMapMarker(currentLat, currentLon, 10);
+        }
+      }
+    }
+  }
+
+  updateSplitterColorOptions();
+}
+
+// Handle Lead Color Selection: Toggles ACSO Update Banner & Pre-fills Existing Lead Survey Data
+function handleColorSelectionChange() {
   const banner = document.getElementById('acso-update-banner');
   const descEl = document.getElementById('acso-update-desc');
   const submitBtn = document.getElementById('btn-save-record') || document.querySelector('.btn-add-row');
@@ -1106,11 +1316,12 @@ function handleSplitterSelectionChange() {
   const port = portSelect ? portSelect.value : '';
   const enc = enclosureSelect ? enclosureSelect.value : '';
   const spl = splitterIdSelect ? splitterIdSelect.value : '';
+  const col = splitterColorSelect ? splitterColorSelect.value : '';
 
   const role = currentUser ? normalizeClientRole(currentUser.role) : 'field_technician';
   const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'super_admin');
 
-  if (!olt || !port || !enc || !spl) {
+  if (!olt || !port || !enc || !spl || !col) {
     if (banner) banner.style.display = 'none';
     if (submitBtn) {
       submitBtn.innerHTML = '<span>➕</span> Submit';
@@ -1121,16 +1332,16 @@ function handleSplitterSelectionChange() {
   }
 
   const eid = computeEnclosureId(olt, port, enc);
-  const surveyInfo = getSurveyedInfo(eid, spl);
+  const leadSurvey = getLeadSurveyedInfo(eid, spl, col);
 
-  if (surveyInfo && isSupervisor) {
-    // Enter ACSO Update Mode
-    currentAcsoEditingUuid = surveyInfo.client_uuid;
-    const by = surveyInfo.surveyor_name || surveyInfo.surveyor_username || 'another surveyor';
-    const dt = surveyInfo.survey_date_time || surveyInfo["Date & Time"] || 'previous survey';
+  if (leadSurvey && isSupervisor) {
+    // Supervisor Update Mode for THIS specific lead!
+    currentAcsoEditingUuid = leadSurvey.client_uuid;
+    const by = leadSurvey.surveyor_name || leadSurvey.surveyor_username || 'another surveyor';
+    const dt = leadSurvey.survey_date_time || leadSurvey["Date & Time"] || 'previous survey';
 
     if (banner && descEl) {
-      descEl.innerHTML = `Editing record for <strong>${eid} (${spl})</strong>, originally surveyed by <strong>${by}</strong> (${dt}). Submitting will overwrite the master central database record.`;
+      descEl.innerHTML = `Editing customer on <strong>${eid} (${spl} - ${col})</strong>, originally surveyed by <strong>${by}</strong> (${dt}). Submitting will overwrite this record.`;
       banner.style.display = 'block';
     }
     if (submitBtn) {
@@ -1138,16 +1349,21 @@ function handleSplitterSelectionChange() {
       submitBtn.style.background = '#0284c7';
     }
 
-    // Pre-populate fields from existing record for easy supervisor corrections
-    populateFieldsFromExistingRecord(surveyInfo);
+    // Pre-populate customer inputs from existing record
+    if (adlSubInput) adlSubInput.value = leadSurvey.adl_subscriber_id || leadSurvey["ADL Subscriber ID"] || '';
+    if (acsSubInput) acsSubInput.value = leadSurvey.acs_subscriber_id || leadSurvey["ACS Subscriber ID"] || '';
+    if (custCountInput) custCountInput.value = (leadSurvey.customers_connected !== undefined ? leadSurvey.customers_connected : leadSurvey["No: Of Customer Connected"]) || 1;
   } else {
-    // Normal entry mode
+    // Normal / Brand-New Lead Entry Mode!
     currentAcsoEditingUuid = null;
     if (banner) banner.style.display = 'none';
     if (submitBtn) {
       submitBtn.innerHTML = '<span>➕</span> Submit';
       submitBtn.style.background = '';
     }
+    if (adlSubInput) adlSubInput.value = '';
+    if (acsSubInput) acsSubInput.value = '';
+    if (custCountInput) custCountInput.value = '1';
   }
 }
 
@@ -1159,13 +1375,13 @@ function populateFieldsFromExistingRecord(info) {
   if (landmarkInput && !landmarkInput.value.trim()) {
     landmarkInput.value = info.landmark || info["Land Mark"] || '';
   }
-  if (custCountInput && custCountInput.value === '0') {
-    custCountInput.value = (info.customers_connected !== undefined ? info.customers_connected : info["No: Of Customer Connected"]) || 0;
+  if (custCountInput) {
+    custCountInput.value = (info.customers_connected !== undefined ? info.customers_connected : info["No: Of Customer Connected"]) || 1;
   }
-  if (adlSubInput && !adlSubInput.value.trim()) {
+  if (adlSubInput) {
     adlSubInput.value = info.adl_subscriber_id || info["ADL Subscriber ID"] || '';
   }
-  if (acsSubInput && !acsSubInput.value.trim()) {
+  if (acsSubInput) {
     acsSubInput.value = info.acs_subscriber_id || info["ACS Subscriber ID"] || '';
   }
 
@@ -1638,6 +1854,7 @@ if (portSelect) portSelect.addEventListener('change', () => { updateAvailableEnc
 enclosureSelect.addEventListener('change', () => { updateEnclosureId(); updateAvailableSplitters(); handleSplitterSelectionChange(); });
 splitterRatioSelect.addEventListener('change', updateSplitterColorOptions);
 splitterIdSelect.addEventListener('change', handleSplitterSelectionChange);
+if (splitterColorSelect) splitterColorSelect.addEventListener('change', handleColorSelectionChange);
 
 // Close port dropdown panel on tap/click outside
 document.addEventListener('click', (e) => {
@@ -1969,14 +2186,15 @@ function saveRecord() {
     return;
   }
 
-  // Mandatory Dropdown Validation: All 6 cascading fields must be explicitly selected
+  // Mandatory Dropdown Validation: All cascading fields must be explicitly selected
   const mandatoryDropdowns = [
     { el: rtRoomSelect, label: 'RT Room' },
     { el: oltSelect, label: 'Node Name' },
     { el: portSelect, label: 'Port Number', triggerEl: document.getElementById('btn-port-picker') },
     { el: enclosureSelect, label: 'Enclosure #' },
     { el: splitterRatioSelect, label: 'Splitter Ratio' },
-    { el: splitterIdSelect, label: 'Splitter ID' }
+    { el: splitterIdSelect, label: 'Splitter ID' },
+    { el: splitterColorSelect, label: 'Splitter Out Colour Code' }
   ];
   for (const dd of mandatoryDropdowns) {
     if (!dd.el || !dd.el.value) {
@@ -1998,33 +2216,43 @@ function saveRecord() {
   const enc = enclosureSelect.value;
   const eid = computeEnclosureId(olt, port, enc);
   const spl = splitterIdSelect.value;
+  const colorCode = splitterColorSelect ? splitterColorSelect.value : '';
+  const adlId = adlSubInput ? adlSubInput.value.trim() : '';
+  const acsId = acsSubInput ? acsSubInput.value.trim() : '';
 
   const role = currentUser ? normalizeClientRole(currentUser.role) : 'field_technician';
   const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'super_admin');
 
-  // Check if this enclosure & splitter point is already surveyed (across network or locally)
-  const existingSurvey = getSurveyedInfo(eid, spl);
+  // Check if this SPECIFIC lead is already surveyed
+  const existingLeadSurvey = getLeadSurveyedInfo(eid, spl, colorCode);
 
-  // OPTION D: Field Technician Hard Block
-  if (existingSurvey && !isSupervisor) {
-    const surveyor = existingSurvey.surveyor_name || existingSurvey.surveyor_username || 'another surveyor';
-    showToast(`❌ Splitter ${spl} under Enclosure ${eid} was already surveyed by ${surveyor}! Field technicians cannot overwrite existing records.`, false);
-    splitterIdSelect.focus();
+  // OPTION D: Field Technician Hard Block on already surveyed lead
+  if (existingLeadSurvey && !isSupervisor) {
+    const surveyor = existingLeadSurvey.surveyor_name || existingLeadSurvey.surveyor_username || 'another surveyor';
+    showToast(`❌ Lead "${colorCode}" of Splitter ${spl} under Enclosure ${eid} was already surveyed by ${surveyor}! Field technicians cannot overwrite existing records.`, false);
+    if (splitterColorSelect) splitterColorSelect.focus();
     return;
   }
 
-  // OPTION C: ACSO Supervisor Update Mode
-  const isAcsoUpdate = !!(existingSurvey && isSupervisor);
+  // OPTION C: ACSO Supervisor Update Mode for this specific lead
+  const isAcsoUpdate = !!(existingLeadSurvey && isSupervisor);
 
   if (!isAcsoUpdate) {
-    // Condition for brand-new entries: prevent duplicate splitter in same enclosure locally
-    const isDuplicateSplitter = records.some(r => 
-      (r["Enclosure ID"] || r.enclosure_id) === eid && 
-      (r["Splitter ID"] || r.splitter_id) === spl
-    );
-    if (isDuplicateSplitter) {
-      showToast(`❌ Splitter ${spl} is already surveyed under Enclosure ${eid}! Duplicate Splitter ID not allowed.`, false);
-      splitterIdSelect.focus();
+    // Condition for brand-new entries: prevent duplicate lead in same enclosure locally
+    const isDuplicateLead = records.some(r => {
+      const rEid = (r["Enclosure ID"] || r.enclosure_id || '').trim().toUpperCase();
+      const rSpl = (r["Splitter ID"] || r.splitter_id || '').trim().toUpperCase();
+      if (rEid !== eid.toUpperCase() || rSpl !== spl.toUpperCase()) return false;
+      const rCol = (r["Splitter Lead Colour Code"] || r.splitter_lead_color || '').trim().toUpperCase();
+      if (!colorCode && !rCol) return true;
+      const colVars = getColorVariants(colorCode);
+      const rVars = getColorVariants(rCol);
+      return colVars.some(v => rVars.includes(v));
+    });
+
+    if (isDuplicateLead) {
+      showToast(`❌ Lead "${colorCode}" of Splitter ${spl} is already in your pending records! Duplicate entry not allowed.`, false);
+      if (splitterColorSelect) splitterColorSelect.focus();
       return;
     }
 
@@ -2033,9 +2261,9 @@ function saveRecord() {
       const sIndex = DEFAULT_PRELOAD.splitters.indexOf(spl);
       if (sIndex > 0) {
         const prevSplitter = DEFAULT_PRELOAD.splitters[sIndex - 1];
-        const prevSurveyed = getSurveyedInfo(eid, prevSplitter);
-        if (!prevSurveyed) {
-          showToast(`❌ Splitter ${prevSplitter} must be surveyed and added first before adding ${spl} in Enclosure ${enc}!`, false);
+        const prevSummary = getSplitterSummary(eid, prevSplitter);
+        if (!prevSummary || prevSummary.count === 0) {
+          showToast(`❌ Splitter ${prevSplitter} must be added first before adding ${spl} in Enclosure ${enc}!`, false);
           splitterIdSelect.focus();
           return;
         }
@@ -2044,7 +2272,7 @@ function saveRecord() {
   }
 
   const clientUuid = isAcsoUpdate
-    ? (existingSurvey.client_uuid || currentAcsoEditingUuid || crypto.randomUUID())
+    ? (existingLeadSurvey.client_uuid || currentAcsoEditingUuid || crypto.randomUUID())
     : ((typeof crypto !== 'undefined' && crypto.randomUUID) 
         ? crypto.randomUUID() 
         : ('rec_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9)));
@@ -2052,10 +2280,6 @@ function saveRecord() {
   const now = new Date();
   const formattedDateTime = getFormattedDateTime(now);
   const isoTimestamp = now.toISOString();
-
-  const colorCode = splitterColorSelect ? splitterColorSelect.value : '';
-  const adlId = adlSubInput ? adlSubInput.value.trim() : '';
-  const acsId = acsSubInput ? acsSubInput.value.trim() : '';
 
   const entry = {
     client_uuid: clientUuid,
@@ -2102,24 +2326,37 @@ function saveRecord() {
     }
     localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
 
-    // Update in-memory and local cache map immediately
-    const surveyKey = `${eid}|${spl}`.toUpperCase();
-    networkSurveyedPoints[surveyKey] = {
-      client_uuid: clientUuid,
-      enclosure_id: eid,
-      splitter_id: spl,
-      surveyor_username: entry.surveyor_username,
-      surveyor_name: entry.surveyor_name,
-      survey_date_time: formattedDateTime,
-      kseb_post_number: entry["KSEB Post Number"],
-      landmark: entry["Land Mark"],
-      lat_long: entry["Lat /Long"],
-      splitter_ratio: entry["Splitter Ratio"],
-      customers_connected: entry["No: Of Customer Connected"],
-      splitter_lead_color: entry["Splitter Lead Colour Code"],
-      adl_subscriber_id: entry["ADL Subscriber ID"],
-      acs_subscriber_id: entry["ACS Subscriber ID"]
-    };
+    // Update in-memory and local cache map immediately for this lead
+    const leadKey = getLeadKey(eid, spl, colorCode);
+    networkSurveyedPoints[leadKey] = entry;
+
+    const variants = getColorVariants(colorCode);
+    variants.forEach(v => {
+      networkSurveyedPoints[`${eid}|${spl}|${v}`.toUpperCase()] = entry;
+    });
+
+    // Update splitter summary in cache
+    const splKey = getSplitterKey(eid, spl);
+    if (!networkSurveyedPoints[splKey]) {
+      networkSurveyedPoints[splKey] = {
+        is_summary: true,
+        enclosure_id: eid,
+        splitter_id: spl,
+        splitter_ratio: entry["Splitter Ratio"],
+        leads: [],
+        count: 0,
+        kseb_post_number: entry["KSEB Post Number"],
+        landmark: entry["Land Mark"],
+        lat_long: entry["Lat /Long"],
+        surveyor_name: entry.surveyor_name,
+        survey_date_time: formattedDateTime
+      };
+    }
+    const normC = colorCode.trim().toUpperCase();
+    if (normC && !networkSurveyedPoints[splKey].leads.includes(normC)) {
+      networkSurveyedPoints[splKey].leads.push(normC);
+    }
+    networkSurveyedPoints[splKey].count = networkSurveyedPoints[splKey].leads.length;
     localStorage.setItem('gpon_network_surveyed_points', JSON.stringify(networkSurveyedPoints));
   } catch (err) {
     console.error('Local storage write failed:', err);
@@ -2136,50 +2373,61 @@ function saveRecord() {
   }
   showSubmitConfirmModal(entry, isAcsoUpdate);
 
-  // Clear pole-specific inputs
-  postInput.value = '';
-  landmarkInput.value = '';
-  custCountInput.value = '0';
+  // Clear customer-specific subscriber inputs
+  custCountInput.value = '1';
   if (adlSubInput) adlSubInput.value = '';
   if (acsSubInput) acsSubInput.value = '';
 
-  // Reset GPS state so each subsequent pole requires an explicit, fresh GPS capture
-  currentLat = null;
-  currentLon = null;
-  currentAccuracy = null;
-  bestAccuracy = Infinity;
-  if (manualCoordsInput) {
-    manualCoordsInput.value = '';
-    manualCoordsInput.placeholder = 'e.g. 10.606650, 76.214490 (Mandatory)';
-  }
-  if (gpsAccText) {
-    gpsAccText.innerHTML = '<span style="color:#d97706; font-weight:600;">⚠️ Tap 🎯 GPS at next pole</span>';
-  }
-  if (mapMarker && mapInstance) {
-    mapInstance.removeLayer(mapMarker);
-    mapMarker = null;
-  }
-  if (accuracyCircle && mapInstance) {
-    mapInstance.removeLayer(accuracyCircle);
-    accuracyCircle = null;
-  }
-
-  // Reset per-pole dropdown selections (Enclosure, Splitter Ratio, Splitter ID)
-  // RT Room, Node Name, and Port persist for same network segment continuity
-  enclosureSelect.value = '';
-  splitterRatioSelect.value = '';
-  splitterIdSelect.value = '';
-  enclosureIdPreview.innerText = '---';
-  updateSplitterColorOptions();
-
   // Reset ACSO update state
   currentAcsoEditingUuid = null;
-  handleSplitterSelectionChange();
 
-  // Refresh available enclosures & splitters for next entry
-  updateAvailableEnclosures();
-  updateAvailableSplitters();
-  updateEnclosureId();
+  // Check if current splitter still has unmapped leads available
+  const currentRatio = splitterRatioSelect ? splitterRatioSelect.value : '';
+  const totalLeadsForRatio = (currentRatio && DEFAULT_PRELOAD.color_codes_by_ratio && DEFAULT_PRELOAD.color_codes_by_ratio[currentRatio])
+    ? DEFAULT_PRELOAD.color_codes_by_ratio[currentRatio].length
+    : 0;
+  const currentSummary = getSplitterSummary(eid, spl);
+  const mappedCount = currentSummary ? currentSummary.count : 0;
+  const hasMoreLeads = totalLeadsForRatio > 0 && mappedCount < totalLeadsForRatio;
+
+  if (hasMoreLeads) {
+    // Keep Enclosure, Splitter, Ratio, and Pole info intact for seamless multi-customer mapping on same pole!
+    updateAvailableSplitters();
+    updateSplitterColorOptions();
+    if (adlSubInput) setTimeout(() => adlSubInput.focus(), 300);
+  } else {
+    // Splitter is full or completed: Reset pole-specific fields for the next equipment point
+    postInput.value = '';
+    landmarkInput.value = '';
+    currentLat = null;
+    currentLon = null;
+    currentAccuracy = null;
+    bestAccuracy = Infinity;
+    if (manualCoordsInput) {
+      manualCoordsInput.value = '';
+      manualCoordsInput.placeholder = 'e.g. 10.606650, 76.214490 (Mandatory)';
+    }
+    if (gpsAccText) {
+      gpsAccText.innerHTML = '<span style="color:#d97706; font-weight:600;">⚠️ Tap 🎯 GPS at next pole</span>';
+    }
+    if (mapMarker && mapInstance) {
+      mapInstance.removeLayer(mapMarker);
+      mapMarker = null;
+    }
+    if (accuracyCircle && mapInstance) {
+      mapInstance.removeLayer(accuracyCircle);
+      accuracyCircle = null;
+    }
+
+    enclosureSelect.value = '';
+    splitterRatioSelect.value = '';
+    splitterIdSelect.value = '';
+    enclosureIdPreview.innerText = '---';
+    updateSplitterColorOptions();
+    updateAvailableEnclosures();
+    updateAvailableSplitters();
+    updateEnclosureId();
+  }
 
   // Trigger silent background sync if server is reachable
   syncWithServer(true);
@@ -2239,8 +2487,12 @@ function showSubmitConfirmModal(entry, isAcsoUpdate = false) {
       <strong style="color:#0284c7; font-family:monospace; font-size:1.05rem;">${encId}</strong>
     </div>
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-      <span style="color:#64748b;">Splitter ID:</span>
-      <strong style="color:#334155;">${splitInfo}</strong>
+      <span style="color:#64748b;">Splitter & Lead:</span>
+      <strong style="color:#334155;">${splitInfo} • ${entry["Splitter Lead Colour Code"] || '-'}</strong>
+    </div>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+      <span style="color:#64748b;">Subscriber ID:</span>
+      <strong style="color:#0284c7; font-family:monospace;">${entry["ADL Subscriber ID"] || entry["ACS Subscriber ID"] || '-'}</strong>
     </div>
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
       <span style="color:#64748b;">Center / Node:</span>
@@ -2269,7 +2521,11 @@ function showSubmitConfirmModal(entry, isAcsoUpdate = false) {
 function closeSubmitConfirmModal() {
   const modal = document.getElementById('submit-confirm-modal');
   if (modal) modal.style.display = 'none';
-  if (postInput) postInput.focus();
+  if (adlSubInput && adlSubInput.offsetParent !== null) {
+    adlSubInput.focus();
+  } else if (postInput) {
+    postInput.focus();
+  }
 }
 
 // Allow Enter key or Escape to dismiss confirmation modal
@@ -2580,9 +2836,26 @@ async function executeDeleteRecord(index) {
 
   // 2. Clear from local surveyed points cache so UI unlocks immediately
   if (eid && spl) {
-    const key = `${eid}|${spl}`.toUpperCase();
-    if (typeof networkSurveyedPoints !== 'undefined' && networkSurveyedPoints[key]) {
-      delete networkSurveyedPoints[key];
+    const col = r["Splitter Lead Colour Code"] || r.splitter_lead_color;
+    if (typeof networkSurveyedPoints !== 'undefined') {
+      const variants = getColorVariants(col);
+      variants.forEach(v => {
+        const k = `${eid}|${spl}|${v}`.toUpperCase();
+        delete networkSurveyedPoints[k];
+      });
+      const splKey = `${eid}|${spl}`.toUpperCase();
+      if (networkSurveyedPoints[splKey]) {
+        const s = networkSurveyedPoints[splKey];
+        if (Array.isArray(s.leads)) {
+          const normC = (col || '').trim().toUpperCase();
+          s.leads = s.leads.filter(l => l !== normC);
+          s.count = s.leads.length;
+          if (s.count === 0) {
+            delete networkSurveyedPoints[splKey];
+          }
+        }
+      }
+      localStorage.setItem('gpon_network_surveyed_points', JSON.stringify(networkSurveyedPoints));
     }
   }
 
