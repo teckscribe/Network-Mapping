@@ -987,6 +987,11 @@ def login(req: LoginRequest, request: Request):
         }
     }
 
+@app.post("/api/logout")
+def api_logout(session: Optional[dict] = Depends(get_current_session)):
+    """Stateless session logout endpoint."""
+    return {"status": "success", "message": "Logged out successfully"}
+
 @app.get("/api/user-profile")
 def get_user_profile(username: Optional[str] = None, session: dict = Depends(require_any_auth)):
     uname = (username or session.get("username") or "").strip()
@@ -3561,11 +3566,31 @@ def admin_dashboard(response: Response):
           return 'field_technician';
         }
 
+        let adminMidnightTimer = null;
+        function scheduleAdminMidnightLogout() {
+          if (adminMidnightTimer) clearTimeout(adminMidnightTimer);
+          const now = new Date();
+          const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0).getTime();
+          const msUntilMidnight = Math.max(1000, nextMidnight - Date.now());
+          adminMidnightTimer = setTimeout(() => {
+            console.log('[Admin Auth] 00:00 midnight reached, logging out admin session');
+            adminLogout();
+          }, msUntilMidnight);
+        }
+
         // Check authentication & apply permissions
         function checkAdminAuth() {
           let token = localStorage.getItem('gpon_auth_token');
           let userStr = localStorage.getItem('gpon_admin_user') || localStorage.getItem('gpon_logged_in_user');
           if (!userStr || !token) {
+            adminLogout();
+            return false;
+          }
+
+          // Check if admin session has crossed 00:00 midnight
+          const expiresAt = parseInt(localStorage.getItem('gpon_session_expires_at') || '0', 10);
+          if (expiresAt > 0 && Date.now() >= expiresAt) {
+            console.log('[Admin Auth] Daily session expired past midnight (00:00).');
             adminLogout();
             return false;
           }
@@ -3589,6 +3614,8 @@ def admin_dashboard(response: Response):
 
           document.getElementById('admin-auth-overlay').style.display = 'none';
           document.getElementById('access-denied-modal').style.display = 'none';
+
+          scheduleAdminMidnightLogout();
 
           // Apply Role UI
           applyAdminRoleUI(role);
@@ -3635,6 +3662,12 @@ def admin_dashboard(response: Response):
               localStorage.setItem('gpon_admin_user', JSON.stringify(data.user));
               localStorage.setItem('gpon_logged_in_user', JSON.stringify(data.user));
               if (data.token) localStorage.setItem('gpon_auth_token', data.token);
+
+              // Schedule midnight daily session expiration (00:00 local time)
+              const now = new Date();
+              const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0).getTime();
+              localStorage.setItem('gpon_session_expires_at', String(nextMidnight));
+
               currentAdmin = data.user;
               checkAdminAuth();
               initAdminData();
@@ -3652,6 +3685,11 @@ def admin_dashboard(response: Response):
           localStorage.removeItem('gpon_admin_user');
           localStorage.removeItem('gpon_logged_in_user');
           localStorage.removeItem('gpon_auth_token');
+          localStorage.removeItem('gpon_session_expires_at');
+          if (adminMidnightTimer) {
+            clearTimeout(adminMidnightTimer);
+            adminMidnightTimer = null;
+          }
           currentAdmin = null;
           showAdminLoginModal();
         }

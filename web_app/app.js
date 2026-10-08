@@ -32,12 +32,117 @@ let serverConnectionChecked = false;
 let lastKnownHierarchyVersion = parseInt(localStorage.getItem('gpon_hierarchy_version') || '0', 10);
 
 // User Session & Authentication
+let midnightTimer = null;
+
+function getNextMidnightTimestamp() {
+  const now = new Date();
+  // Next midnight: tomorrow at 00:00:00 local time
+  const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0);
+  return midnight.getTime();
+}
+
+function clearSessionOnly() {
+  currentUser = null;
+  networkSurveyedPoints = {};
+  localStorage.removeItem('gpon_logged_in_user');
+  localStorage.removeItem('gpon_auth_token');
+  localStorage.removeItem('gpon_session_expires_at');
+  localStorage.removeItem('gpon_network_surveyed_points');
+  if (midnightTimer) {
+    clearTimeout(midnightTimer);
+    midnightTimer = null;
+  }
+  // ZERO DATA LOSS INVARIANT:
+  // STORAGE_KEY ('gpon_survey_records_v1') and 'gpon_pending_deletions' are NEVER cleared or modified.
+  // All pending offline survey records are safely preserved on this device.
+}
+
+function scheduleMidnightLogout() {
+  if (midnightTimer) {
+    clearTimeout(midnightTimer);
+    midnightTimer = null;
+  }
+  if (!currentUser) return;
+
+  const nextMidnight = getNextMidnightTimestamp();
+  const msUntilMidnight = Math.max(1000, nextMidnight - Date.now());
+
+  midnightTimer = setTimeout(async () => {
+    console.log('[Auth] 00:00 Midnight reached. Triggering daily session logout.');
+    await handleMidnightSessionReset();
+  }, msUntilMidnight);
+}
+
+async function handleMidnightSessionReset() {
+  if (!currentUser) return;
+
+  // 1. Attempt silent auto-sync of pending records before closing session if connected
+  const pendingCount = (records || []).filter(r => r.sync_status !== 'synced').length;
+  if (pendingCount > 0 && isServerReachable) {
+    try {
+      console.log(`[Auth] Attempting auto-sync of ${pendingCount} pending records prior to midnight logout...`);
+      await syncWithServer(true);
+    } catch (e) {
+      console.warn('[Auth] Pre-midnight sync failed (offline):', e);
+    }
+  }
+
+  // 2. Clear authentication session while keeping all offline records 100% safe
+  clearSessionOnly();
+
+  // 3. UI Update
+  const foucStyle = document.getElementById('fouc-prevention');
+  if (foucStyle) foucStyle.remove();
+  updateUserBar();
+  const overlay = document.getElementById('login-overlay');
+  if (overlay) overlay.style.setProperty('display', 'flex', 'important');
+
+  // Friendly midnight notice on the login card
+  const loginErrBox = document.getElementById('login-error-msg');
+  if (loginErrBox) {
+    loginErrBox.style.display = 'block';
+    loginErrBox.style.backgroundColor = '#eff6ff';
+    loginErrBox.style.color = '#1e40af';
+    loginErrBox.style.borderColor = '#bfdbfe';
+    loginErrBox.innerHTML = '🌙 <strong>Daily Midnight Reset:</strong> Session ended at 00:00.<br><span style="font-size: 0.8rem; opacity: 0.95;">Please sign in for today\'s shift. All your pending offline records are safely preserved on this device.</span>';
+  }
+  showToast('🌙 Daily session reset at 00:00. Offline records preserved.', true);
+}
+
+function checkMidnightExpiration() {
+  if (!currentUser) return;
+  const expiresAt = parseInt(localStorage.getItem('gpon_session_expires_at') || '0', 10);
+  if (expiresAt > 0 && Date.now() >= expiresAt) {
+    console.log('[Auth] Session crossed midnight (00:00). Triggering session reset.');
+    handleMidnightSessionReset();
+  }
+}
+
+async function hashOfflineCredential(username, password) {
+  try {
+    if (window.crypto && crypto.subtle) {
+      const enc = new TextEncoder();
+      const data = enc.encode(`gpon_salt_${username.toLowerCase().trim()}_${password}`);
+      const hashBuf = await crypto.subtle.digest('SHA-256', data);
+      return Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+  } catch (e) {}
+  return btoa(`${username.toLowerCase().trim()}:${password}`);
+}
+
 function getStoredUser() {
   try {
     const raw = localStorage.getItem('gpon_logged_in_user');
     if (!raw || raw === 'null' || raw === 'undefined' || raw === '{}') return null;
     const u = JSON.parse(raw);
     if (u && typeof u === 'object' && u.username && typeof u.username === 'string' && u.username.trim().length > 0) {
+      // Check if session has crossed 00:00 midnight
+      const expiresAt = parseInt(localStorage.getItem('gpon_session_expires_at') || '0', 10);
+      if (expiresAt > 0 && Date.now() >= expiresAt) {
+        console.log('[Auth] Daily session expired past midnight (00:00). Requiring login for today.');
+        clearSessionOnly();
+        return null;
+      }
       return u;
     }
   } catch (e) {
@@ -410,6 +515,9 @@ function setLoginError(htmlMsg) {
   if (errBox) {
     errBox.innerHTML = htmlMsg;
     errBox.style.display = 'block';
+    errBox.style.backgroundColor = '#fef2f2';
+    errBox.style.color = '#991b1b';
+    errBox.style.borderColor = '#fecaca';
     errBox.classList.remove('shake-anim');
     void errBox.offsetWidth; // Force DOM reflow to re-trigger shake animation
     errBox.classList.add('shake-anim');
@@ -424,6 +532,9 @@ function clearLoginError() {
   if (errBox) {
     errBox.style.display = 'none';
     errBox.innerHTML = '';
+    errBox.style.backgroundColor = '';
+    errBox.style.color = '';
+    errBox.style.borderColor = '';
   }
 }
 
@@ -486,6 +597,15 @@ async function handleLogin(e) {
       // Purge any legacy plaintext passwords stored previously
       localStorage.removeItem('gpon_remembered_password');
 
+      // Cache credentials securely for offline field re-authentication
+      try {
+        const hash = await hashOfflineCredential(u, p);
+        localStorage.setItem('gpon_offline_user_' + u.toLowerCase().trim(), JSON.stringify({
+          user: data.user,
+          hash: hash
+        }));
+      } catch (e) {}
+
       setCurrentUser(data.user);
       showToast(`Welcome, ${data.user.full_name}!`);
       return;
@@ -520,20 +640,41 @@ async function handleLogin(e) {
 
   // 2. Offline fallback credentials for remote emergency field areas
   if (!serverContacted) {
-    const offlineUsers = {
-      'admin': { username: 'admin', full_name: 'Central Super Administrator', email: 'admin@gpon.local', assigned_center: 'ALL', assigned_region: 'ALL', role: 'super_admin' }
-    };
+    let offlineMatchedUser = null;
 
-    if (offlineUsers[u.toLowerCase()] && p === 'admin123') {
+    // Check cached offline credentials for this device
+    try {
+      const cachedRaw = localStorage.getItem('gpon_offline_user_' + u.toLowerCase().trim());
+      if (cachedRaw) {
+        const cachedObj = JSON.parse(cachedRaw);
+        const inputHash = await hashOfflineCredential(u, p);
+        if (cachedObj && cachedObj.hash === inputHash) {
+          offlineMatchedUser = cachedObj.user;
+        }
+      }
+    } catch (e) {
+      console.warn('Offline credential verification error:', e);
+    }
+
+    if (!offlineMatchedUser) {
+      const offlineUsers = {
+        'admin': { username: 'admin', full_name: 'Central Super Administrator', email: 'admin@gpon.local', assigned_center: 'ALL', assigned_region: 'ALL', role: 'super_admin' }
+      };
+      if (offlineUsers[u.toLowerCase()] && p === 'admin123') {
+        offlineMatchedUser = offlineUsers[u.toLowerCase()];
+      }
+    }
+
+    if (offlineMatchedUser) {
       if (remember) {
         localStorage.setItem('gpon_remember_creds', 'true');
         localStorage.setItem('gpon_remembered_username', u);
       }
       localStorage.removeItem('gpon_remembered_password');
-      setCurrentUser(offlineUsers[u.toLowerCase()]);
-      showToast(`Offline Login: Welcome, ${offlineUsers[u.toLowerCase()].full_name}!`);
+      setCurrentUser(offlineMatchedUser);
+      showToast(`Offline Login: Welcome, ${offlineMatchedUser.full_name}! (Working Offline)`);
     } else {
-      setLoginError('⚠️ <strong>Unable to connect to server.</strong><br><span style="font-size: 0.78rem;">Please check your mobile data / Wi-Fi or verify that the server is running.</span>');
+      setLoginError('⚠️ <strong>Unable to connect to server.</strong><br><span style="font-size: 0.78rem;">Please check your mobile data / Wi-Fi or verify credentials.</span>');
     }
   }
 }
@@ -547,6 +688,12 @@ function quickLogin(u, p) {
 function setCurrentUser(user) {
   currentUser = user;
   localStorage.setItem('gpon_logged_in_user', JSON.stringify(user));
+
+  // Schedule midnight daily session expiration (00:00 local time)
+  const nextMidnight = getNextMidnightTimestamp();
+  localStorage.setItem('gpon_session_expires_at', String(nextMidnight));
+  scheduleMidnightLogout();
+
   const overlay = document.getElementById('login-overlay');
   if (overlay) overlay.style.setProperty('display', 'none', 'important');
   updateUserBar();
@@ -554,18 +701,44 @@ function setCurrentUser(user) {
   fetchSurveyedPoints();
 }
 
-function logout() {
-  if (confirm('Log out from survey account?')) {
-    currentUser = null;
-    networkSurveyedPoints = {};
-    localStorage.removeItem('gpon_logged_in_user');
-    localStorage.removeItem('gpon_auth_token');
-    localStorage.removeItem('gpon_network_surveyed_points');
+async function logout() {
+  const pendingCount = (records || []).filter(r => r.sync_status !== 'synced').length;
+
+  // If connected and pending records exist, attempt auto-sync before signing out
+  if (pendingCount > 0 && isServerReachable) {
+    showToast('🔄 Syncing pending records before sign out...', true);
+    try {
+      await syncWithServer(true);
+    } catch (e) {
+      console.warn('Pre-logout sync error:', e);
+    }
+  }
+
+  const remainingPending = (records || []).filter(r => r.sync_status !== 'synced').length;
+  let confirmMsg = 'Log out from survey account?';
+  if (remainingPending > 0) {
+    confirmMsg = `⚠️ You have ${remainingPending} unsynced record(s) on this device.\n\nThey are safely saved in local offline storage and will NOT be lost. When you or another surveyor signs in with internet, they will sync to the server.\n\nDo you want to log out now?`;
+  }
+
+  if (confirm(confirmMsg)) {
+    // If online, notify server of logout
+    try {
+      const token = localStorage.getItem('gpon_auth_token') || '';
+      if (token && isServerReachable) {
+        fetch(`${serverUrl}/api/logout`, {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + token }
+        }).catch(() => {});
+      }
+    } catch (e) {}
+
+    clearSessionOnly();
     const foucStyle = document.getElementById('fouc-prevention');
     if (foucStyle) foucStyle.remove();
     updateUserBar();
     const overlay = document.getElementById('login-overlay');
     if (overlay) overlay.style.setProperty('display', 'flex', 'important');
+    showToast('Signed out successfully. Offline records preserved.', true);
   }
 }
 
@@ -3559,6 +3732,7 @@ function bootApp() {
     refreshCurrentUserProfile();
     initDropdowns();
     fetchSurveyedPoints();
+    scheduleMidnightLogout();
   }
 
   updateSubscriberInputsState();
@@ -3579,6 +3753,7 @@ setInterval(() => {
   // If phone is locked or surveyor switched apps, pause heartbeat to save phone battery & data
   if (document.visibilityState !== 'visible') return;
 
+  checkMidnightExpiration();
   checkServerConnection();
   if (isServerReachable && records.some(r => r.sync_status !== 'synced')) {
     syncWithServer(true);
@@ -3588,11 +3763,13 @@ setInterval(() => {
 // Live auto-refresh when surveyor returns to the app
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
+    checkMidnightExpiration();
     checkServerConnection();
     refreshCurrentUserProfile();
   }
 });
 window.addEventListener('focus', () => {
+  checkMidnightExpiration();
   checkServerConnection();
   refreshCurrentUserProfile();
 });
