@@ -1965,8 +1965,6 @@ function onCenterChange(targetRt = null, targetOlt = null) {
   });
   if (targetRt && rtRooms.includes(targetRt)) {
     rtRoomSelect.value = targetRt;
-  } else if (rtRooms.length > 0) {
-    rtRoomSelect.value = rtRooms[0];
   } else {
     rtRoomSelect.value = '';
   }
@@ -1993,8 +1991,6 @@ function onRTRoomChange(targetOlt = null) {
   });
   if (targetOlt && olts.includes(targetOlt)) {
     oltSelect.value = targetOlt;
-  } else if (olts.length > 0) {
-    oltSelect.value = olts[0];
   } else {
     oltSelect.value = '';
   }
