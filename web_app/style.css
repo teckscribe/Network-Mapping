@@ -139,6 +139,7 @@ body {
   display: inline-block;
 }
 .role-super_admin { background: #6366f1; }
+.role-admin { background: #8b5cf6; }
 .role-rcsm { background: #0284c7; }
 .role-acso { background: #059669; }
 .role-field_technician { background: #64748b; }

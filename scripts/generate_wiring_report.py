@@ -226,7 +226,7 @@ flowchart TD
 
     subgraph CentralServer ["Central Server (server.py - 6,230 LOC)"]
         APIRouter["FastAPI REST Dispatcher\\n(38 Active Endpoints)"]
-        RBAC["4-Tier RBAC Gatekeeper\\n(super_admin, rcsm, acso, field_technician)"]
+        RBAC["5-Tier RBAC Gatekeeper\\n(super_admin, admin, rcsm, acso, field_technician)"]
         Jurisdiction["Jurisdiction Filter Engine\\n(Dynamic Region-Center Trees)"]
         StreamingEngine["In-Memory Streaming Engine\\n(openpyxl + zipfile in io.BytesIO)"]
         AdminDashboard["Single-Page Admin Dashboard\\n(Embedded SPA with Leaflet Maps)"]
@@ -277,9 +277,9 @@ flowchart TD
         "| :--- | :--- | :--- | :--- |",
         "| **Block 1** | L1 - L81 | **Imports, Paths & SMTP Configuration** | Dynamically loads SMTP settings from `.env`, defines system paths (`DB_PATH`, `WEB_APP_DIR`, `NODE_MASTER_DIR`). Function: `load_smtp_config()`. |",
         "| **Block 2** | L82 - L135 | **Cryptographic Security & Password Hashing** | PBKDF2/HMAC-SHA256 salted password hashing and timing-safe verification. Functions: `hash_password()`, `verify_password()`, `is_hashed()`. |",
-        "| **Block 3** | L136 - L245 | **Session Tokens & 4-Tier RBAC Gatekeepers** | Generates HMAC-signed session tokens with 24h validity. Enforces 4 tiers: `require_admin_auth()`, `require_management_auth()`, `require_export_auth()`, `require_any_auth()`. |",
+        "| **Block 3** | L136 - L245 | **Session Tokens & 5-Tier RBAC Gatekeepers** | Generates HMAC-signed session tokens with 24h validity. Enforces 5 tiers: `require_super_admin_auth()`, `require_admin_auth()`, `require_management_auth()`, `require_export_auth()`, `require_any_auth()`. |",
         "| **Block 4** | L246 - L280 | **IP Extraction & Rate Limiting** | Extracts real client IP behind reverse proxies/Tailscale. Enforces sliding window rate limits. Functions: `get_client_ip()`, `check_rate_limit()`. |",
-        "| **Block 5** | L281 - L378 | **User Persistence & Normalization** | Normalizes roles (`super_admin`, `rcsm`, `acso`, `field_technician`). Dual-syncs credentials between SQLite and `users_config.json`. Functions: `normalize_role()`, `save_users_to_json()`, `load_users_from_json()`. |",
+        "| **Block 5** | L281 - L378 | **User Persistence & Normalization** | Normalizes roles (`super_admin`, `admin`, `rcsm`, `acso`, `field_technician`). Dual-syncs credentials between SQLite and `users_config.json`. Functions: `normalize_role()`, `save_users_to_json()`, `load_users_from_json()`. |",
         "| **Block 6** | L379 - L528 | **SQLite Database Initialization & Migrations** | Executes `CREATE TABLE` and conditional `ALTER TABLE` migrations for `survey_records`, `users`, and `password_reset_otps`. Creates composite indexes. Function: `init_db()`. |",
         "| **Block 7** | L529 - L675 | **Node Master Hierarchy & Jurisdiction Engine** | Reads and normalizes 4-tier tree (`Region -> Center -> RT Room -> OLT -> Ports`). Computes regional scopes for RCSM and ACSO users. Functions: `load_hierarchy_data()`, `save_hierarchy_data()`, `get_region_for_center()`, `get_user_jurisdiction()`. |",
         "| **Block 8** | L676 - L755 | **In-Memory Excel Streaming Engine** | Builds styled 24-column Excel workbooks in RAM with `openpyxl`. Converts workbooks to byte buffers. Functions: `build_excel_workbook()`, `workbook_to_bytes()`. |",
@@ -415,7 +415,7 @@ CREATE TABLE IF NOT EXISTS users (
     full_name TEXT NOT NULL,              -- Full display name
     assigned_center TEXT NOT NULL,        -- Center assignment (or 'ALL')
     assigned_region TEXT NOT NULL,        -- Region assignment (or 'ALL')
-    role TEXT NOT NULL,                   -- Role: super_admin, rcsm, acso, field_technician
+    role TEXT NOT NULL,                   -- Role: super_admin, admin, rcsm, acso, field_technician
     created_at TEXT,                      -- User creation timestamp
     email TEXT,                           -- Email address for OTP password recovery
     phone TEXT                            -- Contact mobile number
@@ -956,7 +956,7 @@ CREATE TABLE survey_records (
         });
         if (res.ok) {
           const data = await res.json();
-          if (data && data.user && (data.user.role === 'super_admin' || data.user.role === 'admin')) {
+          if (data && data.user && data.user.role === 'super_admin') {
             currentSuperAdmin = data.user;
             overlay.style.display = 'none';
             mainContent.style.display = 'block';
@@ -989,7 +989,7 @@ CREATE TABLE survey_records (
         const data = await res.json();
         if (res.ok && data.status === 'success') {
           const role = (data.user.role || '').toLowerCase();
-          if (role !== 'super_admin' && role !== 'admin') {
+          if (role !== 'super_admin') {
             errEl.innerText = `⛔ Access Denied: Account '${data.user.username}' is role '${data.user.role}'. Only Super Admins can access this portal.`;
             errEl.style.display = 'block';
             return;

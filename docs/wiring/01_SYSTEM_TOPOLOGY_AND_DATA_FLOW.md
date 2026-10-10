@@ -1,5 +1,5 @@
 # System Topology & End-to-End Data Flow Specification
-*Generated automatically on: 2026-10-10 17:26:44*
+*Generated automatically on: 2026-10-10 18:01:30*
 
 ## 1. Executive Architectural Blueprint
 The GPON Network Mapping platform is an enterprise-grade, offline-first field survey and GIS network documentation system. It connects field mobile Progressive Web Apps (PWA) with a 24/7 central Ubuntu/Windows server running FastAPI and SQLite.
@@ -16,7 +16,7 @@ flowchart TD
 
     subgraph CentralServer ["Central Server (server.py - 6,230 LOC)"]
         APIRouter["FastAPI REST Dispatcher\n(38 Active Endpoints)"]
-        RBAC["4-Tier RBAC Gatekeeper\n(super_admin, rcsm, acso, field_technician)"]
+        RBAC["5-Tier RBAC Gatekeeper\n(super_admin, admin, rcsm, acso, field_technician)"]
         Jurisdiction["Jurisdiction Filter Engine\n(Dynamic Region-Center Trees)"]
         StreamingEngine["In-Memory Streaming Engine\n(openpyxl + zipfile in io.BytesIO)"]
         AdminDashboard["Single-Page Admin Dashboard\n(Embedded SPA with Leaflet Maps)"]

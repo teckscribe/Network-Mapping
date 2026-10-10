@@ -1,5 +1,5 @@
 # Database Schema, Dual-Sync & Persistence Layer
-*Generated automatically on: 2026-10-10 17:26:44*
+*Generated automatically on: 2026-10-10 18:01:30*
 
 ## 1. SQLite Relational Schema (`gpon_survey_data.db`)
 
@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS users (
     full_name TEXT NOT NULL,              -- Full display name
     assigned_center TEXT NOT NULL,        -- Center assignment (or 'ALL')
     assigned_region TEXT NOT NULL,        -- Region assignment (or 'ALL')
-    role TEXT NOT NULL,                   -- Role: super_admin, rcsm, acso, field_technician
+    role TEXT NOT NULL,                   -- Role: super_admin, admin, rcsm, acso, field_technician
     created_at TEXT,                      -- User creation timestamp
     email TEXT,                           -- Email address for OTP password recovery
     phone TEXT                            -- Contact mobile number

@@ -212,20 +212,28 @@ def get_current_session(authorization: Optional[str] = Header(None), token: Opti
         return None
     return validate_session_token(token_str)
 
-def require_admin_auth(session: Optional[dict] = Depends(get_current_session)) -> dict:
-    """FastAPI dependency: requires a valid session with super_admin role."""
+def require_super_admin_auth(session: Optional[dict] = Depends(get_current_session)) -> dict:
+    """FastAPI dependency: requires a valid session strictly with super_admin role."""
     if not session:
         raise HTTPException(status_code=401, detail="Authentication required. Please log in.")
     if session.get("role") != "super_admin":
         raise HTTPException(status_code=403, detail="Super Admin privileges required for this action.")
     return session
 
-def require_management_auth(session: Optional[dict] = Depends(get_current_session)) -> dict:
-    """FastAPI dependency: requires super_admin or rcsm role."""
+def require_admin_auth(session: Optional[dict] = Depends(get_current_session)) -> dict:
+    """FastAPI dependency: requires a valid session with super_admin or admin role."""
     if not session:
         raise HTTPException(status_code=401, detail="Authentication required. Please log in.")
-    if session.get("role") not in ("super_admin", "rcsm"):
-        raise HTTPException(status_code=403, detail="Management access (Super Admin or RCSM) required.")
+    if session.get("role") not in ("super_admin", "admin"):
+        raise HTTPException(status_code=403, detail="Admin or Super Admin privileges required for this action.")
+    return session
+
+def require_management_auth(session: Optional[dict] = Depends(get_current_session)) -> dict:
+    """FastAPI dependency: requires super_admin, admin, or rcsm role."""
+    if not session:
+        raise HTTPException(status_code=401, detail="Authentication required. Please log in.")
+    if session.get("role") not in ("super_admin", "admin", "rcsm"):
+        raise HTTPException(status_code=403, detail="Management access (Super Admin, Admin, or RCSM) required.")
     return session
 
 def require_export_auth(session: Optional[dict] = Depends(get_current_session)) -> dict:
@@ -277,6 +285,7 @@ def check_rate_limit(store: dict, key: str, max_attempts: int, window_seconds: i
 
 VALID_ROLES = {
     "super_admin": "Super Admin",
+    "admin": "Admin",
     "rcsm": "RCSM",
     "acso": "ACSO",
     "field_technician": "Field Technician"
@@ -284,8 +293,10 @@ VALID_ROLES = {
 
 def normalize_role(role: str) -> str:
     r = (role or "").strip().lower().replace(" ", "_").replace("-", "_")
-    if r in ("admin", "superadmin", "super_admin"):
+    if r in ("superadmin", "super_admin"):
         return "super_admin"
+    if r in ("admin", "operations_admin", "op_admin"):
+        return "admin"
     if r in ("rcsm", "regional_manager", "manager"):
         return "rcsm"
     if r in ("acso", "officer", "assistant_chief"):
@@ -495,7 +506,6 @@ def init_db():
         """, ("admin", hash_password("admin123"), "Central Super Administrator", "admin@gpon.local", "ALL", "ALL", "super_admin", now))
 
     # Normalize existing legacy roles in SQLite table
-    cur.execute("UPDATE users SET role = 'super_admin' WHERE role = 'admin'")
     cur.execute("UPDATE users SET role = 'field_technician' WHERE role = 'field_agent'")
 
     # 4. Auto-upgrade all unhashed passwords in SQLite to secure PBKDF2-SHA256
@@ -645,14 +655,24 @@ def get_user_jurisdiction(username: str) -> dict:
         }
 
     role = normalize_role(row["role"])
-    if role == "super_admin":
+    if role in ("super_admin", "admin"):
+        raw_reg = (row["assigned_region"] or "").strip()
+        raw_cent = (row["assigned_center"] or "").strip()
+
+        regs = [r.strip().lower() for r in raw_reg.split(",") if r.strip()]
+        is_all_reg = ("all" in regs) or (not regs) or (role == "super_admin")
+
+        cents = [c.strip().lower() for c in raw_cent.split(",") if c.strip()]
+        is_all_cent = ("all" in cents) or (not cents) or (role == "super_admin")
+
         return {
-            'role': 'super_admin',
-            'is_super_admin': True,
-            'regions': [],
-            'is_all_regions': True,
-            'centers': [],
-            'is_all_centers': True
+            'role': role,
+            'is_super_admin': (role == "super_admin"),
+            'is_admin': True,
+            'regions': [] if is_all_reg else regs,
+            'is_all_regions': is_all_reg,
+            'centers': [] if is_all_cent else cents,
+            'is_all_centers': is_all_cent
         }
 
     raw_reg = (row["assigned_region"] or "").strip()
@@ -667,6 +687,7 @@ def get_user_jurisdiction(username: str) -> dict:
     return {
         'role': role,
         'is_super_admin': False,
+        'is_admin': False,
         'regions': regs,
         'is_all_regions': is_all_reg,
         'centers': cents,
@@ -1031,7 +1052,7 @@ def get_user_profile(username: Optional[str] = None, session: dict = Depends(req
     uname = (username or session.get("username") or "").strip()
     if not uname:
         raise HTTPException(status_code=400, detail="Username is required")
-    if session.get("role") != "super_admin" and session.get("username", "").lower() != uname.lower():
+    if session.get("role") not in ("super_admin", "admin") and session.get("username", "").lower() != uname.lower():
         raise HTTPException(status_code=403, detail="Permission Denied: You can only view your own user profile.")
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -1111,12 +1132,27 @@ def create_user(u: UserCreateModel, session: dict = Depends(require_admin_auth))
     if not region_str:
         region_str = "Thrissur"
 
+    caller_role = session.get("role")
+
+    # Privilege Enforcement: Non-super-admins cannot create or assign Admin or Super Admin roles
+    if caller_role != "super_admin" and role_clean in ("super_admin", "admin"):
+        conn.close()
+        raise HTTPException(status_code=403, detail="Permission Denied: Only Super Admins can create or assign Admin / Super Admin roles.")
+
     # Check if user exists and password is provided (case-insensitive and whitespace-safe)
-    cur.execute("SELECT password FROM users WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))", (u.username.strip(),))
+    cur.execute("SELECT password, role FROM users WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))", (u.username.strip(),))
     existing_row = cur.fetchone()
-    if existing_row and not (u.password or "").strip():
-        # Keep existing password (already hashed or plaintext)
-        password_to_store = existing_row[0]
+    if existing_row:
+        existing_role = normalize_role(existing_row[1])
+        if caller_role != "super_admin" and existing_role in ("super_admin", "admin"):
+            conn.close()
+            raise HTTPException(status_code=403, detail="Permission Denied: Admins cannot modify Admin or Super Admin accounts.")
+        if not (u.password or "").strip():
+            # Keep existing password (already hashed or plaintext)
+            password_to_store = existing_row[0]
+        else:
+            raw_pwd = (u.password or "").strip() or "1234"
+            password_to_store = hash_password(raw_pwd)
     else:
         # Hash the new password before storing
         raw_pwd = (u.password or "").strip() or "1234"
@@ -1174,7 +1210,8 @@ def download_users_template():
         ["sujith_acso", "Sujith Kumar", "9447000002", "sujith@bsnl.co.in", "1234", "ACSO", "Thrissur", "KORATTY, CHALAKUDY"],
         ["rahul_field", "Rahul R", "9447000003", "rahul@bsnl.co.in", "", "Field Technician", "", ""],
         ["manager_rcsm", "Regional Manager", "9447000004", "rcsm@bsnl.co.in", "1234", "RCSM", "Thrissur", "ALL"],
-        ["admin_central", "Central Administrator", "9447000005", "admin@bsnl.co.in", "admin123", "Super Admin", "ALL", "ALL"]
+        ["admin_ops", "Operations Administrator", "9447000005", "admin_ops@bsnl.co.in", "1234", "Admin", "ALL", "ALL"],
+        ["admin_central", "Central Administrator", "9447000006", "admin@bsnl.co.in", "admin123", "Super Admin", "ALL", "ALL"]
     ]
 
     for r_idx, row in enumerate(sample_rows, 2):
@@ -1316,12 +1353,22 @@ async def upload_users_excel(file: UploadFile = File(...), session: dict = Depen
                 raw_center = get_col(row, "assignedcenters", "assignedcenter", "centers", "center", default="").strip()
 
                 role_clean = normalize_role(role_raw)
+                caller_role = session.get("role")
+
+                if caller_role != "super_admin" and role_clean in ("super_admin", "admin"):
+                    errors.append(f"Row {row_num}: Non-super-admins cannot import Admin/Super Admin accounts ({username}). Skipped.")
+                    continue
 
                 # Check if user already exists
-                cur.execute("SELECT password, assigned_center, assigned_region, phone FROM users WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))", (username,))
+                cur.execute("SELECT password, assigned_center, assigned_region, phone, role FROM users WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))", (username,))
                 existing_row = cur.fetchone()
 
                 if existing_row:
+                    target_role = normalize_role(existing_row[4])
+                    if caller_role != "super_admin" and target_role in ("super_admin", "admin"):
+                        errors.append(f"Row {row_num}: Non-super-admins cannot modify existing Admin/Super Admin account ({username}). Skipped.")
+                        continue
+
                     if raw_pwd:
                         pwd_to_store = hash_password(raw_pwd)
                     else:
@@ -1554,7 +1601,7 @@ def request_password_reset_otp(req: RequestResetOtpPayload, request: Request):
     }
 
 @app.post("/api/test-smtp")
-def test_smtp_endpoint(payload: Optional[TestSmtpPayload] = None, session: dict = Depends(require_admin_auth)):
+def test_smtp_endpoint(payload: Optional[TestSmtpPayload] = None, session: dict = Depends(require_super_admin_auth)):
     conf = load_smtp_config()
     if not conf["host"] or not conf["user"]:
         return {
@@ -1720,8 +1767,10 @@ def change_password(req: ChangePasswordRequest, session: dict = Depends(require_
     if len(new_pwd) < 4:
         raise HTTPException(status_code=400, detail="Password / PIN must be at least 4 characters long.")
 
-    # Only super_admin or the account owner can change password
-    if session["username"].lower() != uname.lower() and session["role"] != "super_admin":
+    # Only super_admin, admin, or the account owner can change password
+    caller_role = session.get("role")
+    is_self = (session.get("username", "").lower() == uname.lower())
+    if not is_self and caller_role not in ("super_admin", "admin"):
         raise HTTPException(status_code=403, detail="Permission Denied: You can only change your own password.")
 
     conn = sqlite3.connect(DB_PATH)
@@ -1733,6 +1782,11 @@ def change_password(req: ChangePasswordRequest, session: dict = Depends(require_
     if not user:
         conn.close()
         raise HTTPException(status_code=404, detail=f"User account '{uname}' not found.")
+
+    target_role = normalize_role(user["role"])
+    if not is_self and caller_role != "super_admin" and target_role in ("super_admin", "admin"):
+        conn.close()
+        raise HTTPException(status_code=403, detail="Permission Denied: Admins cannot change passwords of Admin or Super Admin accounts.")
 
     user_email = (user["email"] or "").strip().lower()
     if not user_email:
@@ -1752,25 +1806,34 @@ def change_password(req: ChangePasswordRequest, session: dict = Depends(require_
 
 @app.delete("/api/users/{username}")
 def delete_user(username: str, session: dict = Depends(require_admin_auth)):
-    if username == "admin":
-        raise HTTPException(status_code=400, detail="Cannot delete default admin user.")
+    caller_role = session.get("role")
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    cur.execute("DELETE FROM users WHERE username = ?", (username,))
+    cur.execute("SELECT role FROM users WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))", (username.strip(),))
+    target = cur.fetchone()
+    if target:
+        target_role = normalize_role(target[0])
+        if caller_role != "super_admin" and target_role in ("super_admin", "admin"):
+            conn.close()
+            raise HTTPException(status_code=403, detail="Permission Denied: Admins cannot delete Admin or Super Admin accounts.")
+    if username.strip().lower() == "admin":
+        conn.close()
+        raise HTTPException(status_code=400, detail="Cannot delete default root admin user.")
+    cur.execute("DELETE FROM users WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))", (username.strip(),))
     conn.commit()
     conn.close()
     save_users_to_json()
     return {"status": "success", "message": f"User {username} deleted."}
 
 @app.get("/api/config/users")
-def export_users_config(session: dict = Depends(require_admin_auth)):
+def export_users_config(session: dict = Depends(require_super_admin_auth)):
     save_users_to_json()
     if os.path.exists(USERS_CONFIG_PATH):
         return FileResponse(USERS_CONFIG_PATH, media_type="application/json", filename="users_config.json")
     raise HTTPException(status_code=404, detail="Configuration not found")
 
 @app.post("/api/config/users")
-async def import_users_config(file: UploadFile = File(...), session: dict = Depends(require_admin_auth)):
+async def import_users_config(file: UploadFile = File(...), session: dict = Depends(require_super_admin_auth)):
     try:
         contents = await file.read()
         raw_list = json.loads(contents.decode('utf-8'))
@@ -2101,12 +2164,12 @@ def bulk_delete_olts(payload: dict, session: dict = Depends(require_admin_auth))
     return {"status": "success", "message": f"Deleted {deleted_count} Node(s) successfully.", "deleted": deleted_count}
 
 @app.delete("/api/hierarchy/clear")
-def clear_hierarchy(session: dict = Depends(require_admin_auth)):
+def clear_hierarchy(session: dict = Depends(require_super_admin_auth)):
     save_hierarchy_data({})
     return {"status": "success", "message": "All hierarchy data cleared."}
 
 @app.delete("/api/hierarchy/center")
-def delete_hierarchy_center(payload: dict, session: dict = Depends(require_admin_auth)):
+def delete_hierarchy_center(payload: dict, session: dict = Depends(require_super_admin_auth)):
     center = (payload.get("center") or "").strip()
     if not center:
         raise HTTPException(status_code=400, detail="Center name is required.")
@@ -2661,7 +2724,7 @@ def bulk_delete_records(payload: dict, session: dict = Depends(require_any_auth)
     }
 
 @app.post("/api/records/clear-center")
-def clear_center_records(payload: dict, session: dict = Depends(require_admin_auth)):
+def clear_center_records(payload: dict, session: dict = Depends(require_super_admin_auth)):
     center = (payload.get("center") or "").strip()
     region = (payload.get("region") or "").strip()
     if not center:
@@ -2709,11 +2772,12 @@ def export_server_excel(session: dict = Depends(require_management_auth)):
     rows = cur.fetchall()
     conn.close()
 
-    sheet_title = "Master_Data" if jur["is_super_admin"] else "Region_Survey_Data"
+    is_master = bool(jur.get("is_super_admin") or jur.get("role") == "admin")
+    sheet_title = "Master_Data" if is_master else "Region_Survey_Data"
     wb = build_excel_workbook(rows, title=sheet_title)
     excel_bytes = workbook_to_bytes(wb)
     today = datetime.date.today().isoformat()
-    filename_prefix = "GPON_Master_Network_Mapping" if jur["is_super_admin"] else f"GPON_{username}_Survey_Data"
+    filename_prefix = "GPON_Master_Network_Mapping" if is_master else f"GPON_{username}_Survey_Data"
     return Response(
         content=excel_bytes,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -2875,7 +2939,8 @@ def export_data_zip(session: dict = Depends(require_management_auth)):
 
     zip_buffer.seek(0)
     today = datetime.date.today().isoformat()
-    zip_prefix = "GPON_Survey_Data_All_Centers" if jur["is_super_admin"] else f"GPON_Survey_Data_{username}"
+    is_master = bool(jur.get("is_super_admin") or jur.get("role") == "admin")
+    zip_prefix = "GPON_Survey_Data_All_Centers" if is_master else f"GPON_Survey_Data_{username}"
     return Response(
         content=zip_buffer.getvalue(),
         media_type="application/zip",
@@ -3182,6 +3247,7 @@ def admin_dashboard(response: Response):
         input, select { background: #ffffff; color: #0f172a; border: 1.5px solid #cbd5e1; padding: 8px 12px; border-radius: 6px; outline: none; font-size: 0.85rem; }
         input:focus, select:focus { border-color: #0284c7; }
         .role-tag-super_admin { background: #6366f1; color: white; font-weight: 700; font-size: 0.72rem; padding: 2px 8px; border-radius: 12px; }
+        .role-tag-admin { background: #8b5cf6; color: white; font-weight: 700; font-size: 0.72rem; padding: 2px 8px; border-radius: 12px; }
         .role-tag-rcsm { background: #0284c7; color: white; font-weight: 700; font-size: 0.72rem; padding: 2px 8px; border-radius: 12px; }
         .role-tag-acso { background: #059669; color: white; font-weight: 700; font-size: 0.72rem; padding: 2px 8px; border-radius: 12px; }
         .role-tag-field_technician { background: #64748b; color: white; font-weight: 700; font-size: 0.72rem; padding: 2px 8px; border-radius: 12px; }
@@ -3195,7 +3261,7 @@ def admin_dashboard(response: Response):
           <div style="text-align:center; margin-bottom:20px;">
             <div style="font-size:2.5rem; margin-bottom:6px;">📡</div>
             <h2 style="margin:0; color:#0f172a; font-size:1.35rem;">Network Mapping Portal</h2>
-            <p style="margin:4px 0 0 0; color:#64748b; font-size:0.83rem;">Sign in with Super Admin or RCSM account</p>
+            <p style="margin:4px 0 0 0; color:#64748b; font-size:0.83rem;">Sign in with Super Admin, Admin, or RCSM account</p>
           </div>
           <form onsubmit="handleAdminLogin(event)">
             <div style="margin-bottom:12px;">
@@ -3224,7 +3290,7 @@ def admin_dashboard(response: Response):
           <div style="font-size:2.8rem; margin-bottom:10px;">⚠️</div>
           <h3 style="margin:0 0 8px 0; color:#0f172a;">Field Surveyor Account Detected</h3>
           <p id="access-denied-msg" style="color:#475569; font-size:0.88rem; line-height:1.5; margin-bottom:20px;">
-            Your account is assigned for field survey data entry. The Admin & Management Portal is restricted to Super Admins and RCSMs.
+            Your account is assigned for field survey data entry. The Admin & Management Portal is restricted to Super Admins, Admins, and RCSMs.
           </p>
           <div style="display:flex; justify-content:center; gap:10px;">
             <a href="/" class="btn btn-green" style="padding:10px 18px; font-size:0.9rem;">📱 Go to Field Survey App</a>
@@ -3250,7 +3316,7 @@ def admin_dashboard(response: Response):
           <button id="btn-top-master-excel" class="btn btn-green" onclick="downloadWithAuth('/api/export-excel')">📊 Master Excel</button>
           <button id="btn-top-zip-excel" class="btn" style="background:#2563eb; color:white;" onclick="downloadWithAuth('/api/export-data-zip')">🗂️ All Centers (ZIP)</button>
           <a href="/" class="btn btn-outline" target="_blank" title="Open Field Survey Web App">📱 Field App</a>
-          <a href="/admin/wiring" class="btn btn-outline" target="_blank" title="View System Architecture & Code Wiring Report" style="border-color:#0284c7; color:#0284c7; font-weight:600;">⚡ Wiring Report</a>
+          <a href="/admin/wiring" id="btn-admin-wiring" class="btn btn-outline" target="_blank" title="View System Architecture & Code Wiring Report" style="border-color:#0284c7; color:#0284c7; font-weight:600;">⚡ Wiring Report</a>
           <button onclick="fetchData()" class="btn btn-outline">🔄 Refresh</button>
           <button onclick="handleAdminLogoutClick()" class="btn btn-danger" style="padding:8px 14px; font-weight:600; display:inline-flex; align-items:center; gap:6px;" title="Log Out from Admin Portal">🚪 Log Out</button>
         </div>
@@ -3259,7 +3325,7 @@ def admin_dashboard(response: Response):
       <!-- Navigation Tabs -->
       <div class="tabs">
         <button id="tab-btn-feed" class="tab-btn active" onclick="switchTab('feed')">📋 Survey Feed & Center Dashboard</button>
-        <button id="tab-btn-users" class="tab-btn" onclick="switchTab('users')">👥 User Access Management (4 Tiers)</button>
+        <button id="tab-btn-users" class="tab-btn" onclick="switchTab('users')">👥 User Access Management (5 Tiers)</button>
         <button id="tab-btn-hierarchy" class="tab-btn" onclick="switchTab('hierarchy')">📡 Upload Node Master Data</button>
         <button id="tab-btn-folders" class="tab-btn" onclick="switchTab('folders')">📁 Dynamic Region & Center Folders</button>
       </div>
@@ -3402,8 +3468,11 @@ def admin_dashboard(response: Response):
             <p style="margin:0; font-size:0.82rem; color:#64748b;">
               1. <strong>Super Admin</strong>: Full admin access | 
               2. <strong>RCSM</strong>: Center dashboard, downloads & field survey entry | 
-              3. <strong>ACSO</strong>: Field entry & download | 
-              4. <strong>Field Tech</strong>: Field entry only
+              Role Tiers: 1. <strong>Super Admin</strong>: Full System Control | 
+              2. <strong>Admin</strong>: Operations & User Management | 
+              3. <strong>RCSM</strong>: Dashboard & Downloads | 
+              4. <strong>ACSO</strong>: Field entry & download | 
+              5. <strong>Field Tech</strong>: Field entry only
             </p>
           </div>
           <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
@@ -3411,9 +3480,9 @@ def admin_dashboard(response: Response):
             <input type="file" id="upload-users-excel-file" accept=".xlsx, .xls, .csv" style="display:none;" onchange="uploadUsersExcel(event)">
             <button type="button" onclick="document.getElementById('upload-users-excel-file').click()" class="btn btn-green" style="font-size:0.85rem; padding:8px 16px; font-weight:700; box-shadow:0 1px 3px rgba(0,0,0,0.1);">📂 Browse & Upload Excel</button>
             <button type="button" onclick="openAddUserModal()" class="btn" style="background:#0284c7; color:white; font-size:0.85rem; padding:8px 16px; font-weight:700;">➕ Add Single User</button>
-            <button type="button" onclick="testSmtpConnection()" class="btn btn-outline" style="border-color:#0284c7; color:#0284c7; font-size:0.8rem; padding:7px 12px; font-weight:600;">📧 Test SMTP</button>
-            <button type="button" onclick="downloadUsersBackup()" class="btn btn-outline" style="font-size:0.8rem; padding:7px 12px;">📥 Backup JSON</button>
-            <button type="button" onclick="document.getElementById('import-users-file').click()" class="btn btn-outline" style="font-size:0.8rem; padding:7px 12px;">📤 Restore JSON</button>
+            <button type="button" id="btn-test-smtp" onclick="testSmtpConnection()" class="btn btn-outline" style="border-color:#0284c7; color:#0284c7; font-size:0.8rem; padding:7px 12px; font-weight:600;">📧 Test SMTP</button>
+            <button type="button" id="btn-backup-json" onclick="downloadUsersBackup()" class="btn btn-outline" style="font-size:0.8rem; padding:7px 12px;">📥 Backup JSON</button>
+            <button type="button" id="btn-restore-json" onclick="document.getElementById('import-users-file').click()" class="btn btn-outline" style="font-size:0.8rem; padding:7px 12px;">📤 Restore JSON</button>
             <input type="file" id="import-users-file" accept=".json" style="display:none;" onchange="importUsersConfig(event)">
           </div>
         </div>
@@ -3492,6 +3561,7 @@ def admin_dashboard(response: Response):
                   <option value="field_technician">👷 Field Technician (Data Entry Only)</option>
                   <option value="acso">📝 ACSO (Data Entry & Downloads)</option>
                   <option value="rcsm">📊 RCSM (Dashboard, Downloads & Field Survey)</option>
+                  <option value="admin">🛡️ Admin (Operations & User Management)</option>
                   <option value="super_admin">👑 Super Admin (Full Control)</option>
                 </select>
               </div>
@@ -3565,7 +3635,7 @@ def admin_dashboard(response: Response):
             <input type="file" id="hierarchy-upload-input" accept=".xlsx, .xls, .csv" style="display:none;" onchange="uploadHierarchyExcel(event)">
             <button class="btn btn-green" onclick="document.getElementById('hierarchy-upload-input').click()">📂 Browse & Upload Excel</button>
             <button class="btn" style="background:#0284c7; color:white;" onclick="openAddOltModal()">➕ Add Single Node</button>
-            <button class="btn btn-outline" style="color:#dc2626; border-color:#dc2626;" onclick="clearAllHierarchy()">🗑️ Clear All Nodes</button>
+            <button id="btn-clear-hierarchy" class="btn btn-outline" style="color:#dc2626; border-color:#dc2626;" onclick="clearAllHierarchy()">🗑️ Clear All Nodes</button>
           </div>
         </div>
 
@@ -3868,7 +3938,8 @@ def admin_dashboard(response: Response):
         function normalizeAdminRole(r) {
           if (!r) return 'field_technician';
           const s = String(r).toLowerCase().trim();
-          if (s === 'super_admin' || s === 'superadmin' || s === 'admin') return 'super_admin';
+          if (s === 'super_admin' || s === 'superadmin') return 'super_admin';
+          if (s === 'admin' || s === 'operations_admin') return 'admin';
           if (s === 'rcsm') return 'rcsm';
           if (s === 'acso') return 'acso';
           return 'field_technician';
@@ -3916,7 +3987,7 @@ def admin_dashboard(response: Response):
           if (role === 'field_technician' || role === 'acso') {
             document.getElementById('access-denied-modal').style.display = 'flex';
             document.getElementById('access-denied-msg').innerHTML = 
-              `Your account <strong>${escapeHtml(currentAdmin.username)}</strong> is registered as <strong>${role === 'acso' ? 'ACSO' : 'Field Technician'}</strong>.<br>The Admin Portal is reserved for Super Admins and RCSMs.`;
+              `Your account <strong>${escapeHtml(currentAdmin.username)}</strong> is registered as <strong>${role === 'acso' ? 'ACSO' : 'Field Technician'}</strong>.<br>The Admin Portal is reserved for Super Admins, Admins, and RCSMs.`;
             return false;
           }
 
@@ -3962,7 +4033,7 @@ def admin_dashboard(response: Response):
               data.user.role = role;
 
               if (role === 'field_technician' || role === 'acso') {
-                errEl.innerText = `Access Denied: Account role is ${role === 'acso' ? 'ACSO' : 'Field Technician'}. Only Super Admin & RCSM can access Admin.`;
+                errEl.innerText = `Access Denied: Account role is ${role === 'acso' ? 'ACSO' : 'Field Technician'}. Only Super Admin, Admin & RCSM can access Admin.`;
                 errEl.style.display = 'block';
                 return;
               }
@@ -4077,6 +4148,12 @@ def admin_dashboard(response: Response):
           const feedSelectionCount = document.getElementById('feed-selection-count');
           const btnFeedDeleteSelected = document.getElementById('btn-feed-delete-selected');
 
+          const btnWiring = document.getElementById('btn-admin-wiring');
+          const btnSmtp = document.getElementById('btn-test-smtp');
+          const btnBackup = document.getElementById('btn-backup-json');
+          const btnRestore = document.getElementById('btn-restore-json');
+          const btnClearHier = document.getElementById('btn-clear-hierarchy');
+
           if (role === 'super_admin') {
             badgeEl.innerText = '👑 Super Admin';
             badgeEl.style.background = '#6366f1';
@@ -4087,6 +4164,27 @@ def admin_dashboard(response: Response):
             thRecordActions.style.display = '';
             if (thFeedSelectAll) thFeedSelectAll.style.display = 'table-cell';
             if (btnOptimize) btnOptimize.style.display = 'inline-flex';
+            if (btnWiring) btnWiring.style.display = 'inline-flex';
+            if (btnSmtp) btnSmtp.style.display = 'inline-flex';
+            if (btnBackup) btnBackup.style.display = 'inline-flex';
+            if (btnRestore) btnRestore.style.display = 'inline-flex';
+            if (btnClearHier) btnClearHier.style.display = 'inline-flex';
+          } else if (role === 'admin') {
+            badgeEl.innerText = '🛡️ Admin';
+            badgeEl.style.background = '#8b5cf6';
+            btnUsers.style.display = 'inline-block';
+            btnHierarchy.style.display = 'inline-block';
+            btnTopImport.style.display = 'inline-flex';
+            btnTab1Import.style.display = 'inline-flex';
+            thRecordActions.style.display = '';
+            if (thFeedSelectAll) thFeedSelectAll.style.display = 'table-cell';
+            if (btnOptimize) btnOptimize.style.display = 'inline-flex';
+            // Security: Strictly hide system security & nuclear actions from Admin
+            if (btnWiring) btnWiring.style.display = 'none';
+            if (btnSmtp) btnSmtp.style.display = 'none';
+            if (btnBackup) btnBackup.style.display = 'none';
+            if (btnRestore) btnRestore.style.display = 'none';
+            if (btnClearHier) btnClearHier.style.display = 'none';
           } else if (role === 'rcsm') {
             badgeEl.innerText = '📊 RCSM';
             badgeEl.style.background = '#0284c7';
@@ -4101,6 +4199,11 @@ def admin_dashboard(response: Response):
             if (feedSelectionCount) feedSelectionCount.style.display = 'none';
             if (btnFeedDeleteSelected) btnFeedDeleteSelected.style.display = 'none';
             if (btnOptimize) btnOptimize.style.display = 'none';
+            if (btnWiring) btnWiring.style.display = 'none';
+            if (btnSmtp) btnSmtp.style.display = 'none';
+            if (btnBackup) btnBackup.style.display = 'none';
+            if (btnRestore) btnRestore.style.display = 'none';
+            if (btnClearHier) btnClearHier.style.display = 'none';
 
             // Ensure current tab is feed or folders
             const currentTabFeedActive = document.getElementById('tab-btn-feed').classList.contains('active');
@@ -4123,8 +4226,8 @@ def admin_dashboard(response: Response):
             document.getElementById('tab-feed').style.display = 'block';
             fetchData();
           } else if (t === 'users') {
-            if (currentAdmin && currentAdmin.role !== 'super_admin') {
-              alert('Permission Denied: User Management is reserved for Super Admin.');
+            if (currentAdmin && currentAdmin.role !== 'super_admin' && currentAdmin.role !== 'admin') {
+              alert('Permission Denied: User Management is reserved for Admins and Super Admins.');
               switchTab('feed');
               return;
             }
@@ -4132,8 +4235,8 @@ def admin_dashboard(response: Response):
             document.getElementById('tab-users').style.display = 'block';
             fetchUsers();
           } else if (t === 'hierarchy') {
-            if (currentAdmin && currentAdmin.role !== 'super_admin') {
-              alert('Permission Denied: Node Master Hierarchy management is reserved for Super Admin.');
+            if (currentAdmin && currentAdmin.role !== 'super_admin' && currentAdmin.role !== 'admin') {
+              alert('Permission Denied: Node Master Hierarchy management is reserved for Admins and Super Admins.');
               switchTab('feed');
               return;
             }
@@ -5272,6 +5375,7 @@ def admin_dashboard(response: Response):
 
             const roleBadges = {
               'super_admin': '<span class="role-tag-super_admin">👑 Super Admin</span>',
+              'admin': '<span class="role-tag-admin">🛡️ Admin</span>',
               'rcsm': '<span class="role-tag-rcsm">📊 RCSM</span>',
               'acso': '<span class="role-tag-acso">📝 ACSO</span>',
               'field_technician': '<span class="role-tag-field_technician">👷 Field Tech</span>'
@@ -5318,8 +5422,17 @@ def admin_dashboard(response: Response):
                   <td>${badgeHtml}</td>
                   <td style="color:#64748b; font-size:0.8rem; font-family:monospace;">${escapeHtml((u.created_at || '').slice(0, 19).replace('T', ' '))}</td>
                   <td style="text-align:center; white-space:nowrap;">
-                    <button class="btn btn-outline" style="padding:3px 8px; font-size:0.75rem; margin-right:4px;" onclick="editUserByIndex(${idx})">✏️ Edit</button>
-                    ${u.username !== 'admin' ? `<button class="btn btn-danger" style="padding:3px 8px; font-size:0.75rem;" onclick="deleteUserByIndex(${idx})">🗑️</button>` : '<span style="color:#94a3b8; font-size:0.75rem;">Root</span>'}
+                    ${(() => {
+                      const isCallerSuperAdmin = (currentAdmin && currentAdmin.role === 'super_admin');
+                      const isTargetPrivileged = (roleClean === 'super_admin' || roleClean === 'admin');
+                      if (!isCallerSuperAdmin && isTargetPrivileged) {
+                        return '<span style="color:#64748b; font-size:0.75rem; font-weight:600; padding:2px 8px; background:#f1f5f9; border-radius:4px; display:inline-block;" title="Admins cannot edit or delete Admin/Super Admin accounts">🔒 Protected</span>';
+                      }
+                      return `
+                        <button class="btn btn-outline" style="padding:3px 8px; font-size:0.75rem; margin-right:4px;" onclick="editUserByIndex(${idx})">✏️ Edit</button>
+                        ${u.username !== 'admin' ? `<button class="btn btn-danger" style="padding:3px 8px; font-size:0.75rem;" onclick="deleteUserByIndex(${idx})">🗑️</button>` : '<span style="color:#94a3b8; font-size:0.75rem;">Root</span>'}
+                      `;
+                    })()}
                   </td>
                 `;
                 tbody.appendChild(tr);
@@ -5333,16 +5446,26 @@ def admin_dashboard(response: Response):
           function editUserByIndex(idx) {
             const u = cachedUsersList[idx];
             if (!u) return;
+            const targetRole = normalizeAdminRole(u.role);
+            if (currentAdmin && currentAdmin.role !== 'super_admin' && (targetRole === 'super_admin' || targetRole === 'admin')) {
+              alert('Permission Denied: Admins cannot edit Admin or Super Admin accounts.');
+              return;
+            }
             const userCenter = (u.assigned_center === 'Unassigned' || !u.assigned_center) ? '' : u.assigned_center;
             const userRegion = (u.assigned_region === 'Unassigned' || !u.assigned_region) ? '' : u.assigned_region;
-            openEditUserModal(u.username, u.full_name, u.phone || '', u.email || '', userCenter, userRegion, normalizeAdminRole(u.role));
+            openEditUserModal(u.username, u.full_name, u.phone || '', u.email || '', userCenter, userRegion, targetRole);
           }
 
-        function deleteUserByIndex(idx) {
-          const u = cachedUsersList[idx];
-          if (!u) return;
-          deleteUser(u.username);
-        }
+          function deleteUserByIndex(idx) {
+            const u = cachedUsersList[idx];
+            if (!u) return;
+            const targetRole = normalizeAdminRole(u.role);
+            if (currentAdmin && currentAdmin.role !== 'super_admin' && (targetRole === 'super_admin' || targetRole === 'admin')) {
+              alert('Permission Denied: Admins cannot delete Admin or Super Admin accounts.');
+              return;
+            }
+            deleteUser(u.username);
+          }
 
         async function downloadUsersBackup() {
           try {
@@ -5387,7 +5510,23 @@ def admin_dashboard(response: Response):
           }
         }
 
+        function setupRoleOptionsInModal() {
+          const roleSel = document.getElementById('modal-new-role');
+          if (!roleSel) return;
+          const isSuper = (currentAdmin && currentAdmin.role === 'super_admin');
+          Array.from(roleSel.options).forEach(opt => {
+            if (opt.value === 'super_admin' || opt.value === 'admin') {
+              opt.style.display = isSuper ? '' : 'none';
+              opt.disabled = !isSuper;
+            } else {
+              opt.style.display = '';
+              opt.disabled = false;
+            }
+          });
+        }
+
         function openAddUserModal() {
+          setupRoleOptionsInModal();
           document.getElementById('user-modal-title').innerHTML = '➕ Add New User';
           document.getElementById('modal-new-user').value = '';
           document.getElementById('modal-new-user').removeAttribute('readonly');
@@ -5408,6 +5547,7 @@ def admin_dashboard(response: Response):
         }
 
         function openEditUserModal(username, fullName, phone, email, center, region, role) {
+          setupRoleOptionsInModal();
           document.getElementById('user-modal-title').innerHTML = `✏️ Edit User: ${escapeHtml(username)}`;
           document.getElementById('modal-new-user').value = username;
           document.getElementById('modal-new-user').setAttribute('readonly', 'true');

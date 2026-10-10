@@ -406,7 +406,8 @@ async function fetchSurveyedPoints() {
 
 function normalizeClientRole(role) {
   const r = (role || '').trim().toLowerCase();
-  if (r === 'admin' || r === 'super_admin' || r === 'superadmin') return 'super_admin';
+  if (r === 'super_admin' || r === 'superadmin') return 'super_admin';
+  if (r === 'admin' || r === 'operations_admin') return 'admin';
   if (r === 'rcsm') return 'rcsm';
   if (r === 'acso') return 'acso';
   return 'field_technician';
@@ -448,6 +449,8 @@ function updateUserBar() {
       roleEl.className = `gs-role-badge role-${role}`;
       if (role === 'super_admin') {
         roleEl.innerText = '👑 Super Admin';
+      } else if (role === 'admin') {
+        roleEl.innerText = '🛡️ Admin';
       } else if (role === 'rcsm') {
         roleEl.innerText = '📊 RCSM';
       } else if (role === 'acso') {
@@ -457,10 +460,13 @@ function updateUserBar() {
       }
     }
 
-    // 2. Dashboard Link for Super Admin & RCSM
+    // 2. Dashboard Link for Super Admin, Admin & RCSM
     if (adminLink) {
       if (role === 'super_admin') {
         adminLink.innerText = '⚙️ Admin Dashboard';
+        adminLink.style.display = 'inline-block';
+      } else if (role === 'admin') {
+        adminLink.innerText = '🛡️ Admin Dashboard';
         adminLink.style.display = 'inline-block';
       } else if (role === 'rcsm') {
         adminLink.innerText = '📊 RCSM Dashboard';
@@ -1185,7 +1191,7 @@ function getUserAvailableRegions() {
   if (!currentUser) return allRegions;
 
   const role = normalizeClientRole(currentUser.role);
-  if (role === 'super_admin') return allRegions;
+  if (role === 'super_admin' || role === 'admin') return allRegions;
 
   // 1. Explicit assigned regions
   let assignedRegs = [];
@@ -1452,7 +1458,7 @@ function updateSplitterColorOptions() {
     : (DEFAULT_PRELOAD.color_codes || []);
 
   const role = currentUser ? normalizeClientRole(currentUser.role) : 'field_technician';
-  const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'super_admin');
+  const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'admin' || role === 'super_admin');
 
   let firstAvailableVal = '';
 
@@ -1514,7 +1520,7 @@ function updateAvailableEnclosures() {
   enclosureSelect.appendChild(defOpt);
 
   const role = currentUser ? normalizeClientRole(currentUser.role) : 'field_technician';
-  const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'super_admin');
+  const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'admin' || role === 'super_admin');
 
   if (olt && port) {
     DEFAULT_PRELOAD.enclosures.forEach(e => {
@@ -1568,7 +1574,7 @@ function updateAvailableSplitters() {
   splitterIdSelect.appendChild(defOpt);
 
   const role = currentUser ? normalizeClientRole(currentUser.role) : 'field_technician';
-  const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'super_admin');
+  const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'admin' || role === 'super_admin');
 
   if (enc) {
     const eid = computeEnclosureId(olt, port, enc);
@@ -1856,7 +1862,7 @@ function handleColorSelectionChange() {
   const col = splitterColorSelect ? splitterColorSelect.value : '';
 
   const role = currentUser ? normalizeClientRole(currentUser.role) : 'field_technician';
-  const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'super_admin');
+  const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'admin' || role === 'super_admin');
 
   if (!olt || !port || !enc || !spl || !col) {
     if (banner) banner.style.display = 'none';
@@ -2819,7 +2825,7 @@ function saveRecord() {
   }
 
   const role = currentUser ? normalizeClientRole(currentUser.role) : 'field_technician';
-  const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'super_admin');
+  const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'admin' || role === 'super_admin');
 
   // Check if this SPECIFIC lead (or zero-connection splitter) is already surveyed
   const existingLeadSurvey = getLeadSurveyedInfo(eid, spl, colorCode);
