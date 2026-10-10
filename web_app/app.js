@@ -390,7 +390,11 @@ async function fetchSurveyedPoints() {
       const data = await res.json();
       if (data && data.points) {
         networkSurveyedPoints = data.points;
-        localStorage.setItem('gpon_network_surveyed_points', JSON.stringify(networkSurveyedPoints));
+        try {
+          localStorage.setItem('gpon_network_surveyed_points', JSON.stringify(networkSurveyedPoints));
+        } catch (quotaErr) {
+          console.warn('[Storage] Quota exceeded for surveyed points cache, keeping in-memory:', quotaErr);
+        }
         updateAvailableEnclosures();
         updateAvailableSplitters();
       }
@@ -3444,7 +3448,11 @@ async function executeDeleteRecord(index) {
             }
           }
         }
-        localStorage.setItem('gpon_network_surveyed_points', JSON.stringify(networkSurveyedPoints));
+        try {
+          localStorage.setItem('gpon_network_surveyed_points', JSON.stringify(networkSurveyedPoints));
+        } catch (quotaErr) {
+          console.warn('[Storage] Quota exceeded for surveyed points cache, keeping in-memory:', quotaErr);
+        }
       }
     }
 
@@ -3672,7 +3680,8 @@ function updateSyncUI() {
   const text = document.getElementById('sync-text');
   if (!text) return;
 
-  const unsyncedCount = records.filter(r => r.sync_status !== 'synced').length;
+  const unsyncedCount = records.filter(r => r.sync_status !== 'synced' && r.sync_status !== 'duplicate_skipped').length;
+  const duplicateSkippedCount = records.filter(r => r.sync_status === 'duplicate_skipped').length;
 
   if (isSyncing) {
     if (dot) dot.style.background = '#38bdf8';
@@ -3697,7 +3706,9 @@ function updateSyncUI() {
   } else {
     if (unsyncedCount === 0) {
       if (dot) dot.style.background = '#10b981';
-      text.innerText = 'Server Connected (Synced ✓)';
+      text.innerText = duplicateSkippedCount > 0 
+        ? `Server Connected (Synced ✓, ${duplicateSkippedCount} dupe skipped)` 
+        : 'Server Connected (Synced ✓)';
       if (badge) badge.title = 'Connected to Ubuntu server. All records synced! Tap to re-check.';
     } else {
       if (dot) dot.style.background = '#0284c7';
@@ -3710,7 +3721,7 @@ function updateSyncUI() {
 async function syncWithServer(silent = false) {
   if (isSyncing) return;
 
-  // 1. Process any queued offline deletions first!
+  // 1. Process queued offline deletions safely without overwriting concurrent in-flight deletions
   let pendingDeletions = [];
   try {
     pendingDeletions = JSON.parse(localStorage.getItem('gpon_pending_deletions') || '[]');
@@ -3727,14 +3738,23 @@ async function syncWithServer(silent = false) {
         body: JSON.stringify({ uuids: pendingDeletions })
       });
       if (delRes.ok) {
-        localStorage.removeItem('gpon_pending_deletions');
+        let currentPending = [];
+        try { currentPending = JSON.parse(localStorage.getItem('gpon_pending_deletions') || '[]'); } catch(e){}
+        const sentSet = new Set(pendingDeletions);
+        const remaining = currentPending.filter(uuid => !sentSet.has(uuid));
+        if (remaining.length > 0) {
+          localStorage.setItem('gpon_pending_deletions', JSON.stringify(remaining));
+        } else {
+          localStorage.removeItem('gpon_pending_deletions');
+        }
       }
     } catch(err) {
       console.warn('[Sync] Could not process pending deletions:', err);
     }
   }
   
-  const pendingRecords = records.filter(r => r.sync_status !== 'synced');
+  // 2. Filter un-synced records, excluding already rejected duplicates to prevent infinite retry loops
+  const pendingRecords = records.filter(r => r.sync_status !== 'synced' && r.sync_status !== 'duplicate_skipped');
   if (pendingRecords.length === 0) {
     if (!silent) showToast('All records are already synced with Ubuntu server!');
     checkServerConnection();
@@ -3772,58 +3792,84 @@ async function syncWithServer(silent = false) {
       created_at: r.timestamp || r.created_at || r['Date & Time'] || ''
     }));
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
-    
     const syncToken = localStorage.getItem('gpon_auth_token') || '';
     const syncHeaders = { 'Content-Type': 'application/json' };
     if (syncToken) syncHeaders['Authorization'] = 'Bearer ' + syncToken;
 
-    const res = await fetch(`${serverUrl}/api/sync`, {
-      method: 'POST',
-      headers: syncHeaders,
-      body: JSON.stringify({
-        device_id: deviceId,
-        records: formattedRecords
-      }),
-      signal: controller.signal
-    });
-    clearTimeout(timeoutId);
+    // 3. Batch processing (25 records per chunk) with 25s timeout for resilient field 2G/3G sync
+    const BATCH_SIZE = 25;
+    let totalSyncedCount = 0;
+    let totalSkippedCount = 0;
 
-    if (res.ok) {
-      const data = await res.json();
-      const syncedIds = new Set(data.synced_uuids || []);
-      const skippedDupes = data.skipped_duplicates || [];
-      const skippedIds = new Set(skippedDupes.map(d => d.client_uuid));
+    for (let i = 0; i < formattedRecords.length; i += BATCH_SIZE) {
+      const batch = formattedRecords.slice(i, i + BATCH_SIZE);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 25000); // 25s for slow mobile networks
 
-      // Update local storage status
-      records.forEach(r => {
-        if (syncedIds.has(r.client_uuid)) {
-          r.sync_status = 'synced';
-        } else if (skippedIds.has(r.client_uuid)) {
-          r.sync_status = 'duplicate_skipped';
+      try {
+        const res = await fetch(`${serverUrl}/api/sync`, {
+          method: 'POST',
+          headers: syncHeaders,
+          body: JSON.stringify({
+            device_id: deviceId,
+            records: batch
+          }),
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+
+        if (res.ok) {
+          const data = await res.json();
+          const syncedIds = new Set(data.synced_uuids || []);
+          const skippedDupes = data.skipped_duplicates || [];
+          const skippedIds = new Set(skippedDupes.map(d => d.client_uuid));
+
+          records.forEach(r => {
+            if (syncedIds.has(r.client_uuid)) {
+              r.sync_status = 'synced';
+            } else if (skippedIds.has(r.client_uuid)) {
+              r.sync_status = 'duplicate_skipped';
+            }
+          });
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+          totalSyncedCount += syncedIds.size;
+          totalSkippedCount += skippedDupes.length;
+          isServerReachable = true;
+        } else if (res.status === 401) {
+          isServerReachable = true;
+          serverConnectionChecked = true;
+          showToast('⚠️ Session expired. Please log in again to sync records.', false);
+          break;
+        } else {
+          isServerReachable = false;
+          serverConnectionChecked = true;
+          if (!silent) showToast(`Server returned error ${res.status}. Data is safe locally.`, false);
+          break;
         }
-      });
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
-      isServerReachable = true;
+      } catch (batchErr) {
+        clearTimeout(timeoutId);
+        isServerReachable = false;
+        serverConnectionChecked = true;
+        if (!silent) showToast('Network timeout or connection lost. Data is stored safely on phone.', false);
+        break;
+      }
+    }
+
+    if (totalSyncedCount > 0 || totalSkippedCount > 0) {
       const modalSyncBadge = document.getElementById('confirm-sync-status-badge');
       if (modalSyncBadge) {
         modalSyncBadge.innerHTML = '<span style="color:#10b981; font-weight:700;">☁️ Synced to Server ✓</span>';
       }
 
-      if (skippedDupes.length > 0) {
-        showToast(`⚠️ ${skippedDupes.length} duplicate record(s) rejected by server (already surveyed).`, false);
-      } else if (!silent) {
-        showToast(`Synced ${syncedIds.size} records with Ubuntu server!`);
+      if (totalSkippedCount > 0) {
+        showToast(`⚠️ ${totalSkippedCount} duplicate record(s) rejected by server (already surveyed).`, false);
+      }
+      if (totalSyncedCount > 0 && !silent) {
+        showToast(`Synced ${totalSyncedCount} records with Ubuntu server!`);
       }
 
-      // Re-fetch network surveyed points so dropdown locks immediately reflect all newly synced data
       fetchSurveyedPoints();
       updateRecordsBadge();
-    } else {
-      isServerReachable = false;
-      serverConnectionChecked = true;
-      if (!silent) showToast('Server connection failed. Data is safe locally.', false);
     }
   } catch (err) {
     isServerReachable = false;
