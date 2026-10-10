@@ -2958,7 +2958,7 @@ def admin_dashboard(response: Response):
           <button id="btn-top-zip-excel" class="btn" style="background:#2563eb; color:white;" onclick="downloadWithAuth('/api/export-data-zip')">🗂️ All Centers (ZIP)</button>
           <a href="/" class="btn btn-outline" target="_blank" title="Open Field Survey Web App">📱 Field App</a>
           <button onclick="fetchData()" class="btn btn-outline">🔄 Refresh</button>
-          <button onclick="adminLogout()" class="btn btn-danger" style="padding:8px 12px;" title="Sign Out">🚪 Exit</button>
+          <button onclick="handleAdminLogoutClick()" class="btn btn-danger" style="padding:8px 14px; font-weight:600; display:inline-flex; align-items:center; gap:6px;" title="Log Out from Admin Portal">🚪 Log Out</button>
         </div>
       </div>
 
@@ -3681,7 +3681,34 @@ def admin_dashboard(response: Response):
           }
         }
 
-        function adminLogout() {
+        function showAdminLoginModal() {
+          const overlay = document.getElementById('admin-auth-overlay');
+          if (overlay) {
+            overlay.style.display = 'flex';
+          }
+          const pass = document.getElementById('admin-login-pass');
+          if (pass) pass.value = '';
+          const err = document.getElementById('admin-login-error');
+          if (err) err.style.display = 'none';
+        }
+
+        async function handleAdminLogoutClick() {
+          if (confirm('Log out from Admin Portal?')) {
+            await adminLogout();
+          }
+        }
+
+        async function adminLogout() {
+          try {
+            const token = localStorage.getItem('gpon_auth_token');
+            if (token) {
+              fetch('/api/logout', {
+                method: 'POST',
+                headers: { 'Authorization': 'Bearer ' + token }
+              }).catch(() => {});
+            }
+          } catch(e) {}
+
           localStorage.removeItem('gpon_admin_user');
           localStorage.removeItem('gpon_logged_in_user');
           localStorage.removeItem('gpon_auth_token');
