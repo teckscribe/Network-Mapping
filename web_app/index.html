@@ -79,18 +79,18 @@
       <div class="gs-card-body">
         <!-- Spreadsheet Cells Grid -->
         <div class="gs-grid">
-          <!-- Hidden Region (Auto-defaulted against Center, not visible/editable for user) -->
-          <div class="gs-cell-group" style="display: none;">
-            <label class="gs-cell-label" for="region-select">Region</label>
-            <select id="region-select" class="gs-select" disabled></select>
+          <!-- Region & Center Selection -->
+          <div class="gs-cell-group" id="region-cell-group">
+            <label class="gs-cell-label" for="region-select">Region <span style="color:#ef4444; font-weight:700;">*</span></label>
+            <select id="region-select" class="gs-select"></select>
           </div>
 
-          <div class="gs-cell-group">
-            <label class="gs-cell-label" for="center-select">Center</label>
+          <div class="gs-cell-group" id="center-cell-group">
+            <label class="gs-cell-label" for="center-select">Center <span style="color:#ef4444; font-weight:700;">*</span></label>
             <select id="center-select" class="gs-select"></select>
           </div>
 
-          <div class="gs-cell-group">
+          <div class="gs-cell-group col-full">
             <label class="gs-cell-label" for="rtroom-select">RT Room <span style="color:#ef4444; font-weight:700;">*</span></label>
             <select id="rtroom-select" class="gs-select"></select>
           </div>
@@ -464,7 +464,7 @@
   <!-- Local Offline Vendor Scripts -->
   <script src="vendor/leaflet.js"></script>
   <script src="vendor/xlsx.full.min.js"></script>
-  <script src="preload_data.js?v=61"></script>
-  <script src="app.js?v=61"></script>
+  <script src="preload_data.js?v=62"></script>
+  <script src="app.js?v=62"></script>
 </body>
 </html>

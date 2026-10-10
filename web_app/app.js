@@ -473,10 +473,14 @@ function updateUserBar() {
 
     const formInputs = document.querySelectorAll('.gs-card-body input, .gs-card-body select');
     formInputs.forEach(el => {
-      if (!['tech-select', 'olt-type-select', 'region-select'].includes(el.id)) {
+      if (!['tech-select', 'olt-type-select'].includes(el.id)) {
         el.removeAttribute('disabled');
       }
     });
+    if (typeof getUserAvailableRegions === 'function' && regionSelect) {
+      const availRegs = getUserAvailableRegions();
+      regionSelect.disabled = (availRegs.length <= 1);
+    }
 
     // 4. Field Technician: "Option to enter the field input only no options to download the data"
     // ACSO & RCSM & Super Admin can download data. Field Technician cannot.
@@ -1094,7 +1098,13 @@ function updateEnclosureId() {
 
 function getRegionForCenter(centerName) {
   if (!centerName) return "Thrissur";
-  const cData = DEFAULT_PRELOAD && DEFAULT_PRELOAD.hierarchy ? DEFAULT_PRELOAD.hierarchy[centerName] : null;
+  const hier = DEFAULT_PRELOAD && DEFAULT_PRELOAD.hierarchy ? DEFAULT_PRELOAD.hierarchy : {};
+  let cData = hier[centerName];
+  if (!cData) {
+    const cNorm = (centerName || '').trim().toLowerCase();
+    const found = Object.keys(hier).find(k => k.trim().toLowerCase() === cNorm);
+    if (found) cData = hier[found];
+  }
   if (cData && typeof cData === 'object') {
     for (const rt of Object.keys(cData)) {
       const olts = cData[rt];
@@ -1102,7 +1112,7 @@ function getRegionForCenter(centerName) {
         for (const oltName of Object.keys(olts)) {
           const entry = olts[oltName];
           if (entry && typeof entry === 'object' && entry.region) {
-            return entry.region;
+            return String(entry.region).trim();
           }
         }
       }
@@ -1134,17 +1144,95 @@ function getOltsForRtRoom(c, rt) {
   return (rtKey && rtMap[rtKey]) ? Object.keys(rtMap[rtKey]) : [];
 }
 
-function initDropdowns(preserveSelection = false) {
-  const prevCenter = preserveSelection && centerSelect ? centerSelect.value : '';
-  const prevRt = preserveSelection && rtRoomSelect ? rtRoomSelect.value : '';
-  const prevOlt = preserveSelection && oltSelect ? oltSelect.value : '';
+function getAllRegions() {
+  const regions = new Set();
+  const hier = DEFAULT_PRELOAD && DEFAULT_PRELOAD.hierarchy ? DEFAULT_PRELOAD.hierarchy : {};
+  for (const c of Object.keys(hier)) {
+    const r = getRegionForCenter(c);
+    if (r) regions.add(r.trim());
+  }
+  if (DEFAULT_PRELOAD && Array.isArray(DEFAULT_PRELOAD.regions)) {
+    DEFAULT_PRELOAD.regions.forEach(r => {
+      if (r && r.trim()) regions.add(r.trim());
+    });
+  }
+  if (regions.size === 0) regions.add("Thrissur");
+  return Array.from(regions).sort();
+}
 
-  // Center
+function getCentersForRegion(regionName) {
+  const hier = DEFAULT_PRELOAD && DEFAULT_PRELOAD.hierarchy ? DEFAULT_PRELOAD.hierarchy : {};
+  const centers = [];
+  const targetLower = (regionName || '').trim().toLowerCase();
+  for (const c of Object.keys(hier)) {
+    const r = getRegionForCenter(c);
+    if (!regionName || targetLower === 'all' || (r && r.toLowerCase() === targetLower)) {
+      centers.push(c);
+    }
+  }
+  return centers.sort();
+}
+
+function getUserAvailableRegions() {
+  const allRegions = getAllRegions();
+  if (!currentUser) return allRegions;
+
+  const role = normalizeClientRole(currentUser.role);
+  if (role === 'super_admin') return allRegions;
+
+  // 1. Explicit assigned regions
+  let assignedRegs = [];
+  if (Array.isArray(currentUser.assigned_regions) && currentUser.assigned_regions.length > 0) {
+    assignedRegs = currentUser.assigned_regions;
+  } else if (currentUser.assigned_region) {
+    assignedRegs = currentUser.assigned_region.split(',').map(s => s.trim()).filter(Boolean);
+  }
+  assignedRegs = assignedRegs.filter(r => r.toLowerCase() !== 'unassigned');
+
+  if (assignedRegs.some(r => r.toUpperCase() === 'ALL')) {
+    return allRegions;
+  }
+
+  // 2. Assigned centers
+  let assignedCenters = [];
+  if (Array.isArray(currentUser.assigned_centers) && currentUser.assigned_centers.length > 0) {
+    assignedCenters = currentUser.assigned_centers;
+  } else if (currentUser.assigned_center) {
+    assignedCenters = currentUser.assigned_center.split(',').map(s => s.trim()).filter(Boolean);
+  }
+  assignedCenters = assignedCenters.filter(c => c.toLowerCase() !== 'unassigned');
+
+  if (assignedCenters.some(c => c.toUpperCase() === 'ALL')) {
+    return allRegions;
+  }
+
+  const regionSet = new Set();
+  assignedRegs.forEach(r => regionSet.add(r));
+
+  assignedCenters.forEach(c => {
+    const r = getRegionForCenter(c);
+    if (r) regionSet.add(r);
+  });
+
+  const list = Array.from(regionSet).filter(Boolean);
+  if (list.length === 0) return allRegions;
+
+  // Normalize casing to match allRegions
+  const matched = [];
+  list.forEach(item => {
+    const found = allRegions.find(ar => ar.toLowerCase() === item.toLowerCase());
+    if (found && !matched.includes(found)) matched.push(found);
+    else if (!matched.includes(item)) matched.push(item);
+  });
+  return matched.length > 0 ? matched.sort() : allRegions;
+}
+
+function updateCentersForSelectedRegion(selectedReg, prevCenter = '') {
   centerSelect.innerHTML = '';
-  let centers = Object.keys(DEFAULT_PRELOAD.hierarchy);
-  
-  // Filter centers based on logged-in user assignment (supports multiple centers for ACSO)
-  if (currentUser && currentUser.assigned_center && currentUser.assigned_center !== 'ALL') {
+  let centers = getCentersForRegion(selectedReg);
+
+  // Filter centers based on logged-in user assignment
+  if (currentUser && currentUser.assigned_center && currentUser.assigned_center.toUpperCase() !== 'ALL') {
     let assignedList = [];
     if (Array.isArray(currentUser.assigned_centers) && currentUser.assigned_centers.length > 0) {
       assignedList = currentUser.assigned_centers;
@@ -1157,32 +1245,15 @@ function initDropdowns(preserveSelection = false) {
       centerSelect.innerHTML = '<option value="">⚠️ No Center Assigned (Pending Admin)</option>';
       centerSelect.disabled = true;
       return;
-    } else if (assignedList.includes('ALL')) {
-      // User has access to ALL centers in network
+    } else if (assignedList.some(a => a.toUpperCase() === 'ALL')) {
+      // User has access to ALL centers in network / in this region
       centerSelect.disabled = false;
-    } else if (assignedList.length > 1) {
-      // ACSO or Officer in charge of MULTIPLE centers:
-      // Allow user to drop down and switch between any of their assigned centers!
-      const allHierCenters = Object.keys(DEFAULT_PRELOAD.hierarchy);
-      const filtered = [];
-      assignedList.forEach(a => {
-        const m = allHierCenters.find(c => c.trim().toLowerCase() === a.trim().toLowerCase());
-        if (m && !filtered.includes(m)) filtered.push(m);
-        else if (!filtered.includes(a)) filtered.push(a);
-      });
-      centers = filtered.length > 0 ? filtered : centers;
-      centerSelect.disabled = false; // ACTIVE & SELECTABLE for multiple centers charge!
-    } else if (assignedList.length === 1) {
-      // Single assigned center: locked to that center
-      const assigned = assignedList[0];
-      const match = centers.find(c => c.trim().toLowerCase() === assigned.trim().toLowerCase());
-      if (match) {
-        centers = [match];
-      } else {
-        DEFAULT_PRELOAD.hierarchy[assigned] = {};
-        centers = [assigned];
-      }
-      centerSelect.disabled = true; // Locked to single center
+    } else {
+      // User has specific center charges: intersect with centers in this region
+      const userAssignedLower = assignedList.map(s => s.trim().toLowerCase());
+      const filtered = centers.filter(c => userAssignedLower.includes(c.trim().toLowerCase()));
+      centers = filtered;
+      centerSelect.disabled = (centers.length <= 1);
     }
   } else {
     centerSelect.disabled = false;
@@ -1191,8 +1262,9 @@ function initDropdowns(preserveSelection = false) {
   if (centers.length === 0) {
     const opt = document.createElement('option');
     opt.value = '';
-    opt.innerText = '-- No Centers Configured (Upload Node Master) --';
+    opt.innerText = '-- No Centers in Region --';
     centerSelect.appendChild(opt);
+    centerSelect.disabled = true;
   } else {
     centers.forEach(c => {
       const opt = document.createElement('option');
@@ -1200,25 +1272,80 @@ function initDropdowns(preserveSelection = false) {
       opt.innerText = c;
       centerSelect.appendChild(opt);
     });
-  }
 
-  if (prevCenter && centers.includes(prevCenter)) {
-    centerSelect.value = prevCenter;
+    if (prevCenter && centers.includes(prevCenter)) {
+      centerSelect.value = prevCenter;
+    } else {
+      centerSelect.value = centers[0];
+    }
   }
+}
 
-  // Region (Defaulted against Center, locked / not editable)
+function onRegionChange() {
+  const selReg = regionSelect ? regionSelect.value : '';
+  updateCentersForSelectedRegion(selReg);
+  resetPoleFields();
+  clearCustomerInputs();
+  onCenterChange();
+  fetchSurveyedPoints();
+}
+
+function initDropdowns(preserveSelection = false) {
+  const prevReg = preserveSelection && regionSelect ? regionSelect.value : '';
+  const prevCenter = preserveSelection && centerSelect ? centerSelect.value : '';
+  const prevRt = preserveSelection && rtRoomSelect ? rtRoomSelect.value : '';
+  const prevOlt = preserveSelection && oltSelect ? oltSelect.value : '';
+
+  // 1. Region Dropdown
+  const availableRegions = getUserAvailableRegions();
   if (regionSelect) {
-    const reg = getRegionForCenter(centerSelect.value);
     regionSelect.innerHTML = '';
-    const opt = document.createElement('option');
-    opt.value = reg;
-    opt.innerText = reg;
-    regionSelect.appendChild(opt);
-    regionSelect.value = reg;
-    regionSelect.disabled = true;
+    if (availableRegions.length === 0) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.innerText = '-- No Regions Available --';
+      regionSelect.appendChild(opt);
+      regionSelect.disabled = true;
+    } else {
+      availableRegions.forEach(r => {
+        const opt = document.createElement('option');
+        opt.value = r;
+        opt.innerText = r;
+        regionSelect.appendChild(opt);
+      });
+
+      // Default selection logic:
+      if (prevReg && availableRegions.includes(prevReg)) {
+        regionSelect.value = prevReg;
+      } else if (prevCenter) {
+        const rForCenter = getRegionForCenter(prevCenter);
+        if (rForCenter && availableRegions.includes(rForCenter)) {
+          regionSelect.value = rForCenter;
+        } else {
+          regionSelect.value = availableRegions[0];
+        }
+      } else if (currentUser && currentUser.assigned_center && currentUser.assigned_center !== 'ALL' && currentUser.assigned_center !== 'Unassigned') {
+        const firstC = currentUser.assigned_center.split(',')[0].trim();
+        const rForFirstC = getRegionForCenter(firstC);
+        if (rForFirstC && availableRegions.includes(rForFirstC)) {
+          regionSelect.value = rForFirstC;
+        } else {
+          regionSelect.value = availableRegions[0];
+        }
+      } else {
+        regionSelect.value = availableRegions[0];
+      }
+
+      // If user has multiple regions, keep it interactive! If single region, lock it.
+      regionSelect.disabled = (availableRegions.length <= 1);
+    }
   }
 
-  // Technologies (Read-only, auto-reflected from Node Master Data)
+  // 2. Center Dropdown for selected Region
+  const activeReg = regionSelect ? regionSelect.value : '';
+  updateCentersForSelectedRegion(activeReg, prevCenter);
+
+  // 3. Technologies (Read-only, auto-reflected from Node Master Data)
   techSelect.innerHTML = '';
   (DEFAULT_PRELOAD.technologies || ["GPON", "FTTH", "WDM", "EDFA"]).forEach(t => {
     const opt = document.createElement('option');
@@ -1800,15 +1927,14 @@ function populateFieldsFromExistingRecord(info) {
 
 function onCenterChange(targetRt = null, targetOlt = null) {
   const c = centerSelect.value;
-  if (regionSelect) {
+  if (regionSelect && c) {
     const reg = getRegionForCenter(c);
-    regionSelect.innerHTML = '';
-    const opt = document.createElement('option');
-    opt.value = reg;
-    opt.innerText = reg;
-    regionSelect.appendChild(opt);
-    regionSelect.value = reg;
-    regionSelect.disabled = true;
+    if (reg && regionSelect.value !== reg) {
+      const avail = (typeof getUserAvailableRegions === 'function') ? getUserAvailableRegions() : [];
+      if (avail.includes(reg)) {
+        regionSelect.value = reg;
+      }
+    }
   }
   rtRoomSelect.innerHTML = '';
   const rtRooms = getRtRoomsForCenter(c);
@@ -2233,6 +2359,9 @@ function handleExcelHierarchyUpload(e) {
 }
 
 // Event Listeners for Cascading
+if (regionSelect) {
+  regionSelect.addEventListener('change', onRegionChange);
+}
 centerSelect.addEventListener('change', () => {
   resetPoleFields();
   clearCustomerInputs();
