@@ -708,6 +708,9 @@ function setCurrentUser(user) {
   updateUserBar();
   initDropdowns();
   fetchSurveyedPoints();
+  if (!DEFAULT_PRELOAD.hierarchy || Object.keys(DEFAULT_PRELOAD.hierarchy).length === 0) {
+    fetchHierarchyFromServer();
+  }
 }
 
 async function logout() {
@@ -1096,6 +1099,8 @@ function updateEnclosureId() {
   enclosureIdPreview.innerText = eid || '---';
 }
 
+const KNOWN_PALAKKAD_CENTERS = ['MANARKAD', 'OLAVAKODE', 'OTTAPALAM', 'PALAKKAD', 'PATTAMBI', 'THATHAMANGALAM'];
+
 function getRegionForCenter(centerName) {
   if (!centerName) return "Thrissur";
   const hier = DEFAULT_PRELOAD && DEFAULT_PRELOAD.hierarchy ? DEFAULT_PRELOAD.hierarchy : {};
@@ -1117,6 +1122,10 @@ function getRegionForCenter(centerName) {
         }
       }
     }
+  }
+  const cleanUpper = String(centerName).trim().toUpperCase();
+  if (KNOWN_PALAKKAD_CENTERS.includes(cleanUpper)) {
+    return "Palakkad";
   }
   return "Thrissur";
 }
@@ -1151,7 +1160,7 @@ function getAllRegions() {
     const r = getRegionForCenter(c);
     if (r) regions.add(r.trim());
   }
-  if (DEFAULT_PRELOAD && Array.isArray(DEFAULT_PRELOAD.regions)) {
+  if (regions.size === 0 && DEFAULT_PRELOAD && Array.isArray(DEFAULT_PRELOAD.regions)) {
     DEFAULT_PRELOAD.regions.forEach(r => {
       if (r && r.trim()) regions.add(r.trim());
     });
@@ -1252,7 +1261,14 @@ function updateCentersForSelectedRegion(selectedReg, prevCenter = '') {
       // User has specific center charges: intersect with centers in this region
       const userAssignedLower = assignedList.map(s => s.trim().toLowerCase());
       const filtered = centers.filter(c => userAssignedLower.includes(c.trim().toLowerCase()));
-      centers = filtered;
+      if (filtered.length > 0) {
+        centers = filtered;
+      } else if (!selectedReg || selectedReg.toLowerCase() === 'all') {
+        const hierCenters = Object.keys(DEFAULT_PRELOAD.hierarchy || {});
+        centers = hierCenters.filter(c => userAssignedLower.includes(c.trim().toLowerCase()));
+      } else {
+        centers = filtered;
+      }
       centerSelect.disabled = (centers.length <= 1);
     }
   } else {
@@ -1332,6 +1348,8 @@ function initDropdowns(preserveSelection = false) {
         } else {
           regionSelect.value = availableRegions[0];
         }
+      } else if (availableRegions.includes("Thrissur")) {
+        regionSelect.value = "Thrissur";
       } else {
         regionSelect.value = availableRegions[0];
       }
@@ -1953,13 +1971,17 @@ function onCenterChange(targetRt = null, targetOlt = null) {
   });
   if (targetRt && rtRooms.includes(targetRt)) {
     rtRoomSelect.value = targetRt;
+  } else if (rtRooms.length > 0) {
+    rtRoomSelect.value = rtRooms[0];
+  } else {
+    rtRoomSelect.value = '';
   }
   onRTRoomChange(targetOlt);
 }
 
 function onRTRoomChange(targetOlt = null) {
-  const c = centerSelect.value;
-  const rt = rtRoomSelect.value;
+  const c = centerSelect ? centerSelect.value : '';
+  const rt = rtRoomSelect ? rtRoomSelect.value : '';
   oltSelect.innerHTML = '';
   const olts = getOltsForRtRoom(c, rt);
 
@@ -1977,6 +1999,10 @@ function onRTRoomChange(targetOlt = null) {
   });
   if (targetOlt && olts.includes(targetOlt)) {
     oltSelect.value = targetOlt;
+  } else if (olts.length > 0) {
+    oltSelect.value = olts[0];
+  } else {
+    oltSelect.value = '';
   }
   onOLTChange();
 }
@@ -3539,11 +3565,13 @@ async function checkServerConnection() {
       fetchSurveyedPoints();
       const data = await res.json().catch(() => null);
       if (data && data.hierarchy_version) {
-        if (data.hierarchy_version !== lastKnownHierarchyVersion) {
+        if (data.hierarchy_version !== lastKnownHierarchyVersion || !DEFAULT_PRELOAD.hierarchy || Object.keys(DEFAULT_PRELOAD.hierarchy).length === 0) {
           lastKnownHierarchyVersion = data.hierarchy_version;
           localStorage.setItem('gpon_hierarchy_version', String(data.hierarchy_version));
           fetchHierarchyFromServer();
         }
+      } else if (!DEFAULT_PRELOAD.hierarchy || Object.keys(DEFAULT_PRELOAD.hierarchy).length === 0) {
+        fetchHierarchyFromServer();
       }
     } else {
       isServerReachable = false;
@@ -3564,7 +3592,8 @@ async function fetchHierarchyFromServer() {
       if (data && data.hierarchy && typeof data.hierarchy === 'object' && Object.keys(data.hierarchy).length > 0) {
         const newStr = JSON.stringify(data.hierarchy);
         const oldStr = localStorage.getItem('gpon_custom_hierarchy');
-        if (newStr !== oldStr) {
+        const hierEmpty = !DEFAULT_PRELOAD.hierarchy || Object.keys(DEFAULT_PRELOAD.hierarchy).length === 0;
+        if (newStr !== oldStr || hierEmpty) {
           DEFAULT_PRELOAD.hierarchy = data.hierarchy;
           localStorage.setItem('gpon_custom_hierarchy', newStr);
           initDropdowns(true);
@@ -3877,6 +3906,9 @@ function bootApp() {
   updateSubscriberInputsState();
   updateRecordsBadge();
   updateSyncUI();
+  if (!DEFAULT_PRELOAD.hierarchy || Object.keys(DEFAULT_PRELOAD.hierarchy).length === 0) {
+    fetchHierarchyFromServer();
+  }
   checkServerConnection();
 }
 
