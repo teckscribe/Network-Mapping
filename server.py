@@ -1796,7 +1796,7 @@ def get_hierarchy(response: Response, session: Optional[dict] = Depends(get_curr
     hier = load_hierarchy_data()
     if session and session.get("username"):
         jur = get_user_jurisdiction(session["username"])
-        if jur["role"] == "rcsm":
+        if not jur.get("is_super_admin", False) and (not jur.get("is_all_regions", True) or not jur.get("is_all_centers", True)):
             filtered_hier = {}
             for center, rts in hier.items():
                 c_clean = center.strip()
@@ -2213,11 +2213,25 @@ def get_surveyed_points(center: Optional[str] = None, session: dict = Depends(re
                kseb_post_number, landmark, lat_long, survey_date_time,
                surveyor_username, surveyor_name, created_at
         FROM survey_records
+        WHERE 1=1
     """
     params = []
     if center and center.strip() and center.strip().upper() != "ALL":
-        query += " WHERE LOWER(TRIM(center)) = LOWER(TRIM(?))"
+        query += " AND LOWER(TRIM(center)) = LOWER(TRIM(?))"
         params.append(center.strip())
+
+    # Jurisdiction filtering for non-super_admin users
+    username = session.get("username", "")
+    jur = get_user_jurisdiction(username)
+    if not jur.get("is_super_admin", False):
+        if not jur.get("is_all_regions", True) and jur.get("regions"):
+            placeholders = ",".join(["?"] * len(jur["regions"]))
+            query += f" AND LOWER(TRIM(region)) IN ({placeholders})"
+            params.extend(jur["regions"])
+        if not jur.get("is_all_centers", True) and jur.get("centers"):
+            placeholders = ",".join(["?"] * len(jur["centers"]))
+            query += f" AND LOWER(TRIM(center)) IN ({placeholders})"
+            params.extend(jur["centers"])
         
     cur.execute(query, params)
     rows = cur.fetchall()
@@ -2483,9 +2497,9 @@ def get_all_records(
     regions_list = [r.strip().lower() for r in raw_regions.split(",") if r.strip() and r.strip().upper() != "ALL"]
     rts_list = [rt.strip().lower() for rt in raw_rts.split(",") if rt.strip() and rt.strip().upper() != "ALL"]
 
-    # Enforce jurisdiction boundaries for RCSM
+    # Enforce jurisdiction boundaries
     jur = get_user_jurisdiction(username)
-    if jur["role"] == "rcsm":
+    if not jur.get("is_super_admin", False):
         if not jur["is_all_regions"]:
             if regions_list:
                 for r in regions_list:
@@ -2680,7 +2694,7 @@ def export_server_excel(session: dict = Depends(require_management_auth)):
     query = "SELECT * FROM survey_records WHERE 1=1"
     params = []
 
-    if jur["role"] == "rcsm":
+    if not jur.get("is_super_admin", False):
         if not jur["is_all_regions"]:
             placeholders = ",".join(["?"] * len(jur["regions"]))
             query += f" AND LOWER(TRIM(region)) IN ({placeholders})"
@@ -2809,7 +2823,7 @@ def export_data_zip(session: dict = Depends(require_management_auth)):
 
     query = "SELECT * FROM survey_records WHERE 1=1"
     params = []
-    if jur["role"] == "rcsm":
+    if not jur.get("is_super_admin", False):
         if not jur["is_all_regions"]:
             placeholders = ",".join(["?"] * len(jur["regions"]))
             query += f" AND LOWER(TRIM(region)) IN ({placeholders})"
@@ -3074,7 +3088,7 @@ def get_data_folders_summary(session: dict = Depends(require_management_auth)):
         result_regions[reg] = center_list
         
     jur = get_user_jurisdiction(session.get("username", ""))
-    if jur["role"] == "rcsm":
+    if not jur.get("is_super_admin", False):
         filtered_regions = {}
         filtered_centers_count = 0
         filtered_records_count = 0

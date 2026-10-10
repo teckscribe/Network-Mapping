@@ -1100,7 +1100,7 @@ function updateEnclosureId() {
 }
 
 function getRegionForCenter(centerName) {
-  if (!centerName) return "Thrissur";
+  if (!centerName) return "";
   const hier = DEFAULT_PRELOAD && DEFAULT_PRELOAD.hierarchy ? DEFAULT_PRELOAD.hierarchy : {};
   let cData = hier[centerName];
   if (!cData) {
@@ -1121,7 +1121,7 @@ function getRegionForCenter(centerName) {
       }
     }
   }
-  return "Thrissur";
+  return "";
 }
 
 function getRtRoomsForCenter(c) {
@@ -1192,11 +1192,22 @@ function getUserAvailableRegions() {
   }
   assignedRegs = assignedRegs.filter(r => r.toLowerCase() !== 'unassigned');
 
+  // If user is explicitly assigned 'ALL' regions, they can access all regions
   if (assignedRegs.some(r => r.toUpperCase() === 'ALL')) {
     return allRegions;
   }
 
-  // 2. Assigned centers
+  // If specific assigned regions exist, the user's available regions MUST be strictly limited to these!
+  if (assignedRegs.length > 0) {
+    const userRegsLower = assignedRegs.map(r => r.toLowerCase());
+    const matched = allRegions.filter(ar => userRegsLower.includes(ar.toLowerCase()));
+    if (matched.length > 0) {
+      return matched.sort();
+    }
+    return assignedRegs.sort();
+  }
+
+  // 2. Fallback ONLY if NO explicit assigned regions are set: derive from assigned centers
   let assignedCenters = [];
   if (Array.isArray(currentUser.assigned_centers) && currentUser.assigned_centers.length > 0) {
     assignedCenters = currentUser.assigned_centers;
@@ -1205,33 +1216,40 @@ function getUserAvailableRegions() {
   }
   assignedCenters = assignedCenters.filter(c => c.toLowerCase() !== 'unassigned');
 
+  // If centers is 'ALL' and NO regions were assigned, grant all regions
   if (assignedCenters.some(c => c.toUpperCase() === 'ALL')) {
     return allRegions;
   }
 
-  const regionSet = new Set();
-  assignedRegs.forEach(r => regionSet.add(r));
+  if (assignedCenters.length > 0) {
+    const regionSet = new Set();
+    assignedCenters.forEach(c => {
+      const r = getRegionForCenter(c);
+      if (r) regionSet.add(r);
+    });
+    const list = Array.from(regionSet).filter(Boolean);
+    if (list.length > 0) {
+      const matched = allRegions.filter(ar => list.map(x => x.toLowerCase()).includes(ar.toLowerCase()));
+      if (matched.length > 0) return matched.sort();
+      return list.sort();
+    }
+  }
 
-  assignedCenters.forEach(c => {
-    const r = getRegionForCenter(c);
-    if (r) regionSet.add(r);
-  });
-
-  const list = Array.from(regionSet).filter(Boolean);
-  if (list.length === 0) return allRegions;
-
-  // Normalize casing to match allRegions
-  const matched = [];
-  list.forEach(item => {
-    const found = allRegions.find(ar => ar.toLowerCase() === item.toLowerCase());
-    if (found && !matched.includes(found)) matched.push(found);
-    else if (!matched.includes(item)) matched.push(item);
-  });
-  return matched.length > 0 ? matched.sort() : allRegions;
+  return allRegions;
 }
 
 function updateCentersForSelectedRegion(selectedReg, prevCenter = '') {
   centerSelect.innerHTML = '';
+
+  // Guard: User must not access centers in an unpermitted region
+  const allowedRegs = getUserAvailableRegions();
+  const allowedRegsLower = allowedRegs.map(r => r.toLowerCase());
+  if (selectedReg && !allowedRegsLower.includes(selectedReg.toLowerCase())) {
+    centerSelect.innerHTML = '<option value="">⚠️ Region Not Permitted</option>';
+    centerSelect.disabled = true;
+    return;
+  }
+
   let centers = getCentersForRegion(selectedReg);
 
   // Filter centers based on logged-in user assignment
@@ -1249,8 +1267,8 @@ function updateCentersForSelectedRegion(selectedReg, prevCenter = '') {
       centerSelect.disabled = true;
       return;
     } else if (assignedList.some(a => a.toUpperCase() === 'ALL')) {
-      // User has access to ALL centers in network / in this region
-      centerSelect.disabled = false;
+      // User has access to ALL centers in this permitted region
+      centerSelect.disabled = (centers.length <= 1);
     } else {
       // User has specific center charges: intersect with centers in this region
       const userAssignedLower = assignedList.map(s => s.trim().toLowerCase());
@@ -1266,7 +1284,7 @@ function updateCentersForSelectedRegion(selectedReg, prevCenter = '') {
       centerSelect.disabled = (centers.length <= 1);
     }
   } else {
-    centerSelect.disabled = false;
+    centerSelect.disabled = (centers.length <= 1);
   }
 
   if (centers.length === 0) {
@@ -3576,7 +3594,9 @@ async function checkServerConnection() {
 
 async function fetchHierarchyFromServer() {
   try {
-    const res = await fetch(`${serverUrl}/api/hierarchy?t=${Date.now()}`);
+    const token = localStorage.getItem('gpon_auth_token') || '';
+    const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+    const res = await fetch(`${serverUrl}/api/hierarchy?t=${Date.now()}`, { headers });
     if (res.ok) {
       const data = await res.json();
       if (data && data.hierarchy && typeof data.hierarchy === 'object' && Object.keys(data.hierarchy).length > 0) {
@@ -3598,7 +3618,10 @@ async function refreshCurrentUserProfile() {
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 4000);
+    const token = localStorage.getItem('gpon_auth_token') || '';
+    const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
     const res = await fetch(`${serverUrl}/api/user-profile?username=${encodeURIComponent(currentUser.username)}`, {
+      headers,
       signal: controller.signal
     });
     clearTimeout(timeoutId);
@@ -3607,12 +3630,13 @@ async function refreshCurrentUserProfile() {
       if (data && data.user) {
         const oldRole = currentUser.role;
         const oldCenters = currentUser.assigned_center;
+        const oldRegion = currentUser.assigned_region;
         currentUser = data.user;
         localStorage.setItem('gpon_logged_in_user', JSON.stringify(currentUser));
         updateUserBar();
-        if (oldRole !== currentUser.role || oldCenters !== currentUser.assigned_center) {
+        if (oldRole !== currentUser.role || oldCenters !== currentUser.assigned_center || oldRegion !== currentUser.assigned_region) {
           initDropdowns();
-          console.log(`[Auth] User profile auto-refreshed from server. Role: ${currentUser.role}`);
+          console.log(`[Auth] User profile auto-refreshed from server. Role: ${currentUser.role}, Region: ${currentUser.assigned_region}`);
         }
       }
     }
