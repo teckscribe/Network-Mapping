@@ -690,18 +690,48 @@ def generate_interactive_html(server_data, app_data, html_data):
   </style>
 </head>
 <body>
-  <header>
-    <div>
-      <h1>⚡ GPON System Architecture & Wiring Portal</h1>
-      <div class="meta">Automated Codebase Wiring Report & Impact Analyzer | Last updated: {now_str}</div>
+  <!-- Super Admin Auth Overlay -->
+  <div id="auth-overlay" style="display:flex; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(15,23,42,0.92); backdrop-filter:blur(6px); z-index:99999; justify-content:center; align-items:center; padding:16px;">
+    <div style="background:white; border-radius:12px; padding:32px; max-width:420px; width:100%; box-shadow:0 25px 50px -12px rgba(0,0,0,0.3); text-align:center;">
+      <div style="font-size:3rem; margin-bottom:8px;">🔐</div>
+      <h2 style="margin:0 0 6px 0; color:#0f172a; font-size:1.35rem; font-weight:800;">Super Admin Authorization</h2>
+      <p style="margin:0 0 20px 0; color:#64748b; font-size:0.85rem; line-height:1.4;">
+        This System Architecture & Wiring Portal contains internal code specifications and is restricted strictly to <strong>Super Administrators</strong>.
+      </p>
+      <form onsubmit="handleSuperAdminLogin(event)" style="text-align:left;">
+        <div style="margin-bottom:12px;">
+          <label style="display:block; font-size:0.78rem; font-weight:700; color:#334155; margin-bottom:4px;">Super Admin Username</label>
+          <input type="text" id="auth-user" required style="width:100%; padding:10px 12px; border:1.5px solid #cbd5e1; border-radius:6px; font-size:0.9rem;" placeholder="e.g. admin">
+        </div>
+        <div style="margin-bottom:16px;">
+          <label style="display:block; font-size:0.78rem; font-weight:700; color:#334155; margin-bottom:4px;">Password / PIN</label>
+          <input type="password" id="auth-pass" required style="width:100%; padding:10px 12px; border:1.5px solid #cbd5e1; border-radius:6px; font-size:0.9rem;" placeholder="Password">
+        </div>
+        <div id="auth-error" style="display:none; background:#fee2e2; color:#991b1b; padding:10px 12px; border-radius:6px; font-size:0.83rem; margin-bottom:14px; font-weight:600;"></div>
+        <button type="submit" style="width:100%; background:#0284c7; color:white; border:none; padding:11px; border-radius:6px; font-weight:700; font-size:0.95rem; cursor:pointer;">🔐 Verify Super Admin Access</button>
+      </form>
+      <div style="margin-top:20px; border-top:1px solid #e2e8f0; padding-top:14px;">
+        <a href="/admin" style="color:#64748b; text-decoration:none; font-size:0.82rem; font-weight:600;">← Return to Admin Portal</a>
+      </div>
     </div>
-    <div>
-      <a href="/admin" style="color: #38bdf8; text-decoration: none; font-weight: 600; margin-right: 1.5rem;">← Back to Admin Console</a>
-      <a href="/" style="color: #38bdf8; text-decoration: none; font-weight: 600;">📱 Field Survey PWA</a>
-    </div>
-  </header>
+  </div>
 
-  <div class="container">
+  <!-- Protected Dashboard Content (Hidden until Super Admin is verified) -->
+  <div id="main-content" style="display:none;">
+    <header>
+      <div>
+        <h1>⚡ GPON System Architecture & Wiring Portal</h1>
+        <div class="meta">Automated Codebase Wiring Report & Impact Analyzer | Last updated: {now_str}</div>
+      </div>
+      <div style="display:flex; align-items:center; gap:12px;">
+        <span id="admin-user-tag" class="badge" style="background:#6366f1; color:white; font-size:0.8rem; padding:4px 10px;">Super Admin</span>
+        <button onclick="handleSuperAdminLogout()" style="background:#dc2626; color:white; border:none; padding:6px 12px; border-radius:6px; font-size:0.8rem; font-weight:700; cursor:pointer;">🚪 Sign Out</button>
+        <a href="/admin" style="color: #38bdf8; text-decoration: none; font-weight: 600;">← Back to Admin Console</a>
+        <a href="/" style="color: #38bdf8; text-decoration: none; font-weight: 600;">📱 Field Survey PWA</a>
+      </div>
+    </header>
+
+    <div class="container">
     <div class="stats-grid">
       <div class="stat-card">
         <div class="val">{server_data.get('total_lines', 0)}</div>
@@ -904,8 +934,91 @@ CREATE TABLE survey_records (
       </div>
     </div>
   </div>
+  </div> <!-- close #main-content -->
 
   <script>
+    let currentSuperAdmin = null;
+
+    async function checkSuperAdminAuth() {
+      const token = localStorage.getItem('gpon_auth_token') || '';
+      const overlay = document.getElementById('auth-overlay');
+      const mainContent = document.getElementById('main-content');
+
+      if (!token) {
+        overlay.style.display = 'flex';
+        mainContent.style.display = 'none';
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/user-profile', {
+          headers: { 'Authorization': 'Bearer ' + token }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.user && (data.user.role === 'super_admin' || data.user.role === 'admin')) {
+            currentSuperAdmin = data.user;
+            overlay.style.display = 'none';
+            mainContent.style.display = 'block';
+            const userBadge = document.getElementById('admin-user-tag');
+            if (userBadge) userBadge.innerText = `${data.user.full_name || data.user.username} (Super Admin)`;
+            return;
+          }
+        }
+      } catch (e) {
+        console.warn('Auth check network error:', e);
+      }
+
+      overlay.style.display = 'flex';
+      mainContent.style.display = 'none';
+    }
+
+    async function handleSuperAdminLogin(e) {
+      e.preventDefault();
+      const u = document.getElementById('auth-user').value.trim();
+      const p = document.getElementById('auth-pass').value.trim();
+      const errEl = document.getElementById('auth-error');
+      errEl.style.display = 'none';
+
+      try {
+        const res = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: u, password: p })
+        });
+        const data = await res.json();
+        if (res.ok && data.status === 'success') {
+          const role = (data.user.role || '').toLowerCase();
+          if (role !== 'super_admin' && role !== 'admin') {
+            errEl.innerText = `⛔ Access Denied: Account '${data.user.username}' is role '${data.user.role}'. Only Super Admins can access this portal.`;
+            errEl.style.display = 'block';
+            return;
+          }
+          if (data.token) localStorage.setItem('gpon_auth_token', data.token);
+          localStorage.setItem('gpon_logged_in_user', JSON.stringify(data.user));
+          currentSuperAdmin = data.user;
+          document.getElementById('auth-overlay').style.display = 'none';
+          document.getElementById('main-content').style.display = 'block';
+          const userBadge = document.getElementById('admin-user-tag');
+          if (userBadge) userBadge.innerText = `${data.user.full_name || data.user.username} (Super Admin)`;
+        } else {
+          errEl.innerText = data.detail || 'Invalid username or password';
+          errEl.style.display = 'block';
+        }
+      } catch (err) {
+        errEl.innerText = 'Network error: ' + err.message;
+        errEl.style.display = 'block';
+      }
+    }
+
+    function handleSuperAdminLogout() {
+      localStorage.removeItem('gpon_auth_token');
+      localStorage.removeItem('gpon_logged_in_user');
+      window.location.reload();
+    }
+
+    window.addEventListener('DOMContentLoaded', checkSuperAdminAuth);
+
     function showTab(tabId) {
       document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
       document.querySelectorAll('.nav-tab').forEach(el => el.classList.remove('active'));
