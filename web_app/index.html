@@ -311,8 +311,8 @@
 
       <form onsubmit="handleLogin(event)">
         <div class="gs-cell-group" style="margin-bottom: 12px;">
-          <label class="gs-cell-label" for="login-username">Username</label>
-          <input type="text" id="login-username" class="gs-input" placeholder="Enter your username" required autocomplete="username" autocapitalize="none" spellcheck="false" oninput="clearLoginError()">
+          <label class="gs-cell-label" for="login-username">Username or Mobile Number</label>
+          <input type="text" id="login-username" class="gs-input" placeholder="e.g. anoop or 9447123456" required autocomplete="username" autocapitalize="none" spellcheck="false" oninput="clearLoginError()">
         </div>
         <div class="gs-cell-group" style="margin-bottom: 12px;">
           <label class="gs-cell-label" for="login-password">Password / PIN</label>
@@ -354,12 +354,12 @@
       <!-- Step 1: Request OTP -->
       <div id="reset-step-1">
         <p style="text-align: center; font-size: 0.8rem; color: #5f6368; margin-bottom: 18px; line-height: 1.4;">
-          Enter your <strong>Username</strong> or <strong>Registered Email</strong> to receive a secure 6-digit verification code.
+          Enter your <strong>Username</strong>, <strong>Mobile Number</strong>, or <strong>Registered Email</strong> to receive a secure 6-digit verification code.
         </p>
         <form onsubmit="handleRequestResetOtp(event)">
           <div class="gs-cell-group" style="margin-bottom: 14px;">
-            <label class="gs-cell-label" for="reset-identifier">Username or Email Address</label>
-            <input type="text" id="reset-identifier" class="gs-input" placeholder="e.g. anoop or anoop@bsnl.co.in" required autocomplete="username" autocapitalize="none" spellcheck="false">
+            <label class="gs-cell-label" for="reset-identifier">Username, Mobile No., or Email</label>
+            <input type="text" id="reset-identifier" class="gs-input" placeholder="e.g. anoop, 9447123456, or anoop@bsnl.co.in" required autocomplete="username" autocapitalize="none" spellcheck="false">
           </div>
           <div id="reset-step1-error" style="display: none; background: #fee2e2; color: #991b1b; padding: 8px 12px; border-radius: 6px; font-size: 0.8rem; margin-bottom: 14px;"></div>
           <button type="submit" id="btn-send-reset-otp" class="btn-add-row" style="margin-top: 0; padding: 11px; background: #0284c7; justify-content: center; width: 100%;">
@@ -464,7 +464,7 @@
   <!-- Local Offline Vendor Scripts -->
   <script src="vendor/leaflet.js"></script>
   <script src="vendor/xlsx.full.min.js"></script>
-  <script src="preload_data.js?v=65"></script>
-  <script src="app.js?v=65"></script>
+  <script src="preload_data.js?v=66"></script>
+  <script src="app.js?v=66"></script>
 </body>
 </html>

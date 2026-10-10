@@ -305,7 +305,7 @@ def save_users_to_json(conn=None):
         close_at_end = True
     try:
         cur = conn.cursor()
-        cur.execute("SELECT username, password, full_name, assigned_center, assigned_region, role, created_at, email FROM users WHERE username NOT IN ('rcsm_thrissur', 'acso_thrissur', 'thrissur_agent', 'tmm_agent')")
+        cur.execute("SELECT username, password, full_name, assigned_center, assigned_region, role, created_at, email, phone FROM users WHERE username NOT IN ('rcsm_thrissur', 'acso_thrissur', 'thrissur_agent', 'tmm_agent')")
         rows = cur.fetchall()
         users_list = []
         for r in rows:
@@ -317,7 +317,8 @@ def save_users_to_json(conn=None):
                 "assigned_region": r[4] or "Unassigned",
                 "role": normalize_role(r[5]),
                 "created_at": r[6],
-                "email": (r[7] or "").strip() if len(r) > 7 and r[7] else ""
+                "email": (r[7] or "").strip() if len(r) > 7 and r[7] else "",
+                "phone": (r[8] or "").strip() if len(r) > 8 and r[8] else ""
             })
         with open(USERS_CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(users_list, f, indent=2)
@@ -345,11 +346,12 @@ def load_users_from_json(conn):
             if not uname or uname in BANNED_SAMPLE_USERS:
                 continue
             cur.execute("""
-            INSERT INTO users (username, password, full_name, email, assigned_center, assigned_region, role, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO users (username, password, full_name, phone, email, assigned_center, assigned_region, role, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(username) DO UPDATE SET
                 password=excluded.password,
                 full_name=excluded.full_name,
+                phone=excluded.phone,
                 email=excluded.email,
                 assigned_center=excluded.assigned_center,
                 assigned_region=excluded.assigned_region,
@@ -358,6 +360,7 @@ def load_users_from_json(conn):
                 uname,
                 u["password"].strip(),
                 u["full_name"].strip(),
+                u.get("phone", "").strip(),
                 u.get("email", "").strip(),
                 u["assigned_center"].strip(),
                 u.get("assigned_region", "Thrissur"),
@@ -416,6 +419,7 @@ def init_db():
         username TEXT PRIMARY KEY,
         password TEXT NOT NULL,
         full_name TEXT NOT NULL,
+        phone TEXT DEFAULT '',
         email TEXT DEFAULT '',
         assigned_center TEXT NOT NULL,
         assigned_region TEXT DEFAULT 'Thrissur',
@@ -439,6 +443,8 @@ def init_db():
     # Check and add columns if upgrading existing db
     cur.execute("PRAGMA table_info(users)")
     user_cols = [c[1] for c in cur.fetchall()]
+    if "phone" not in user_cols:
+        cur.execute("ALTER TABLE users ADD COLUMN phone TEXT DEFAULT ''")
     if "email" not in user_cols:
         cur.execute("ALTER TABLE users ADD COLUMN email TEXT DEFAULT ''")
     if "assigned_region" not in user_cols:
@@ -447,6 +453,7 @@ def init_db():
         cur.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'field_technician'")
     if "created_at" not in user_cols:
         cur.execute("ALTER TABLE users ADD COLUMN created_at TEXT")
+    cur.execute("UPDATE users SET phone = '' WHERE phone IS NULL")
     cur.execute("UPDATE users SET email = '' WHERE email IS NULL")
     cur.execute("UPDATE users SET assigned_region = 'Thrissur' WHERE assigned_region IS NULL OR assigned_region = ''")
     cur.execute("UPDATE users SET role = 'field_technician' WHERE role IS NULL OR role = ''")
@@ -815,6 +822,7 @@ class UserCreateModel(BaseModel):
     username: str
     password: Optional[str] = ""
     full_name: str
+    phone: Optional[str] = ""
     email: Optional[str] = ""
     assigned_center: Union[str, List[str]]
     assigned_region: Optional[Union[str, List[str]]] = "Thrissur"
@@ -934,28 +942,52 @@ def login(req: LoginRequest, request: Request):
     if not check_rate_limit(LOGIN_ATTEMPTS, rate_key, max_attempts=15, window_seconds=60):
         raise HTTPException(status_code=429, detail="Too many login attempts. Please wait 1 minute before trying again.")
 
+    u_raw = req.username.strip()
+    u_clean_phone = re.sub(r'[\s\-\+]', '', u_raw)
+    if u_clean_phone.startswith('91') and len(u_clean_phone) == 12:
+        u_clean_phone = u_clean_phone[2:]
+
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
-    cur.execute("SELECT * FROM users WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))", (req.username.strip(),))
+    cur.execute("""
+        SELECT * FROM users 
+        WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))
+           OR (phone != '' AND REPLACE(REPLACE(REPLACE(REPLACE(phone, ' ', ''), '-', ''), '+91', ''), '+', '') = ?)
+           OR (email != '' AND LOWER(TRIM(email)) = LOWER(TRIM(?)))
+    """, (u_raw, u_clean_phone, u_raw))
     user = cur.fetchone()
 
     pwd_input = req.password
     pwd_stripped = req.password.strip()
     pwd_valid = False
+    matched_with_float = False
+
     if user:
-        pwd_valid = verify_password(pwd_stripped, user["password"]) or verify_password(pwd_input, user["password"])
+        stored_pwd = user["password"]
+        pwd_valid = verify_password(pwd_stripped, stored_pwd) or verify_password(pwd_input, stored_pwd)
+        
+        # Check if password was imported from Excel numeric cell as float (e.g. stored hash of "1234.0")
+        if not pwd_valid and (pwd_stripped.isdigit() or ('.' not in pwd_stripped and pwd_stripped.replace('.', '', 1).isdigit())):
+            if verify_password(f"{pwd_stripped}.0", stored_pwd):
+                pwd_valid = True
+                matched_with_float = True
+
+        # Check if stored was without .0 but user typed with .0
+        if not pwd_valid and pwd_stripped.endswith('.0'):
+            if verify_password(pwd_stripped[:-2], stored_pwd):
+                pwd_valid = True
 
     if not user or not pwd_valid:
         conn.close()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
 
-    # Auto-upgrade: if password is still plaintext, hash it now (seamless migration)
-    if not is_hashed(user["password"]):
-        hashed = hash_password(req.password.strip())
+    # Auto-upgrade / auto-heal: if password is still plaintext or was hashed with float string from Excel, rehash now
+    if not is_hashed(user["password"]) or matched_with_float:
+        hashed = hash_password(pwd_stripped)
         cur.execute("UPDATE users SET password = ? WHERE username = ?", (hashed, user["username"]))
         conn.commit()
-        print(f"[Auth] Auto-upgraded password hash for user: {user['username']}")
+        print(f"[Auth] Auto-healed and upgraded password hash for user: {user['username']}")
         save_users_to_json(conn)
 
     conn.close()
@@ -967,6 +999,7 @@ def login(req: LoginRequest, request: Request):
 
     user_role = normalize_role(user["role"])
     user_email = (user["email"] or "").strip() if "email" in user.keys() and user["email"] else ""
+    user_phone = (user["phone"] or "").strip() if "phone" in user.keys() and user["phone"] else ""
 
     # Issue session token
     token = create_session_token(user["username"], user_role)
@@ -977,6 +1010,7 @@ def login(req: LoginRequest, request: Request):
         "user": {
             "username": user["username"],
             "full_name": user["full_name"],
+            "phone": user_phone,
             "email": user_email,
             "assigned_center": raw_center,
             "assigned_centers": centers_list,
@@ -1033,11 +1067,12 @@ def get_users(session: dict = Depends(require_admin_auth)):
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
-    cur.execute("SELECT username, full_name, email, assigned_center, assigned_region, role, created_at FROM users")
+    cur.execute("SELECT username, full_name, phone, email, assigned_center, assigned_region, role, created_at FROM users")
     users = [
         {
             "username": u["username"],
             "full_name": u["full_name"],
+            "phone": u["phone"] or "",
             "email": u["email"] or "",
             "assigned_center": u["assigned_center"] or "Unassigned",
             "assigned_centers": [c.strip() for c in (u["assigned_center"] or "").split(",") if c.strip() and c.strip().upper() not in ("UNASSIGNED", "NONE")],
@@ -1058,6 +1093,7 @@ def create_user(u: UserCreateModel, session: dict = Depends(require_admin_auth))
     now = datetime.datetime.now().isoformat()
     role_clean = normalize_role(u.role)
     email_clean = (u.email or "").strip().lower()
+    phone_clean = (u.phone or "").strip()
 
     # Normalize assigned_center (support list or comma string)
     if isinstance(u.assigned_center, list):
@@ -1075,8 +1111,8 @@ def create_user(u: UserCreateModel, session: dict = Depends(require_admin_auth))
     if not region_str:
         region_str = "Thrissur"
 
-    # Check if user exists and password is provided
-    cur.execute("SELECT password FROM users WHERE username = ?", (u.username.strip(),))
+    # Check if user exists and password is provided (case-insensitive and whitespace-safe)
+    cur.execute("SELECT password FROM users WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))", (u.username.strip(),))
     existing_row = cur.fetchone()
     if existing_row and not (u.password or "").strip():
         # Keep existing password (already hashed or plaintext)
@@ -1088,16 +1124,17 @@ def create_user(u: UserCreateModel, session: dict = Depends(require_admin_auth))
 
     try:
         cur.execute("""
-        INSERT INTO users (username, password, full_name, email, assigned_center, assigned_region, role, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO users (username, password, full_name, phone, email, assigned_center, assigned_region, role, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(username) DO UPDATE SET
             password=excluded.password,
             full_name=excluded.full_name,
+            phone=excluded.phone,
             email=excluded.email,
             assigned_center=excluded.assigned_center,
             assigned_region=excluded.assigned_region,
             role=excluded.role
-        """, (u.username.strip(), password_to_store, u.full_name.strip(), email_clean, center_str, region_str, role_clean, now))
+        """, (u.username.strip(), password_to_store, u.full_name.strip(), phone_clean, email_clean, center_str, region_str, role_clean, now))
         conn.commit()
     except Exception as e:
         conn.close()
@@ -1116,6 +1153,7 @@ def download_users_template():
     headers = [
         'Username', 
         'Full Name', 
+        'Phone Number',
         'Email Address', 
         'Password / PIN', 
         'Role (Access Tier)', 
@@ -1132,11 +1170,11 @@ def download_users_template():
         cell.alignment = Alignment(horizontal="center", vertical="center")
 
     sample_rows = [
-        ["anoop_tech", "Anoop P", "anoop@bsnl.co.in", "1234", "Field Technician", "Thrissur", "KORATTY"],
-        ["sujith_acso", "Sujith Kumar", "sujith@bsnl.co.in", "1234", "ACSO", "Thrissur", "KORATTY, CHALAKUDY"],
-        ["rahul_field", "Rahul R", "rahul@bsnl.co.in", "", "Field Technician", "", ""],
-        ["manager_rcsm", "Regional Manager", "rcsm@bsnl.co.in", "1234", "RCSM", "Thrissur", "ALL"],
-        ["admin_central", "Central Administrator", "admin@bsnl.co.in", "admin123", "Super Admin", "ALL", "ALL"]
+        ["anoop_tech", "Anoop P", "9447000001", "anoop@bsnl.co.in", "1234", "Field Technician", "Thrissur", "KORATTY"],
+        ["sujith_acso", "Sujith Kumar", "9447000002", "sujith@bsnl.co.in", "1234", "ACSO", "Thrissur", "KORATTY, CHALAKUDY"],
+        ["rahul_field", "Rahul R", "9447000003", "rahul@bsnl.co.in", "", "Field Technician", "", ""],
+        ["manager_rcsm", "Regional Manager", "9447000004", "rcsm@bsnl.co.in", "1234", "RCSM", "Thrissur", "ALL"],
+        ["admin_central", "Central Administrator", "9447000005", "admin@bsnl.co.in", "admin123", "Super Admin", "ALL", "ALL"]
     ]
 
     for r_idx, row in enumerate(sample_rows, 2):
@@ -1236,13 +1274,22 @@ async def upload_users_excel(file: UploadFile = File(...), session: dict = Depen
             if header_row_idx == -1:
                 continue
 
+            def clean_excel_val(val):
+                if val is None:
+                    return ""
+                if isinstance(val, float) and val.is_integer():
+                    return str(int(val)).strip()
+                if isinstance(val, (int, float)):
+                    return str(val).strip()
+                return str(val).strip()
+
             def get_col(row_data, *candidates, default=""):
                 for cand in candidates:
                     cand_clean = re.sub(r'[^a-z0-9]', '', cand.lower())
                     if cand_clean in col_indices:
                         idx = col_indices[cand_clean]
                         if idx < len(row_data) and row_data[idx] is not None:
-                            val = str(row_data[idx]).strip()
+                            val = clean_excel_val(row_data[idx])
                             if val and val.lower() != cand.lower():
                                 return val
                 return default
@@ -1261,6 +1308,7 @@ async def upload_users_excel(file: UploadFile = File(...), session: dict = Depen
                     continue
 
                 full_name = get_col(row, "fullname", "name", "displayname", default=username).strip() or username
+                phone = get_col(row, "phonenumber", "phone", "mobilenumber", "mobile", "contact", default="").strip()
                 email = get_col(row, "emailaddress", "email", "mail", default="").strip().lower()
                 raw_pwd = get_col(row, "passwordpin", "password", "pin", "pwd", "pass", default="").strip()
                 role_raw = get_col(row, "roleaccesstier", "role", "accesstier", "rights", default="field_technician")
@@ -1270,7 +1318,7 @@ async def upload_users_excel(file: UploadFile = File(...), session: dict = Depen
                 role_clean = normalize_role(role_raw)
 
                 # Check if user already exists
-                cur.execute("SELECT password, assigned_center, assigned_region FROM users WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))", (username,))
+                cur.execute("SELECT password, assigned_center, assigned_region, phone FROM users WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))", (username,))
                 existing_row = cur.fetchone()
 
                 if existing_row:
@@ -1279,15 +1327,16 @@ async def upload_users_excel(file: UploadFile = File(...), session: dict = Depen
                     else:
                         pwd_to_store = existing_row[0]
 
-                    # For existing users: if region or center is blank in Excel, keep their existing assignments!
+                    # For existing users: if region, center, or phone is blank in Excel, keep their existing assignments!
                     target_center = raw_center if raw_center else (existing_row[1] or "Unassigned")
                     target_region = raw_region if raw_region else (existing_row[2] or "Unassigned")
+                    target_phone = phone if phone else (existing_row[3] or "")
 
                     cur.execute("""
                         UPDATE users
-                        SET password = ?, full_name = ?, email = ?, assigned_center = ?, assigned_region = ?, role = ?
+                        SET password = ?, full_name = ?, phone = ?, email = ?, assigned_center = ?, assigned_region = ?, role = ?
                         WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))
-                    """, (pwd_to_store, full_name, email, target_center, target_region, role_clean, username))
+                    """, (pwd_to_store, full_name, target_phone, email, target_center, target_region, role_clean, username))
                     updated_count += 1
                 else:
                     pwd_to_store = hash_password(raw_pwd or "1234")
@@ -1296,9 +1345,9 @@ async def upload_users_excel(file: UploadFile = File(...), session: dict = Depen
                     target_region = raw_region if raw_region else "Unassigned"
 
                     cur.execute("""
-                        INSERT INTO users (username, password, full_name, email, assigned_center, assigned_region, role, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (username, pwd_to_store, full_name, email, target_center, target_region, role_clean, now))
+                        INSERT INTO users (username, password, full_name, phone, email, assigned_center, assigned_region, role, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (username, pwd_to_store, full_name, phone, email, target_center, target_region, role_clean, now))
                     added_count += 1
 
         conn.commit()
@@ -1424,7 +1473,11 @@ def request_password_reset_otp(req: RequestResetOtpPayload, request: Request):
 
     identifier = req.username_or_email.strip()
     if not identifier:
-        raise HTTPException(status_code=400, detail="Please enter your username or registered email address.")
+        raise HTTPException(status_code=400, detail="Please enter your username, phone number, or registered email address.")
+
+    clean_phone = re.sub(r'[\s\-\+]', '', identifier)
+    if clean_phone.startswith('91') and len(clean_phone) == 12:
+        clean_phone = clean_phone[2:]
 
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -1433,12 +1486,13 @@ def request_password_reset_otp(req: RequestResetOtpPayload, request: Request):
         SELECT * FROM users 
         WHERE LOWER(TRIM(username)) = LOWER(TRIM(?)) 
            OR LOWER(TRIM(email)) = LOWER(TRIM(?))
-    """, (identifier, identifier))
+           OR (phone != '' AND REPLACE(REPLACE(REPLACE(REPLACE(phone, ' ', ''), '-', ''), '+91', ''), '+', '') = ?)
+    """, (identifier, identifier, clean_phone))
     user = cur.fetchone()
 
     if not user:
         conn.close()
-        raise HTTPException(status_code=404, detail="No user account found matching that username or email address.")
+        raise HTTPException(status_code=404, detail="No user account found matching that username, mobile number, or email address.")
 
     user_email = (user["email"] or "").strip().lower()
     if not user_email or "@" not in user_email:
@@ -3348,6 +3402,7 @@ def admin_dashboard(response: Response):
               <tr>
                 <th>Username</th>
                 <th>Full Name</th>
+                <th>Phone / Mobile</th>
                 <th>Email Address</th>
                 <th>Region</th>
                 <th>Assigned Center</th>
@@ -3357,7 +3412,7 @@ def admin_dashboard(response: Response):
               </tr>
             </thead>
             <tbody id="users-table-body">
-              <tr><td colspan="8" style="text-align:center; padding:20px; color:#64748b;">Loading users...</td></tr>
+              <tr><td colspan="9" style="text-align:center; padding:20px; color:#64748b;">Loading users...</td></tr>
             </tbody>
           </table>
         </div>
@@ -3384,7 +3439,7 @@ def admin_dashboard(response: Response):
               </div>
             </div>
 
-            <!-- Row 2: Full Name & Email Address -->
+            <!-- Row 2: Full Name & Phone / Mobile -->
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-bottom:14px;">
               <div>
                 <label style="display:block; font-size:0.78rem; font-weight:700; color:#334155; margin-bottom:4px;">Full Name <span style="color:#ef4444;">*</span></label>
@@ -3392,21 +3447,29 @@ def admin_dashboard(response: Response):
               </div>
               <div>
                 <label style="display:block; font-size:0.78rem; font-weight:700; color:#334155; margin-bottom:4px;">
-                  Email Address <span style="font-size:0.7rem; color:#0284c7; font-weight:normal;">(For user password reset / change)</span>
+                  Phone / Mobile Number <span style="font-size:0.7rem; color:#0f766e; font-weight:normal;">(For login & field contact)</span>
                 </label>
-                <input type="email" id="modal-new-email" placeholder="e.g. anoop@bsnl.co.in" style="width:100%; border:1.5px solid #cbd5e1; border-radius:6px; padding:8px 10px; font-size:0.85rem;">
+                <input type="tel" id="modal-new-phone" placeholder="e.g. 9447123456" style="width:100%; border:1.5px solid #cbd5e1; border-radius:6px; padding:8px 10px; font-size:0.85rem;">
               </div>
             </div>
 
-            <!-- Row 3: Role (Defines User Rights) -->
-            <div style="margin-bottom:14px;">
-              <label style="display:block; font-size:0.78rem; font-weight:700; color:#0369a1; margin-bottom:4px;">👤 Role (Defines Operational User Rights) <span style="color:#ef4444;">*</span></label>
-              <select id="modal-new-role" required style="width:100%; font-weight:600; border:1.5px solid #0284c7; border-radius:6px; padding:8px 10px; font-size:0.85rem;">
-                <option value="field_technician">👷 Field Technician (Data Entry Only)</option>
-                <option value="acso">📝 ACSO (Data Entry & Downloads)</option>
-                <option value="rcsm">📊 RCSM (Dashboard, Downloads & Field Survey)</option>
-                <option value="super_admin">👑 Super Admin (Full Control)</option>
-              </select>
+            <!-- Row 3: Email Address & Role -->
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-bottom:14px;">
+              <div>
+                <label style="display:block; font-size:0.78rem; font-weight:700; color:#334155; margin-bottom:4px;">
+                  Email Address <span style="font-size:0.7rem; color:#0284c7; font-weight:normal;">(For OTP password reset)</span>
+                </label>
+                <input type="email" id="modal-new-email" placeholder="e.g. anoop@bsnl.co.in" style="width:100%; border:1.5px solid #cbd5e1; border-radius:6px; padding:8px 10px; font-size:0.85rem;">
+              </div>
+              <div>
+                <label style="display:block; font-size:0.78rem; font-weight:700; color:#0369a1; margin-bottom:4px;">👤 Role (Defines Operational User Rights) <span style="color:#ef4444;">*</span></label>
+                <select id="modal-new-role" required style="width:100%; font-weight:600; border:1.5px solid #0284c7; border-radius:6px; padding:8px 10px; font-size:0.85rem;">
+                  <option value="field_technician">👷 Field Technician (Data Entry Only)</option>
+                  <option value="acso">📝 ACSO (Data Entry & Downloads)</option>
+                  <option value="rcsm">📊 RCSM (Dashboard, Downloads & Field Survey)</option>
+                  <option value="super_admin">👑 Super Admin (Full Control)</option>
+                </select>
+              </div>
             </div>
 
             <!-- Row 4: Assigned Region(s) & Assigned Center(s) -->
@@ -5178,7 +5241,7 @@ def admin_dashboard(response: Response):
             tbody.innerHTML = '';
 
             if (cachedUsersList.length === 0) {
-              tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:20px; color:#64748b;">No users found in database. Click "+ Add User" above to create one.</td></tr>';
+              tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; padding:20px; color:#64748b;">No users found in database. Click "+ Add User" above to create one.</td></tr>';
               return;
             }
 
@@ -5193,6 +5256,7 @@ def admin_dashboard(response: Response):
               const tr = document.createElement('tr');
               const roleClean = normalizeAdminRole(u.role);
               const badgeHtml = roleBadges[roleClean] || `<span class="tag">${escapeHtml(u.role)}</span>`;
+              const phoneDisplay = u.phone ? `<span style="font-family:monospace; font-size:0.8rem; color:#0f766e; font-weight:600;">📞 ${escapeHtml(u.phone)}</span>` : '<span style="color:#94a3b8; font-style:italic; font-size:0.78rem;">No Phone</span>';
               const emailDisplay = u.email ? `<span style="font-family:monospace; font-size:0.8rem; color:#0369a1;">${escapeHtml(u.email)}</span>` : '<span style="color:#94a3b8; font-style:italic; font-size:0.78rem;">No Email</span>';
               const regDisplay = (u.assigned_region && u.assigned_region !== 'Unassigned')
                 ? `<span style="background:#f1f5f9; padding:2px 8px; border-radius:4px; font-weight:600; font-size:0.8rem;">${escapeHtml(u.assigned_region)}</span>`
@@ -5201,6 +5265,7 @@ def admin_dashboard(response: Response):
               tr.innerHTML = `
                 <td><strong>${escapeHtml(u.username)}</strong></td>
                 <td>${escapeHtml(u.full_name || u.username)}</td>
+                <td>${phoneDisplay}</td>
                 <td>${emailDisplay}</td>
                 <td>${regDisplay}</td>
                   <td>
@@ -5236,7 +5301,7 @@ def admin_dashboard(response: Response):
               });
             } catch(e) {
               console.error('Error in fetchUsers:', e);
-              tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; padding:20px; color:#dc2626;">Error loading user list: ${escapeHtml(e.message)}</td></tr>`;
+              tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; padding:20px; color:#dc2626;">Error loading user list: ${escapeHtml(e.message)}</td></tr>`;
             }
           }
 
@@ -5245,7 +5310,7 @@ def admin_dashboard(response: Response):
             if (!u) return;
             const userCenter = (u.assigned_center === 'Unassigned' || !u.assigned_center) ? '' : u.assigned_center;
             const userRegion = (u.assigned_region === 'Unassigned' || !u.assigned_region) ? '' : u.assigned_region;
-            openEditUserModal(u.username, u.full_name, u.email || '', userCenter, userRegion, normalizeAdminRole(u.role));
+            openEditUserModal(u.username, u.full_name, u.phone || '', u.email || '', userCenter, userRegion, normalizeAdminRole(u.role));
           }
 
         function deleteUserByIndex(idx) {
@@ -5308,6 +5373,7 @@ def admin_dashboard(response: Response):
           const passReq = document.getElementById('modal-pass-required');
           if (passReq) passReq.style.display = 'inline';
           document.getElementById('modal-new-name').value = '';
+          document.getElementById('modal-new-phone').value = '';
           document.getElementById('modal-new-email').value = '';
           document.getElementById('modal-new-role').value = 'field_technician';
           document.getElementById('btn-modal-save-user').innerHTML = '💾 Save User';
@@ -5316,7 +5382,7 @@ def admin_dashboard(response: Response):
           document.getElementById('user-modal').style.display = 'flex';
         }
 
-        function openEditUserModal(username, fullName, email, center, region, role) {
+        function openEditUserModal(username, fullName, phone, email, center, region, role) {
           document.getElementById('user-modal-title').innerHTML = `✏️ Edit User: ${escapeHtml(username)}`;
           document.getElementById('modal-new-user').value = username;
           document.getElementById('modal-new-user').setAttribute('readonly', 'true');
@@ -5327,6 +5393,7 @@ def admin_dashboard(response: Response):
           const passReq = document.getElementById('modal-pass-required');
           if (passReq) passReq.style.display = 'none';
           document.getElementById('modal-new-name').value = fullName || username;
+          document.getElementById('modal-new-phone').value = phone || '';
           document.getElementById('modal-new-email').value = email || '';
 
           populateUserRegionAndCenterDropdowns(region || '', center || '');
@@ -5375,6 +5442,7 @@ def admin_dashboard(response: Response):
             username: document.getElementById('modal-new-user').value.trim(),
             password: document.getElementById('modal-new-pass').value.trim(),
             full_name: document.getElementById('modal-new-name').value.trim(),
+            phone: document.getElementById('modal-new-phone').value.trim(),
             email: document.getElementById('modal-new-email').value.trim(),
             assigned_region: regionsArr.includes('ALL') ? 'ALL' : regionsArr.join(', '),
             assigned_center: centersArr.includes('ALL') ? 'ALL' : centersArr.join(', '),
