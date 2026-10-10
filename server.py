@@ -3128,6 +3128,16 @@ def resync_data_folders(session: dict = Depends(require_admin_auth)):
     conn.close()
     return {"status": "success", "message": f"Storage optimized: 0 static Excel files on disk. {cnt} survey records active in SQLite.", "records_count": cnt}
 
+# Architecture Wiring & System Report Dashboard
+@app.get("/admin/wiring", response_class=FileResponse)
+@app.get("/docs/wiring", response_class=FileResponse)
+def get_wiring_report():
+    """Serves the interactive architecture wiring and blast-radius report."""
+    report_path = os.path.join(WEB_APP_DIR, "wiring_report.html")
+    if os.path.exists(report_path):
+        return FileResponse(report_path, media_type="text/html", headers={"Cache-Control": "no-cache"})
+    raise HTTPException(status_code=404, detail="Wiring report not found. Run scripts/generate_wiring_report.py first.")
+
 # Central Office Web Dashboard
 @app.get("/admin", response_class=HTMLResponse)
 def admin_dashboard(response: Response):
@@ -3240,6 +3250,7 @@ def admin_dashboard(response: Response):
           <button id="btn-top-master-excel" class="btn btn-green" onclick="downloadWithAuth('/api/export-excel')">📊 Master Excel</button>
           <button id="btn-top-zip-excel" class="btn" style="background:#2563eb; color:white;" onclick="downloadWithAuth('/api/export-data-zip')">🗂️ All Centers (ZIP)</button>
           <a href="/" class="btn btn-outline" target="_blank" title="Open Field Survey Web App">📱 Field App</a>
+          <a href="/admin/wiring" class="btn btn-outline" target="_blank" title="View System Architecture & Code Wiring Report" style="border-color:#0284c7; color:#0284c7; font-weight:600;">⚡ Wiring Report</a>
           <button onclick="fetchData()" class="btn btn-outline">🔄 Refresh</button>
           <button onclick="handleAdminLogoutClick()" class="btn btn-danger" style="padding:8px 14px; font-weight:600; display:inline-flex; align-items:center; gap:6px;" title="Log Out from Admin Portal">🚪 Log Out</button>
         </div>

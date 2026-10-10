@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>GPON System Architecture & Wiring Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    :root {
+      --primary: #0284c7;
+      --primary-dark: #0369a1;
+      --bg: #f8fafc;
+      --card-bg: #ffffff;
+      --text: #0f172a;
+      --text-muted: #64748b;
+      --border: #e2e8f0;
+      --danger: #ef4444;
+      --warning: #f59e0b;
+      --success: #10b981;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    header {
+      background: #0f172a;
+      color: white;
+      padding: 1.25rem 2rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 1rem;
+      border-bottom: 3px solid var(--primary);
+    }
+    header h1 { font-size: 1.35rem; font-weight: 700; }
+    header .meta { font-size: 0.85rem; color: #94a3b8; }
+    .container {
+      max-width: 1400px;
+      margin: 1.5rem auto;
+      padding: 0 1.5rem;
+    }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+    .stat-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.25rem;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    }
+    .stat-card .val { font-size: 1.75rem; font-weight: 800; color: var(--primary); }
+    .stat-card .label { font-size: 0.85rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase; }
+    
+    .nav-tabs {
+      display: flex;
+      gap: 0.5rem;
+      border-bottom: 2px solid var(--border);
+      margin-bottom: 1.5rem;
+      overflow-x: auto;
+    }
+    .nav-tab {
+      padding: 0.75rem 1.25rem;
+      border: none;
+      background: none;
+      font-weight: 600;
+      font-size: 0.95rem;
+      color: var(--text-muted);
+      cursor: pointer;
+      border-bottom: 3px solid transparent;
+      margin-bottom: -2px;
+    }
+    .nav-tab.active {
+      color: var(--primary);
+      border-bottom-color: var(--primary);
+      background: rgba(2, 132, 199, 0.05);
+    }
+
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.5rem;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+      margin-bottom: 1.5rem;
+    }
+    .search-box {
+      width: 100%;
+      padding: 0.75rem 1rem;
+      border: 1.5px solid var(--border);
+      border-radius: 6px;
+      font-size: 0.95rem;
+      margin-bottom: 1rem;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.88rem;
+    }
+    th, td {
+      padding: 0.75rem 1rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    th { background: #f1f5f9; font-weight: 700; color: #334155; }
+    tr:hover { background: #f8fafc; }
+    .badge {
+      display: inline-block;
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .badge-get { background: #dbeafe; color: #1e40af; }
+    .badge-post { background: #dcfce7; color: #15803d; }
+    .badge-put { background: #fef3c7; color: #b45309; }
+    .badge-delete { background: #fee2e2; color: #b91c1c; }
+    .badge-danger { background: #fee2e2; color: #991b1b; }
+    .badge-warning { background: #fef3c7; color: #92400e; }
+    .badge-info { background: #e0f2fe; color: #0369a1; }
+
+    .code-pill {
+      font-family: Consolas, monospace;
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.82rem;
+      color: #0f172a;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>⚡ GPON System Architecture & Wiring Portal</h1>
+      <div class="meta">Automated Codebase Wiring Report & Impact Analyzer | Last updated: 2026-10-10 16:59:37</div>
+    </div>
+    <div>
+      <a href="/admin" style="color: #38bdf8; text-decoration: none; font-weight: 600; margin-right: 1.5rem;">← Back to Admin Console</a>
+      <a href="/" style="color: #38bdf8; text-decoration: none; font-weight: 600;">📱 Field Survey PWA</a>
+    </div>
+  </header>
+
+  <div class="container">
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="val">6240</div>
+        <div class="label">server.py Lines</div>
+      </div>
+      <div class="stat-card">
+        <div class="val">3960</div>
+        <div class="label">app.js Lines</div>
+      </div>
+      <div class="stat-card">
+        <div class="val">39</div>
+        <div class="label">API Endpoints</div>
+      </div>
+      <div class="stat-card">
+        <div class="val">100</div>
+        <div class="label">Frontend Functions</div>
+      </div>
+      <div class="stat-card">
+        <div class="val">13</div>
+        <div class="label">LocalStorage Keys</div>
+      </div>
+    </div>
+
+    <div class="nav-tabs">
+      <button class="nav-tab active" onclick="showTab('routes')">📡 API Routes & RBAC</button>
+      <button class="nav-tab" onclick="showTab('blast')">💥 Blast Radius Matrix</button>
+      <button class="nav-tab" onclick="showTab('pwa')">📱 PWA Engine & Sync</button>
+      <button class="nav-tab" onclick="showTab('db')">🗄️ Database & Storage</button>
+      <button class="nav-tab" onclick="showTab('troubleshoot')">🛠️ Fault Trees & Diagnostics</button>
+    </div>
+
+    <!-- TAB 1: API Routes -->
+    <div id="tab-routes" class="tab-content active">
+      <div class="card">
+        <h2 style="margin-bottom:0.75rem;">Backend Route Wiring & RBAC Access Matrix</h2>
+        <input type="text" id="route-search" class="search-box" placeholder="🔍 Search endpoint path, method, or handler..." onkeyup="filterRoutes()">
+        <div style="overflow-x:auto;">
+          <table id="routes-table">
+            <thead>
+              <tr>
+                <th>Method</th>
+                <th>Route Path</th>
+                <th>Lines</th>
+                <th>Handler Function</th>
+                <th>RBAC Security Gate</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><span class="badge badge-post">POST</span></td>
+                <td><strong class="code-pill">/api/login</strong></td>
+                <td><span class="code-pill">L939-L1022</span></td>
+                <td><code>login()</code></td>
+                <td><span class='badge' style='background:#f1f5f9;color:#64748b;'>Public/Session</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-post">POST</span></td>
+                <td><strong class="code-pill">/api/logout</strong></td>
+                <td><span class="code-pill">L1025-L1027</span></td>
+                <td><code>api_logout()</code></td>
+                <td><span class='badge' style='background:#f1f5f9;color:#64748b;'>Public/Session</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-get">GET</span></td>
+                <td><strong class="code-pill">/api/user-profile</strong></td>
+                <td><span class="code-pill">L1030-L1063</span></td>
+                <td><code>get_user_profile()</code></td>
+                <td><span class='badge badge-info'>require_any_auth</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-get">GET</span></td>
+                <td><strong class="code-pill">/api/users</strong></td>
+                <td><span class="code-pill">L1066-L1087</span></td>
+                <td><code>get_users()</code></td>
+                <td><span class='badge badge-info'>require_admin_auth</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-post">POST</span></td>
+                <td><strong class="code-pill">/api/users</strong></td>
+                <td><span class="code-pill">L1090-L1144</span></td>
+                <td><code>create_user()</code></td>
+                <td><span class='badge badge-info'>require_admin_auth</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-get">GET</span></td>
+                <td><strong class="code-pill">/api/download-users-template</strong></td>
+                <td><span class="code-pill">L1147-L1224</span></td>
+                <td><code>download_users_template()</code></td>
+                <td><span class='badge' style='background:#f1f5f9;color:#64748b;'>Public/Session</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-post">POST</span></td>
+                <td><strong class="code-pill">/api/upload-users-excel</strong></td>
+                <td><span class="code-pill">L1227-L1371</span></td>
+                <td><code>upload_users_excel()</code></td>
+                <td><span class='badge badge-info'>require_admin_auth</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-post">POST</span></td>
+                <td><strong class="code-pill">/api/request-password-reset-otp</strong></td>
+                <td><span class="code-pill">L1468-L1554</span></td>
+                <td><code>request_password_reset_otp()</code></td>
+                <td><span class='badge' style='background:#f1f5f9;color:#64748b;'>Public/Session</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-post">POST</span></td>
+                <td><strong class="code-pill">/api/test-smtp</strong></td>
+                <td><span class="code-pill">L1557-L1653</span></td>
+                <td><code>test_smtp_endpoint()</code></td>
+                <td><span class='badge badge-info'>require_admin_auth</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-post">POST</span></td>
+                <td><strong class="code-pill">/api/verify-password-reset-otp</strong></td>
+                <td><span class="code-pill">L1656-L1709</span></td>
+                <td><code>verify_password_reset_otp()</code></td>
+                <td><span class='badge' style='background:#f1f5f9;color:#64748b;'>Public/Session</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-post">POST</span></td>
+                <td><strong class="code-pill">/api/change-password</strong></td>
+                <td><span class="code-pill">L1712-L1751</span></td>
+                <td><code>change_password()</code></td>
+                <td><span class='badge badge-info'>require_any_auth</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-delete">DELETE</span></td>
+                <td><strong class="code-pill">/api/users/{username}</strong></td>
+                <td><span class="code-pill">L1754-L1763</span></td>
+                <td><code>delete_user()</code></td>
+                <td><span class='badge badge-info'>require_admin_auth</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-get">GET</span></td>
+                <td><strong class="code-pill">/api/config/users</strong></td>
+                <td><span class="code-pill">L1766-L1770</span></td>
+                <td><code>export_users_config()</code></td>
+                <td><span class='badge badge-info'>require_admin_auth</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-post">POST</span></td>
+                <td><strong class="code-pill">/api/config/users</strong></td>
+                <td><span class="code-pill">L1773-L1785</span></td>
+                <td><code>import_users_config()</code></td>
+                <td><span class='badge badge-info'>require_admin_auth</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-get">GET</span></td>
+                <td><strong class="code-pill">/api/hierarchy</strong></td>
+                <td><span class="code-pill">L1792-L1810</span></td>
+                <td><code>get_hierarchy()</code></td>
+                <td><span class='badge' style='background:#f1f5f9;color:#64748b;'>Public/Session</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-post">POST</span></td>
+                <td><strong class="code-pill">/api/upload-hierarchy</strong></td>
+                <td><span class="code-pill">L1813-L1847</span></td>
+                <td><code>upload_hierarchy()</code></td>
+                <td><span class='badge badge-info'>require_admin_auth</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-post">POST</span></td>
+                <td><strong class="code-pill">/api/upload-hierarchy-excel</strong></td>
+                <td><span class="code-pill">L1850-L1996</span></td>
+                <td><code>upload_hierarchy_excel()</code></td>
+                <td><span class='badge badge-info'>require_admin_auth</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-post">POST</span></td>
+                <td><strong class="code-pill">/api/hierarchy/olt</strong></td>
+                <td><span class="code-pill">L1999-L2051</span></td>
+                <td><code>save_or_edit_olt()</code></td>
+                <td><span class='badge badge-info'>require_admin_auth</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-delete">DELETE</span></td>
+                <td><strong class="code-pill">/api/hierarchy/olt</strong></td>
+                <td><span class="code-pill">L2054-L2074</span></td>
+                <td><code>delete_olt()</code></td>
+                <td><span class='badge badge-info'>require_admin_auth</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-post">POST</span></td>
+                <td><strong class="code-pill">/api/hierarchy/bulk-delete</strong></td>
+                <td><span class="code-pill">L2077-L2101</span></td>
+                <td><code>bulk_delete_olts()</code></td>
+                <td><span class='badge badge-info'>require_admin_auth</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-delete">DELETE</span></td>
+                <td><strong class="code-pill">/api/hierarchy/clear</strong></td>
+                <td><span class="code-pill">L2104-L2106</span></td>
+                <td><code>clear_hierarchy()</code></td>
+                <td><span class='badge badge-info'>require_admin_auth</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-delete">DELETE</span></td>
+                <td><strong class="code-pill">/api/hierarchy/center</strong></td>
+                <td><span class="code-pill">L2109-L2123</span></td>
+                <td><code>delete_hierarchy_center()</code></td>
+                <td><span class='badge badge-info'>require_admin_auth</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-get">GET</span></td>
+                <td><strong class="code-pill">/api/download-hierarchy-template</strong></td>
+                <td><span class="code-pill">L2126-L2163</span></td>
+                <td><code>download_hierarchy_template()</code></td>
+                <td><span class='badge' style='background:#f1f5f9;color:#64748b;'>Public/Session</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-get">GET</span></td>
+                <td><strong class="code-pill">/api/health</strong></td>
+                <td><span class="code-pill">L2170-L2176</span></td>
+                <td><code>health_check()</code></td>
+                <td><span class='badge' style='background:#f1f5f9;color:#64748b;'>Public/Session</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-get">GET</span></td>
+                <td><strong class="code-pill">/api/surveyed-points</strong></td>
+                <td><span class="code-pill">L2200-L2316</span></td>
+                <td><code>get_surveyed_points()</code></td>
+                <td><span class='badge badge-info'>require_any_auth</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-post">POST</span></td>
+                <td><strong class="code-pill">/api/sync</strong></td>
+                <td><span class="code-pill">L2319-L2472</span></td>
+                <td><code>sync_records()</code></td>
+                <td><span class='badge badge-info'>require_any_auth</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-get">GET</span></td>
+                <td><strong class="code-pill">/api/records</strong></td>
+                <td><span class="code-pill">L2476-L2540</span></td>
+                <td><code>get_all_records()</code></td>
+                <td><span class='badge badge-info'>require_management_auth</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-put">PUT</span></td>
+                <td><strong class="code-pill">/api/records/{client_uuid}</strong></td>
+                <td><span class="code-pill">L2543-L2592</span></td>
+                <td><code>update_survey_record()</code></td>
+                <td><span class='badge badge-info'>require_admin_auth</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-delete">DELETE</span></td>
+                <td><strong class="code-pill">/api/records/{client_uuid}</strong></td>
+                <td><span class="code-pill">L2595-L2635</span></td>
+                <td><code>delete_record()</code></td>
+                <td><span class='badge badge-info'>require_any_auth</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-post">POST</span></td>
+                <td><strong class="code-pill">/api/records/bulk-delete</strong></td>
+                <td><span class="code-pill">L2638-L2661</span></td>
+                <td><code>bulk_delete_records()</code></td>
+                <td><span class='badge badge-info'>require_any_auth</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-post">POST</span></td>
+                <td><strong class="code-pill">/api/records/clear-center</strong></td>
+                <td><span class="code-pill">L2664-L2683</span></td>
+                <td><code>clear_center_records()</code></td>
+                <td><span class='badge badge-info'>require_admin_auth</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-get">GET</span></td>
+                <td><strong class="code-pill">/api/export-excel</strong></td>
+                <td><span class="code-pill">L2686-L2723</span></td>
+                <td><code>export_server_excel()</code></td>
+                <td><span class='badge badge-info'>require_management_auth</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-get">GET</span></td>
+                <td><strong class="code-pill">/api/export-center-excel</strong></td>
+                <td><span class="code-pill">L2726-L2811</span></td>
+                <td><code>export_center_excel()</code></td>
+                <td><span class='badge badge-info'>require_export_auth</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-get">GET</span></td>
+                <td><strong class="code-pill">/api/export-data-zip</strong></td>
+                <td><span class="code-pill">L2814-L2885</span></td>
+                <td><code>export_data_zip()</code></td>
+                <td><span class='badge badge-info'>require_management_auth</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-post">POST</span></td>
+                <td><strong class="code-pill">/api/upload-survey-excel</strong></td>
+                <td><span class="code-pill">L2888-L3033</span></td>
+                <td><code>upload_survey_excel()</code></td>
+                <td><span class='badge badge-info'>require_admin_auth</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-get">GET</span></td>
+                <td><strong class="code-pill">/api/data-folders-summary</strong></td>
+                <td><span class="code-pill">L3036-L3118</span></td>
+                <td><code>get_data_folders_summary()</code></td>
+                <td><span class='badge badge-info'>require_management_auth</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-post">POST</span></td>
+                <td><strong class="code-pill">/api/resync-data-folders</strong></td>
+                <td><span class="code-pill">L3121-L3129</span></td>
+                <td><code>resync_data_folders()</code></td>
+                <td><span class='badge badge-info'>require_admin_auth</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-get">GET</span></td>
+                <td><strong class="code-pill">/docs/wiring</strong></td>
+                <td><span class="code-pill">L3134-L3139</span></td>
+                <td><code>get_wiring_report()</code></td>
+                <td><span class='badge' style='background:#f1f5f9;color:#64748b;'>Public/Session</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-get">GET</span></td>
+                <td><strong class="code-pill">/admin</strong></td>
+                <td><span class="code-pill">L3143-L6232</span></td>
+                <td><code>admin_dashboard()</code></td>
+                <td><span class='badge' style='background:#f1f5f9;color:#64748b;'>Public/Session</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 2: Blast Radius Matrix -->
+    <div id="tab-blast" class="tab-content">
+      <div class="card">
+        <h2 style="margin-bottom:0.5rem;">💥 What Happens When Code Changes? (Blast Radius Analysis)</h2>
+        <p style="color:var(--text-muted); font-size:0.9rem; margin-bottom:1.25rem;">
+          Cross-system impact prediction when modifying specific functions, lines, schemas, or storage keys.
+        </p>
+        <div style="overflow-x:auto;">
+          <table>
+            <thead>
+              <tr>
+                <th>Component / Line Target</th>
+                <th>Action / Code Change</th>
+                <th>Blast Radius & Failure Cascades</th>
+                <th>Severity</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong class="code-pill">app.js L1090</strong><br><code>updateEnclosureId()</code></td>
+                <td>Modifying calculation logic or regex pattern</td>
+                <td>
+                  <strong>Compound Code Inconsistency</strong>: Breaks server-side validation in <code>compute_server_enclosure_id()</code>. PWA records get duplicated during sync. Excel exports display mismatched enclosure codes.
+                </td>
+                <td><span class="badge badge-danger">CRITICAL</span></td>
+              </tr>
+              <tr>
+                <td><strong class="code-pill">app.js L12</strong><br><code>STORAGE_KEY</code></td>
+                <td>Renaming <code>'gpon_survey_records_v1'</code></td>
+                <td>
+                  <strong>Total Field Data Isolation</strong>: Field surveyors lose access to pending offline records on device. App displays 0 records until key is restored.
+                </td>
+                <td><span class="badge badge-danger">CRITICAL</span></td>
+              </tr>
+              <tr>
+                <td><strong class="code-pill">server.py L379</strong><br><code>init_db()</code></td>
+                <td>Renaming or deleting SQLite columns without ALTER TABLE</td>
+                <td>
+                  <strong>Sync Crash & 500 Errors</strong>: Incoming survey sync payloads fail with <code>sqlite3.OperationalError</code>. PWA retry loop triggers exponential backoff.
+                </td>
+                <td><span class="badge badge-danger">CRITICAL</span></td>
+              </tr>
+              <tr>
+                <td><strong class="code-pill">server.py L285</strong><br><code>normalize_role()</code></td>
+                <td>Modifying role strings or hierarchy tiers</td>
+                <td>
+                  <strong>Access Lockout / Privilege Escalation</strong>: ACSO or RCSM accounts get denied access to download endpoints, or Field Techs gain admin console permissions.
+                </td>
+                <td><span class="badge badge-warning">HIGH</span></td>
+              </tr>
+              <tr>
+                <td><strong class="code-pill">server.py L676</strong><br><code>build_excel_workbook()</code></td>
+                <td>Reordering columns in in-memory streaming engine</td>
+                <td>
+                  <strong>Downstream Tooling Failure</strong>: SW Maps converter scripts and automated telecom reporting pipelines fail to parse columns by index.
+                </td>
+                <td><span class="badge badge-warning">HIGH</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 3: PWA Engine & Sync -->
+    <div id="tab-pwa" class="tab-content">
+      <div class="card">
+        <h2 style="margin-bottom:0.75rem;">PWA Geolocation, Storage & Synchronization Engine</h2>
+        <div style="overflow-x:auto;">
+          <table>
+            <thead>
+              <tr>
+                <th>Storage Key</th>
+                <th>Location</th>
+                <th>Role in Offline Reliability</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong class="code-pill">gpon_auth_token</strong></td>
+                <td>Client localStorage</td>
+                <td>Maintains state persistence across app restarts, reboots, and network disconnects.</td>
+              </tr>
+              <tr>
+                <td><strong class="code-pill">gpon_custom_hierarchy</strong></td>
+                <td>Client localStorage</td>
+                <td>Maintains state persistence across app restarts, reboots, and network disconnects.</td>
+              </tr>
+              <tr>
+                <td><strong class="code-pill">gpon_device_id</strong></td>
+                <td>Client localStorage</td>
+                <td>Maintains state persistence across app restarts, reboots, and network disconnects.</td>
+              </tr>
+              <tr>
+                <td><strong class="code-pill">gpon_hierarchy_version</strong></td>
+                <td>Client localStorage</td>
+                <td>Maintains state persistence across app restarts, reboots, and network disconnects.</td>
+              </tr>
+              <tr>
+                <td><strong class="code-pill">gpon_logged_in_user</strong></td>
+                <td>Client localStorage</td>
+                <td>Maintains state persistence across app restarts, reboots, and network disconnects.</td>
+              </tr>
+              <tr>
+                <td><strong class="code-pill">gpon_network_surveyed_points</strong></td>
+                <td>Client localStorage</td>
+                <td>Maintains state persistence across app restarts, reboots, and network disconnects.</td>
+              </tr>
+              <tr>
+                <td><strong class="code-pill">gpon_offline_user_</strong></td>
+                <td>Client localStorage</td>
+                <td>Maintains state persistence across app restarts, reboots, and network disconnects.</td>
+              </tr>
+              <tr>
+                <td><strong class="code-pill">gpon_pending_deletions</strong></td>
+                <td>Client localStorage</td>
+                <td>Maintains state persistence across app restarts, reboots, and network disconnects.</td>
+              </tr>
+              <tr>
+                <td><strong class="code-pill">gpon_remember_creds</strong></td>
+                <td>Client localStorage</td>
+                <td>Maintains state persistence across app restarts, reboots, and network disconnects.</td>
+              </tr>
+              <tr>
+                <td><strong class="code-pill">gpon_remembered_password</strong></td>
+                <td>Client localStorage</td>
+                <td>Maintains state persistence across app restarts, reboots, and network disconnects.</td>
+              </tr>
+              <tr>
+                <td><strong class="code-pill">gpon_remembered_username</strong></td>
+                <td>Client localStorage</td>
+                <td>Maintains state persistence across app restarts, reboots, and network disconnects.</td>
+              </tr>
+              <tr>
+                <td><strong class="code-pill">gpon_server_url</strong></td>
+                <td>Client localStorage</td>
+                <td>Maintains state persistence across app restarts, reboots, and network disconnects.</td>
+              </tr>
+              <tr>
+                <td><strong class="code-pill">gpon_session_expires_at</strong></td>
+                <td>Client localStorage</td>
+                <td>Maintains state persistence across app restarts, reboots, and network disconnects.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 4: Database & Storage -->
+    <div id="tab-db" class="tab-content">
+      <div class="card">
+        <h2 style="margin-bottom:0.75rem;">SQLite Schema & In-Memory Streaming Topology</h2>
+        <p style="color:var(--text-muted); font-size:0.9rem; margin-bottom:1rem;">
+          Primary SQLite store: <code>gpon_survey_data.db</code>. Backed up dynamically to <code>users_config.json</code> and streamed on-the-fly via <code>io.BytesIO</code>.
+        </p>
+        <pre style="background:#0f172a; color:#38bdf8; padding:1.25rem; border-radius:8px; overflow-x:auto; font-size:0.85rem;">
+-- Core Survey Records Table
+CREATE TABLE survey_records (
+    client_uuid TEXT PRIMARY KEY,
+    region TEXT, center TEXT, rt_room TEXT, technology TEXT,
+    olt_name TEXT, port_number TEXT, kseb_post_number TEXT,
+    landmark TEXT, enclosure_number TEXT, enclosure_id TEXT,
+    lat_long TEXT, splitter_id TEXT, splitter_ratio TEXT,
+    customers_connected INTEGER DEFAULT 0,
+    device_id TEXT, created_at TEXT, synced_at TEXT,
+    surveyor_username TEXT, surveyor_name TEXT,
+    splitter_lead_color TEXT, adl_subscriber_id TEXT,
+    acs_subscriber_id TEXT, survey_date_time TEXT
+);
+        </pre>
+      </div>
+    </div>
+
+    <!-- TAB 5: Troubleshooting -->
+    <div id="tab-troubleshoot" class="tab-content">
+      <div class="card">
+        <h2 style="margin-bottom:0.75rem;">Diagnostic Fault Trees & Recovery Runbooks</h2>
+        <div style="background:#fffbeb; border:1px solid #fde68a; border-radius:8px; padding:1rem; margin-bottom:1rem;">
+          <h4 style="color:#92400e; margin-bottom:0.25rem;">Technician Sync Failure Checklist:</h4>
+          <ol style="margin-left:1.25rem; font-size:0.88rem; color:#78350f;">
+            <li>Verify local device Wi-Fi or cellular connectivity.</li>
+            <li>Check server uptime via <code>GET /api/health</code>.</li>
+            <li>Confirm session token validity; if expired, prompt user to log in again.</li>
+            <li>Check SQLite lock state on server (inspect for hanging transactions).</li>
+          </ol>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function showTab(tabId) {
+      document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.nav-tab').forEach(el => el.classList.remove('active'));
+      const target = document.getElementById('tab-' + tabId);
+      if (target) target.classList.add('active');
+      event.target.classList.add('active');
+    }
+
+    function filterRoutes() {
+      const q = document.getElementById('route-search').value.toLowerCase();
+      document.querySelectorAll('#routes-table tbody tr').forEach(row => {
+        row.style.display = row.innerText.toLowerCase().includes(q) ? '' : 'none';
+      });
+    }
+  </script>
+</body>
+</html>
