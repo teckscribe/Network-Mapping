@@ -313,8 +313,8 @@ def save_users_to_json(conn=None):
                 "username": r[0],
                 "password": r[1],
                 "full_name": r[2],
-                "assigned_center": r[3],
-                "assigned_region": r[4] or "Thrissur",
+                "assigned_center": r[3] or "Unassigned",
+                "assigned_region": r[4] or "Unassigned",
                 "role": normalize_role(r[5]),
                 "created_at": r[6],
                 "email": (r[7] or "").strip() if len(r) > 7 and r[7] else ""
@@ -1039,10 +1039,10 @@ def get_users(session: dict = Depends(require_admin_auth)):
             "username": u["username"],
             "full_name": u["full_name"],
             "email": u["email"] or "",
-            "assigned_center": u["assigned_center"] or "ALL",
-            "assigned_centers": [c.strip() for c in (u["assigned_center"] or "").split(",") if c.strip()],
-            "assigned_region": u["assigned_region"] or "Thrissur",
-            "assigned_regions": [r.strip() for r in (u["assigned_region"] or "Thrissur").split(",") if r.strip()],
+            "assigned_center": u["assigned_center"] or "Unassigned",
+            "assigned_centers": [c.strip() for c in (u["assigned_center"] or "").split(",") if c.strip() and c.strip().upper() not in ("UNASSIGNED", "NONE")],
+            "assigned_region": u["assigned_region"] or "Unassigned",
+            "assigned_regions": [r.strip() for r in (u["assigned_region"] or "").split(",") if r.strip() and r.strip().upper() not in ("UNASSIGNED", "NONE")],
             "role": normalize_role(u["role"]),
             "role_label": VALID_ROLES.get(normalize_role(u["role"]), "Field Technician"),
             "created_at": u["created_at"] or ""
@@ -1134,6 +1134,7 @@ def download_users_template():
     sample_rows = [
         ["anoop_tech", "Anoop P", "anoop@bsnl.co.in", "1234", "Field Technician", "Thrissur", "KORATTY"],
         ["sujith_acso", "Sujith Kumar", "sujith@bsnl.co.in", "1234", "ACSO", "Thrissur", "KORATTY, CHALAKUDY"],
+        ["rahul_field", "Rahul R", "rahul@bsnl.co.in", "", "Field Technician", "", ""],
         ["manager_rcsm", "Regional Manager", "rcsm@bsnl.co.in", "1234", "RCSM", "Thrissur", "ALL"],
         ["admin_central", "Central Administrator", "admin@bsnl.co.in", "admin123", "Super Admin", "ALL", "ALL"]
     ]
@@ -1164,7 +1165,8 @@ def download_users_template():
         ["Tier 1", "Super Admin", "Full administrative control, user provisioning, hierarchy uploads, server settings", "ALL"],
         ["Tier 2", "RCSM", "Center dashboard, survey feed inspection, spreadsheet downloads & field survey", "ALL or Region-specific"],
         ["Tier 3", "ACSO", "Field survey data entry, supervisor update mode, and spreadsheet downloads", "Specific centers or comma-separated"],
-        ["Tier 4", "Field Technician", "Field survey data entry only (no spreadsheet exports or admin access)", "Assigned center(s)"]
+        ["Tier 4", "Field Technician", "Field survey data entry only (no spreadsheet exports or admin access)", "Assigned center(s)"],
+        ["Optional", "Partial Upload", "Columns 'Region' and 'Assigned Center(s)' can be left blank. These users will be marked as '⚠️ Unassigned' so you can configure each user's center individually in the Admin Portal via the ✏️ Edit button. Password can also be left blank (defaults to 1234).", "Leave blank if setting later"]
     ]
     for r_idx, row in enumerate(guide_rows, 2):
         for c_idx, val in enumerate(row, 1):
@@ -1262,13 +1264,13 @@ async def upload_users_excel(file: UploadFile = File(...), session: dict = Depen
                 email = get_col(row, "emailaddress", "email", "mail", default="").strip().lower()
                 raw_pwd = get_col(row, "passwordpin", "password", "pin", "pwd", "pass", default="").strip()
                 role_raw = get_col(row, "roleaccesstier", "role", "accesstier", "rights", default="field_technician")
-                region = get_col(row, "region", "assignedregion", "district", default="Thrissur").strip() or "Thrissur"
-                center = get_col(row, "assignedcenters", "assignedcenter", "centers", "center", default="ALL").strip() or "ALL"
+                raw_region = get_col(row, "region", "assignedregion", "district", default="").strip()
+                raw_center = get_col(row, "assignedcenters", "assignedcenter", "centers", "center", default="").strip()
 
                 role_clean = normalize_role(role_raw)
 
                 # Check if user already exists
-                cur.execute("SELECT password FROM users WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))", (username,))
+                cur.execute("SELECT password, assigned_center, assigned_region FROM users WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))", (username,))
                 existing_row = cur.fetchone()
 
                 if existing_row:
@@ -1277,18 +1279,26 @@ async def upload_users_excel(file: UploadFile = File(...), session: dict = Depen
                     else:
                         pwd_to_store = existing_row[0]
 
+                    # For existing users: if region or center is blank in Excel, keep their existing assignments!
+                    target_center = raw_center if raw_center else (existing_row[1] or "Unassigned")
+                    target_region = raw_region if raw_region else (existing_row[2] or "Unassigned")
+
                     cur.execute("""
                         UPDATE users
                         SET password = ?, full_name = ?, email = ?, assigned_center = ?, assigned_region = ?, role = ?
                         WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))
-                    """, (pwd_to_store, full_name, email, center, region, role_clean, username))
+                    """, (pwd_to_store, full_name, email, target_center, target_region, role_clean, username))
                     updated_count += 1
                 else:
                     pwd_to_store = hash_password(raw_pwd or "1234")
+                    # For new users: if blank in Excel, mark as Unassigned so admin can configure individually
+                    target_center = raw_center if raw_center else "Unassigned"
+                    target_region = raw_region if raw_region else "Unassigned"
+
                     cur.execute("""
                         INSERT INTO users (username, password, full_name, email, assigned_center, assigned_region, role, created_at)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (username, pwd_to_store, full_name, email, center, region, role_clean, now))
+                    """, (username, pwd_to_store, full_name, email, target_center, target_region, role_clean, now))
                     added_count += 1
 
         conn.commit()
@@ -5188,43 +5198,59 @@ def admin_dashboard(response: Response):
               tr.innerHTML = `
                 <td><strong>${escapeHtml(u.username)}</strong></td>
                 <td>${escapeHtml(u.full_name || u.username)}</td>
-                <td>${emailDisplay}</td>
-                <td><span style="background:#f1f5f9; padding:2px 8px; border-radius:4px; font-weight:600; font-size:0.8rem;">${escapeHtml(u.assigned_region || 'Thrissur')}</span></td>
-                <td>
-                  ${(() => {
-                    const centers = (u.assigned_center || 'ALL').split(',').map(s => s.trim()).filter(Boolean);
-                    if (centers.length === 0 || centers.includes('ALL')) {
-                      return '<span class="tag" style="background:#059669;">ALL (Network)</span>';
-                    }
-                    if (centers.length === 1) {
-                      return `<span class="tag" style="background:#0284c7;">${escapeHtml(centers[0])}</span>`;
-                    }
-                    if (centers.length <= 2) {
-                      return centers.map(c => `<span class="tag" style="background:#0284c7; margin-right:3px;">${escapeHtml(c)}</span>`).join('');
-                    }
-                    return `<span class="tag" style="background:#0284c7;" title="${escapeHtml(centers.join(', '))}">🏢 ${centers.length} Centers Charge</span>`;
-                  })()}
-                </td>
-                <td>${badgeHtml}</td>
-                <td style="color:#64748b; font-size:0.8rem; font-family:monospace;">${escapeHtml((u.created_at || '').slice(0, 19).replace('T', ' '))}</td>
-                <td style="text-align:center; white-space:nowrap;">
-                  <button class="btn btn-outline" style="padding:3px 8px; font-size:0.75rem; margin-right:4px;" onclick="editUserByIndex(${idx})">✏️ Edit</button>
-                  ${u.username !== 'admin' ? `<button class="btn btn-danger" style="padding:3px 8px; font-size:0.75rem;" onclick="deleteUserByIndex(${idx})">🗑️</button>` : '<span style="color:#94a3b8; font-size:0.75rem;">Root</span>'}
-                </td>
-              `;
-              tbody.appendChild(tr);
-            });
-          } catch(e) {
-            console.error('Error in fetchUsers:', e);
-            tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; padding:20px; color:#dc2626;">Error loading user list: ${escapeHtml(e.message)}</td></tr>`;
-          }
-        }
+                const regDisplay = (u.assigned_region && u.assigned_region !== 'Unassigned')
+                  ? `<span style="background:#f1f5f9; padding:2px 8px; border-radius:4px; font-weight:600; font-size:0.8rem;">${escapeHtml(u.assigned_region)}</span>`
+                  : '<span class="tag" style="background:#f59e0b; color:white; font-size:0.75rem;">⚠️ Unassigned</span>';
 
-        function editUserByIndex(idx) {
-          const u = cachedUsersList[idx];
-          if (!u) return;
-          openEditUserModal(u.username, u.full_name, u.email || '', u.assigned_center || 'ALL', u.assigned_region || 'Thrissur', normalizeAdminRole(u.role));
-        }
+                tr.innerHTML = `
+                  <td><strong>${escapeHtml(u.username)}</strong></td>
+                  <td>${escapeHtml(u.full_name || u.username)}</td>
+                  <td>${emailDisplay}</td>
+                  <td>${regDisplay}</td>
+                  <td>
+                    ${(() => {
+                      const rawC = (u.assigned_center || '').trim();
+                      if (!rawC || rawC === 'Unassigned') {
+                        return '<span class="tag" style="background:#f59e0b; color:white; font-size:0.75rem;">⚠️ Unassigned (Pending)</span>';
+                      }
+                      const centers = rawC.split(',').map(s => s.trim()).filter(Boolean);
+                      if (centers.length === 0 || centers.includes('Unassigned')) {
+                        return '<span class="tag" style="background:#f59e0b; color:white; font-size:0.75rem;">⚠️ Unassigned (Pending)</span>';
+                      }
+                      if (centers.includes('ALL')) {
+                        return '<span class="tag" style="background:#059669;">ALL (Network)</span>';
+                      }
+                      if (centers.length === 1) {
+                        return `<span class="tag" style="background:#0284c7;">${escapeHtml(centers[0])}</span>`;
+                      }
+                      if (centers.length <= 2) {
+                        return centers.map(c => `<span class="tag" style="background:#0284c7; margin-right:3px;">${escapeHtml(c)}</span>`).join('');
+                      }
+                      return `<span class="tag" style="background:#0284c7;" title="${escapeHtml(centers.join(', '))}">🏢 ${centers.length} Centers Charge</span>`;
+                    })()}
+                  </td>
+                  <td>${badgeHtml}</td>
+                  <td style="color:#64748b; font-size:0.8rem; font-family:monospace;">${escapeHtml((u.created_at || '').slice(0, 19).replace('T', ' '))}</td>
+                  <td style="text-align:center; white-space:nowrap;">
+                    <button class="btn btn-outline" style="padding:3px 8px; font-size:0.75rem; margin-right:4px;" onclick="editUserByIndex(${idx})">✏️ Edit</button>
+                    ${u.username !== 'admin' ? `<button class="btn btn-danger" style="padding:3px 8px; font-size:0.75rem;" onclick="deleteUserByIndex(${idx})">🗑️</button>` : '<span style="color:#94a3b8; font-size:0.75rem;">Root</span>'}
+                  </td>
+                `;
+                tbody.appendChild(tr);
+              });
+            } catch(e) {
+              console.error('Error in fetchUsers:', e);
+              tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; padding:20px; color:#dc2626;">Error loading user list: ${escapeHtml(e.message)}</td></tr>`;
+            }
+          }
+
+          function editUserByIndex(idx) {
+            const u = cachedUsersList[idx];
+            if (!u) return;
+            const userCenter = (u.assigned_center === 'Unassigned' || !u.assigned_center) ? '' : u.assigned_center;
+            const userRegion = (u.assigned_region === 'Unassigned' || !u.assigned_region) ? '' : u.assigned_region;
+            openEditUserModal(u.username, u.full_name, u.email || '', userCenter, userRegion, normalizeAdminRole(u.role));
+          }
 
         function deleteUserByIndex(idx) {
           const u = cachedUsersList[idx];
@@ -5307,7 +5333,7 @@ def admin_dashboard(response: Response):
           document.getElementById('modal-new-name').value = fullName || username;
           document.getElementById('modal-new-email').value = email || '';
 
-          populateUserRegionAndCenterDropdowns(region || 'Thrissur', center || 'ALL');
+          populateUserRegionAndCenterDropdowns(region || '', center || '');
 
           document.getElementById('modal-new-role').value = role || 'field_technician';
           document.getElementById('btn-modal-save-user').innerHTML = '💾 Update User';

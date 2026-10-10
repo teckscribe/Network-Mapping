@@ -421,13 +421,18 @@ function updateUserBar() {
 
   if (currentUser) {
     nameEl.innerText = currentUser.full_name || currentUser.username;
-        const assignedStr = currentUser.assigned_center || 'ALL';
+    const assignedStr = currentUser.assigned_center || 'Unassigned';
     const assignedArr = (currentUser.assigned_centers || assignedStr.split(',')).map(s => s.trim()).filter(Boolean);
-    if (assignedArr.length > 1 && !assignedArr.includes('ALL')) {
+    if (assignedStr === 'Unassigned' || assignedArr.includes('Unassigned') || assignedArr.length === 0) {
+      centerEl.innerText = '⚠️ Unassigned Center';
+      centerEl.style.color = '#f59e0b';
+    } else if (assignedArr.length > 1 && !assignedArr.includes('ALL')) {
       centerEl.innerText = `🏢 ${assignedArr.length} Centers Charge`;
       centerEl.title = `Assigned Centers: ${assignedArr.join(', ')}`;
+      centerEl.style.color = '';
     } else {
       centerEl.innerText = assignedStr;
+      centerEl.style.color = '';
     }
     userBar.style.display = 'flex';
 
@@ -1146,8 +1151,13 @@ function initDropdowns(preserveSelection = false) {
     } else if (currentUser.assigned_center) {
       assignedList = currentUser.assigned_center.split(',').map(s => s.trim()).filter(Boolean);
     }
+    assignedList = assignedList.filter(a => a.toLowerCase() !== 'unassigned');
 
-    if (assignedList.includes('ALL')) {
+    if (assignedList.length === 0) {
+      centerSelect.innerHTML = '<option value="">⚠️ No Center Assigned (Pending Admin)</option>';
+      centerSelect.disabled = true;
+      return;
+    } else if (assignedList.includes('ALL')) {
       // User has access to ALL centers in network
       centerSelect.disabled = false;
     } else if (assignedList.length > 1) {
