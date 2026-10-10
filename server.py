@@ -283,14 +283,14 @@ VALID_ROLES = {
 }
 
 def normalize_role(role: str) -> str:
-    r = (role or "").strip().lower()
+    r = (role or "").strip().lower().replace(" ", "_").replace("-", "_")
     if r in ("admin", "superadmin", "super_admin"):
         return "super_admin"
     if r in ("rcsm", "regional_manager", "manager"):
         return "rcsm"
-    if r in ("acso", "officer"):
+    if r in ("acso", "officer", "assistant_chief"):
         return "acso"
-    if r in ("field_agent", "field_technician", "technician", "agent", "user"):
+    if r in ("field_agent", "field_technician", "technician", "agent", "user", "field_tech", "tech"):
         return "field_technician"
     return "field_technician"
 
@@ -1105,6 +1105,211 @@ def create_user(u: UserCreateModel, session: dict = Depends(require_admin_auth))
     conn.close()
     save_users_to_json()
     return {"status": "success", "message": f"User {u.username} ({VALID_ROLES.get(role_clean, role_clean)}) saved successfully with charge of: {center_str}."}
+
+@app.get("/api/download-users-template")
+def download_users_template():
+    """Generates an institutional Excel template for bulk user provisioning with access tiers."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "User_Access_Template"
+
+    headers = [
+        'Username', 
+        'Full Name', 
+        'Email Address', 
+        'Password / PIN', 
+        'Role (Access Tier)', 
+        'Region', 
+        'Assigned Center(s)'
+    ]
+    header_fill = PatternFill(start_color="0F9D58", end_color="0F9D58", fill_type="solid")
+    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+
+    for col_idx, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col_idx, value=h)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    sample_rows = [
+        ["anoop_tech", "Anoop P", "anoop@bsnl.co.in", "1234", "Field Technician", "Thrissur", "KORATTY"],
+        ["sujith_acso", "Sujith Kumar", "sujith@bsnl.co.in", "1234", "ACSO", "Thrissur", "KORATTY, CHALAKUDY"],
+        ["manager_rcsm", "Regional Manager", "rcsm@bsnl.co.in", "1234", "RCSM", "Thrissur", "ALL"],
+        ["admin_central", "Central Administrator", "admin@bsnl.co.in", "admin123", "Super Admin", "ALL", "ALL"]
+    ]
+
+    for r_idx, row in enumerate(sample_rows, 2):
+        for c_idx, val in enumerate(row, 1):
+            cell = ws.cell(row=r_idx, column=c_idx, value=val)
+            cell.font = Font(name="Calibri", size=10)
+
+    # Auto-adjust column widths
+    for col in ws.columns:
+        max_len = max(len(str(cell.value or '')) for cell in col)
+        col_letter = col[0].column_letter
+        ws.column_dimensions[col_letter].width = max(max_len + 4, 16)
+
+    # Add Access Rights Reference sheet
+    ws_guide = wb.create_sheet(title="Access_Rights_Guide")
+    guide_headers = ["Tier", "Role Name in Excel", "Permissions / Operational Access Rights", "Typical Assigned Center"]
+    guide_fill = PatternFill(start_color="1E3A8A", end_color="1E3A8A", fill_type="solid")
+    guide_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    for col_idx, h in enumerate(guide_headers, 1):
+        cell = ws_guide.cell(row=1, column=col_idx, value=h)
+        cell.fill = guide_fill
+        cell.font = guide_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    guide_rows = [
+        ["Tier 1", "Super Admin", "Full administrative control, user provisioning, hierarchy uploads, server settings", "ALL"],
+        ["Tier 2", "RCSM", "Center dashboard, survey feed inspection, spreadsheet downloads & field survey", "ALL or Region-specific"],
+        ["Tier 3", "ACSO", "Field survey data entry, supervisor update mode, and spreadsheet downloads", "Specific centers or comma-separated"],
+        ["Tier 4", "Field Technician", "Field survey data entry only (no spreadsheet exports or admin access)", "Assigned center(s)"]
+    ]
+    for r_idx, row in enumerate(guide_rows, 2):
+        for c_idx, val in enumerate(row, 1):
+            cell = ws_guide.cell(row=r_idx, column=c_idx, value=val)
+            cell.font = Font(name="Calibri", size=10)
+
+    for col in ws_guide.columns:
+        max_len = max(len(str(cell.value or '')) for cell in col)
+        col_letter = col[0].column_letter
+        ws_guide.column_dimensions[col_letter].width = max(max_len + 4, 20)
+
+    excel_bytes = workbook_to_bytes(wb)
+    return Response(
+        content=excel_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="User_Access_Template.xlsx"'}
+    )
+
+@app.post("/api/upload-users-excel")
+async def upload_users_excel(file: UploadFile = File(...), session: dict = Depends(require_admin_auth)):
+    """Bulk uploads user credentials and access rights from an Excel (.xlsx/.xls) or CSV file."""
+    if not (file.filename.lower().endswith(".xlsx") or file.filename.lower().endswith(".xls") or file.filename.lower().endswith(".csv")):
+        raise HTTPException(status_code=400, detail="Only Excel (.xlsx/.xls) or CSV files are supported.")
+
+    contents = await file.read()
+    sheet_list = []
+    try:
+        if file.filename.lower().endswith(".csv"):
+            import csv
+            reader = csv.reader(io.StringIO(contents.decode("utf-8", errors="ignore")))
+            sheet_list.append(list(reader))
+        else:
+            wb = openpyxl.load_workbook(io.BytesIO(contents), data_only=True)
+            for sheet_name in wb.sheetnames:
+                ws = wb[sheet_name]
+                rows = list(ws.iter_rows(values_only=True))
+                if rows and len(rows) >= 2:
+                    sheet_list.append(rows)
+
+        if not sheet_list:
+            raise HTTPException(status_code=400, detail="File is empty or missing data rows.")
+
+        added_count = 0
+        updated_count = 0
+        errors = []
+        now = datetime.datetime.now().isoformat()
+
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+
+        for sheet_rows in sheet_list:
+            header_row_idx = -1
+            col_indices = {}
+            for r_idx, row in enumerate(sheet_rows[:10]):
+                if not row:
+                    continue
+                row_str = " ".join([str(c).lower() for c in row if c])
+                if "user" in row_str or "username" in row_str or "role" in row_str:
+                    header_row_idx = r_idx
+                    for c_idx, val in enumerate(row):
+                        if not val:
+                            continue
+                        clean_k = re.sub(r'[^a-z0-9]', '', str(val).lower())
+                        col_indices[clean_k] = c_idx
+                    break
+
+            if header_row_idx == -1:
+                continue
+
+            def get_col(row_data, *candidates, default=""):
+                for cand in candidates:
+                    cand_clean = re.sub(r'[^a-z0-9]', '', cand.lower())
+                    if cand_clean in col_indices:
+                        idx = col_indices[cand_clean]
+                        if idx < len(row_data) and row_data[idx] is not None:
+                            val = str(row_data[idx]).strip()
+                            if val and val.lower() != cand.lower():
+                                return val
+                return default
+
+            for row_num, row in enumerate(sheet_rows[header_row_idx + 1:], start=header_row_idx + 2):
+                if not row or all(c is None or str(c).strip() == "" for c in row):
+                    continue
+
+                username = get_col(row, "username", "user", "login", "userid")
+                if not username:
+                    errors.append(f"Row {row_num}: Missing username, skipped.")
+                    continue
+
+                username = username.strip()
+                if username.lower() in BANNED_SAMPLE_USERS:
+                    continue
+
+                full_name = get_col(row, "fullname", "name", "displayname", default=username).strip() or username
+                email = get_col(row, "emailaddress", "email", "mail", default="").strip().lower()
+                raw_pwd = get_col(row, "passwordpin", "password", "pin", "pwd", "pass", default="").strip()
+                role_raw = get_col(row, "roleaccesstier", "role", "accesstier", "rights", default="field_technician")
+                region = get_col(row, "region", "assignedregion", "district", default="Thrissur").strip() or "Thrissur"
+                center = get_col(row, "assignedcenters", "assignedcenter", "centers", "center", default="ALL").strip() or "ALL"
+
+                role_clean = normalize_role(role_raw)
+
+                # Check if user already exists
+                cur.execute("SELECT password FROM users WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))", (username,))
+                existing_row = cur.fetchone()
+
+                if existing_row:
+                    if raw_pwd:
+                        pwd_to_store = hash_password(raw_pwd)
+                    else:
+                        pwd_to_store = existing_row[0]
+
+                    cur.execute("""
+                        UPDATE users
+                        SET password = ?, full_name = ?, email = ?, assigned_center = ?, assigned_region = ?, role = ?
+                        WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))
+                    """, (pwd_to_store, full_name, email, center, region, role_clean, username))
+                    updated_count += 1
+                else:
+                    pwd_to_store = hash_password(raw_pwd or "1234")
+                    cur.execute("""
+                        INSERT INTO users (username, password, full_name, email, assigned_center, assigned_region, role, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (username, pwd_to_store, full_name, email, center, region, role_clean, now))
+                    added_count += 1
+
+        conn.commit()
+        conn.close()
+        save_users_to_json()
+
+        total_processed = added_count + updated_count
+        if total_processed == 0 and errors:
+            raise HTTPException(status_code=400, detail="; ".join(errors[:5]))
+
+        return {
+            "status": "success",
+            "message": f"Successfully processed {total_processed} users ({added_count} created, {updated_count} updated).",
+            "added": added_count,
+            "updated": updated_count,
+            "errors": errors[:10]
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error importing user Excel file: {str(e)}")
 
 def send_otp_email(to_email: str, recipient_name: str, otp_code: str) -> tuple[bool, str]:
     """Sends OTP verification email via configured SMTP server or logs to console if unconfigured."""
@@ -3113,13 +3318,18 @@ def admin_dashboard(response: Response):
             </p>
           </div>
           <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <a href="/api/download-users-template" class="btn" style="background:#0f766e; color:white; font-size:0.82rem; padding:7px 12px; text-decoration:none; font-weight:600;">📥 Download Template (.xlsx)</a>
+            <input type="file" id="upload-users-excel-file" accept=".xlsx, .xls, .csv" style="display:none;" onchange="uploadUsersExcel(event)">
+            <button type="button" onclick="document.getElementById('upload-users-excel-file').click()" class="btn btn-green" style="font-size:0.85rem; padding:8px 16px; font-weight:700; box-shadow:0 1px 3px rgba(0,0,0,0.1);">📂 Browse & Upload Excel</button>
+            <button type="button" onclick="openAddUserModal()" class="btn" style="background:#0284c7; color:white; font-size:0.85rem; padding:8px 16px; font-weight:700;">➕ Add Single User</button>
             <button type="button" onclick="testSmtpConnection()" class="btn btn-outline" style="border-color:#0284c7; color:#0284c7; font-size:0.8rem; padding:7px 12px; font-weight:600;">📧 Test SMTP</button>
-            <button type="button" onclick="openAddUserModal()" class="btn btn-green" style="font-size:0.85rem; padding:8px 16px; font-weight:700; box-shadow:0 1px 3px rgba(0,0,0,0.1);">➕ Add User</button>
-            <button type="button" onclick="downloadUsersBackup()" class="btn" style="background:#0284c7; font-size:0.8rem; padding:7px 12px;">📥 Backup JSON</button>
+            <button type="button" onclick="downloadUsersBackup()" class="btn btn-outline" style="font-size:0.8rem; padding:7px 12px;">📥 Backup JSON</button>
             <button type="button" onclick="document.getElementById('import-users-file').click()" class="btn btn-outline" style="font-size:0.8rem; padding:7px 12px;">📤 Restore JSON</button>
             <input type="file" id="import-users-file" accept=".json" style="display:none;" onchange="importUsersConfig(event)">
           </div>
         </div>
+
+        <div id="users-upload-status" style="margin-bottom:15px; font-size:0.85rem; display:none; padding:10px 14px; border-radius:8px;"></div>
 
         <!-- Users Table -->
         <div style="overflow-x:auto;">
@@ -5194,6 +5404,56 @@ def admin_dashboard(response: Response):
             alert('Error restoring users config: ' + err);
           }
           e.target.value = '';
+        }
+
+        async function uploadUsersExcel(e) {
+          const file = e.target.files[0];
+          if (!file) return;
+
+          const statusDiv = document.getElementById('users-upload-status');
+          if (statusDiv) {
+            statusDiv.style.display = 'block';
+            statusDiv.style.background = '#e0f2fe';
+            statusDiv.style.color = '#0369a1';
+            statusDiv.innerHTML = `⏳ Uploading and parsing user credentials from <strong>${escapeHtml(file.name)}</strong>...`;
+          }
+
+          const formData = new FormData();
+          formData.append('file', file);
+
+          try {
+            const res = await authFetch('/api/upload-users-excel', {
+              method: 'POST',
+              body: formData
+            });
+            const data = await res.json();
+            if (res.ok && data.status === 'success') {
+              if (statusDiv) {
+                statusDiv.style.background = '#d1fae5';
+                statusDiv.style.color = '#065f46';
+                let msg = `✅ <strong>${data.message || 'Users imported successfully!'}</strong>`;
+                if (data.errors && data.errors.length > 0) {
+                  msg += `<br><span style="font-size:0.8rem; color:#b45309;">⚠️ Notes: ${data.errors.join('; ')}</span>`;
+                }
+                statusDiv.innerHTML = msg;
+              }
+              await fetchUsers();
+            } else {
+              if (statusDiv) {
+                statusDiv.style.background = '#fee2e2';
+                statusDiv.style.color = '#991b1b';
+                statusDiv.innerHTML = `❌ <strong>Upload Error:</strong> ${data.detail || 'Could not parse user file.'}`;
+              }
+            }
+          } catch(err) {
+            if (statusDiv) {
+              statusDiv.style.background = '#fee2e2';
+              statusDiv.style.color = '#991b1b';
+              statusDiv.innerHTML = `❌ <strong>Network Error:</strong> ${err.message}`;
+            }
+          } finally {
+            e.target.value = '';
+          }
         }
 
         // Tab 3: Network Hierarchy
