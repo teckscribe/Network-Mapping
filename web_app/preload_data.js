@@ -1,6 +1,6 @@
 // Preloaded Network Hierarchy & Metadata for GPON Mapping
 const DEFAULT_PRELOAD = {
-  regions: ["Thrissur", "Palakkad"],
+  regions: ["Thrissur"],
   technologies: ["GPON", "FTTH", "WDM", "EDFA"],
   hierarchy: {},
   enclosures: Array.from({length: 20}, (_, i) => `E${i + 1}`),

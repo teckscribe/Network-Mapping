@@ -1099,8 +1099,6 @@ function updateEnclosureId() {
   enclosureIdPreview.innerText = eid || '---';
 }
 
-const KNOWN_PALAKKAD_CENTERS = ['MANARKAD', 'OLAVAKODE', 'OTTAPALAM', 'PALAKKAD', 'PATTAMBI', 'THATHAMANGALAM'];
-
 function getRegionForCenter(centerName) {
   if (!centerName) return "Thrissur";
   const hier = DEFAULT_PRELOAD && DEFAULT_PRELOAD.hierarchy ? DEFAULT_PRELOAD.hierarchy : {};
@@ -1122,10 +1120,6 @@ function getRegionForCenter(centerName) {
         }
       }
     }
-  }
-  const cleanUpper = String(centerName).trim().toUpperCase();
-  if (KNOWN_PALAKKAD_CENTERS.includes(cleanUpper)) {
-    return "Palakkad";
   }
   return "Thrissur";
 }
