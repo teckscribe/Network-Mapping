@@ -5193,20 +5193,15 @@ def admin_dashboard(response: Response):
               const tr = document.createElement('tr');
               const roleClean = normalizeAdminRole(u.role);
               const badgeHtml = roleBadges[roleClean] || `<span class="tag">${escapeHtml(u.role)}</span>`;
-              const emailDisplay = u.email ? `<span style="font-family:monospace; font-size:0.8rem; color:#0369a1;">${escapeHtml(u.email)}</span>` : '<span style="color:#94a3b8; font-style:italic; font-size:0.78rem;">No Email</span>';
-              
+              const regDisplay = (u.assigned_region && u.assigned_region !== 'Unassigned')
+                ? `<span style="background:#f1f5f9; padding:2px 8px; border-radius:4px; font-weight:600; font-size:0.8rem;">${escapeHtml(u.assigned_region)}</span>`
+                : '<span class="tag" style="background:#f59e0b; color:white; font-size:0.75rem;">⚠️ Unassigned</span>';
+
               tr.innerHTML = `
                 <td><strong>${escapeHtml(u.username)}</strong></td>
                 <td>${escapeHtml(u.full_name || u.username)}</td>
-                const regDisplay = (u.assigned_region && u.assigned_region !== 'Unassigned')
-                  ? `<span style="background:#f1f5f9; padding:2px 8px; border-radius:4px; font-weight:600; font-size:0.8rem;">${escapeHtml(u.assigned_region)}</span>`
-                  : '<span class="tag" style="background:#f59e0b; color:white; font-size:0.75rem;">⚠️ Unassigned</span>';
-
-                tr.innerHTML = `
-                  <td><strong>${escapeHtml(u.username)}</strong></td>
-                  <td>${escapeHtml(u.full_name || u.username)}</td>
-                  <td>${emailDisplay}</td>
-                  <td>${regDisplay}</td>
+                <td>${emailDisplay}</td>
+                <td>${regDisplay}</td>
                   <td>
                     ${(() => {
                       const rawC = (u.assigned_center || '').trim();
