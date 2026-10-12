@@ -1,10 +1,10 @@
 {
-  "id": "network-survey-app-v2",
+  "id": "network-survey-v3",
   "name": "Network Survey",
   "short_name": "Network Survey",
   "start_url": "./index.html",
   "display": "standalone",
-  "background_color": "#0f172a",
+  "background_color": "#0b101e",
   "theme_color": "#0284c7",
   "orientation": "portrait-primary",
   "icons": [
