@@ -3216,6 +3216,24 @@ def admin_dashboard(response: Response):
       <meta charset="UTF-8">
       <title>Network Mapping - Admin & Management Portal</title>
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <script>
+        // Immediate client-side security guard: run before DOM render to prevent FOUC / unauthorized visibility
+        (function() {
+          try {
+            var token = localStorage.getItem('gpon_auth_token');
+            var userStr = localStorage.getItem('gpon_admin_user') || localStorage.getItem('gpon_logged_in_user');
+            if (userStr && token) {
+              var u = JSON.parse(userStr);
+              var role = String(u.role || '').toLowerCase().trim();
+              if (role === 'field_technician' || role === 'acso') {
+                var roleLabel = role === 'acso' ? 'ACSO' : 'Field Technician';
+                alert('Access Denied: Your account is registered as ' + roleLabel + ' for field survey entry. The Admin Portal is restricted to Super Admins, Admins, and RCSMs.');
+                window.location.replace('/');
+              }
+            }
+          } catch(e) {}
+        })();
+      </script>
       <style>
         * { box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f1f5f9; color: #0f172a; margin: 0; padding: 16px 20px; }
@@ -3298,6 +3316,9 @@ def admin_dashboard(response: Response):
           </div>
         </div>
       </div>
+
+      <!-- Main Admin Portal (Hidden by default until authenticated to prevent FOUC) -->
+      <div id="admin-main-portal" style="display:none;">
 
       <!-- Top Header -->
       <div class="header">
@@ -3727,6 +3748,7 @@ def admin_dashboard(response: Response):
           <p style="text-align:center; padding:20px; color:#64748b;">Loading dynamic export centers...</p>
         </div>
       </div>
+      </div> <!-- /#admin-main-portal -->
 
       <!-- Add / Edit Node Modal -->
       <div id="olt-modal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); z-index:9999; justify-content:center; align-items:center; padding:16px;">
@@ -3966,8 +3988,14 @@ def admin_dashboard(response: Response):
         function checkAdminAuth() {
           let token = localStorage.getItem('gpon_auth_token');
           let userStr = localStorage.getItem('gpon_admin_user') || localStorage.getItem('gpon_logged_in_user');
+          const portal = document.getElementById('admin-main-portal');
+          const authOverlay = document.getElementById('admin-auth-overlay');
+          const deniedModal = document.getElementById('access-denied-modal');
+
           if (!userStr || !token) {
-            adminLogout();
+            if (portal) portal.style.display = 'none';
+            if (deniedModal) deniedModal.style.display = 'none';
+            showAdminLoginModal();
             return false;
           }
 
@@ -3975,6 +4003,7 @@ def admin_dashboard(response: Response):
           const expiresAt = parseInt(localStorage.getItem('gpon_session_expires_at') || '0', 10);
           if (expiresAt > 0 && Date.now() >= expiresAt) {
             console.log('[Admin Auth] Daily session expired past midnight (00:00).');
+            if (portal) portal.style.display = 'none';
             adminLogout();
             return false;
           }
@@ -3982,6 +4011,7 @@ def admin_dashboard(response: Response):
           try {
             currentAdmin = JSON.parse(userStr);
           } catch(e) {
+            if (portal) portal.style.display = 'none';
             adminLogout();
             return false;
           }
@@ -3990,14 +4020,22 @@ def admin_dashboard(response: Response):
           currentAdmin.role = role;
 
           if (role === 'field_technician' || role === 'acso') {
-            document.getElementById('access-denied-modal').style.display = 'flex';
-            document.getElementById('access-denied-msg').innerHTML = 
-              `Your account <strong>${escapeHtml(currentAdmin.username)}</strong> is registered as <strong>${role === 'acso' ? 'ACSO' : 'Field Technician'}</strong>.<br>The Admin Portal is reserved for Super Admins, Admins, and RCSMs.`;
+            if (portal) portal.style.display = 'none';
+            if (authOverlay) authOverlay.style.display = 'none';
+            if (deniedModal) {
+              deniedModal.style.display = 'flex';
+              const msgEl = document.getElementById('access-denied-msg');
+              if (msgEl) {
+                msgEl.innerHTML = 
+                  `Your account <strong>${escapeHtml(currentAdmin.username)}</strong> is registered as <strong>${role === 'acso' ? 'ACSO' : 'Field Technician'}</strong>.<br>The Admin Portal is reserved for Super Admins, Admins, and RCSMs.`;
+              }
+            }
             return false;
           }
 
-          document.getElementById('admin-auth-overlay').style.display = 'none';
-          document.getElementById('access-denied-modal').style.display = 'none';
+          if (authOverlay) authOverlay.style.display = 'none';
+          if (deniedModal) deniedModal.style.display = 'none';
+          if (portal) portal.style.display = 'block';
 
           scheduleAdminMidnightLogout();
 
@@ -4053,6 +4091,8 @@ def admin_dashboard(response: Response):
               localStorage.setItem('gpon_session_expires_at', String(nextMidnight));
 
               currentAdmin = data.user;
+              const portal = document.getElementById('admin-main-portal');
+              if (portal) portal.style.display = 'block';
               checkAdminAuth();
               initAdminData();
             } else {
@@ -4066,6 +4106,10 @@ def admin_dashboard(response: Response):
         }
 
         function showAdminLoginModal() {
+          const portal = document.getElementById('admin-main-portal');
+          if (portal) portal.style.display = 'none';
+          const deniedModal = document.getElementById('access-denied-modal');
+          if (deniedModal) deniedModal.style.display = 'none';
           const overlay = document.getElementById('admin-auth-overlay');
           if (overlay) {
             overlay.style.display = 'flex';
@@ -4102,6 +4146,8 @@ def admin_dashboard(response: Response):
             adminMidnightTimer = null;
           }
           currentAdmin = null;
+          const portal = document.getElementById('admin-main-portal');
+          if (portal) portal.style.display = 'none';
           showAdminLoginModal();
         }
 
