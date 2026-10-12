@@ -171,7 +171,7 @@
     <header>
       <div>
         <h1>⚡ GPON System Architecture & Wiring Portal</h1>
-        <div class="meta">Automated Codebase Wiring Report & Impact Analyzer | Last updated: 2026-10-12 22:56:29</div>
+        <div class="meta">Automated Codebase Wiring Report & Impact Analyzer | Last updated: 2026-10-12 23:17:37</div>
       </div>
       <div style="display:flex; align-items:center; gap:12px;">
         <span id="admin-user-tag" class="badge" style="background:#6366f1; color:white; font-size:0.8rem; padding:4px 10px;">Super Admin</span>
@@ -184,7 +184,7 @@
     <div class="container">
     <div class="stats-grid">
       <div class="stat-card">
-        <div class="val">6486</div>
+        <div class="val">6496</div>
         <div class="label">server.py Lines</div>
       </div>
       <div class="stat-card">
@@ -192,7 +192,7 @@
         <div class="label">app.js Lines</div>
       </div>
       <div class="stat-card">
-        <div class="val">40</div>
+        <div class="val">41</div>
         <div class="label">API Endpoints</div>
       </div>
       <div class="stat-card">
@@ -380,133 +380,140 @@
               <tr>
                 <td><span class="badge badge-delete">DELETE</span></td>
                 <td><strong class="code-pill">/api/hierarchy/center</strong></td>
-                <td><span class="code-pill">L2172-L2186</span></td>
+                <td><span class="code-pill">L2172-L2185</span></td>
                 <td><code>delete_hierarchy_center()</code></td>
                 <td><span class='badge badge-info'>require_super_admin_auth</span></td>
               </tr>
               <tr>
                 <td><span class="badge badge-get">GET</span></td>
+                <td><strong class="code-pill">/api/download-project-ppt</strong></td>
+                <td><span class="code-pill">L2187-L2195</span></td>
+                <td><code>download_project_ppt()</code></td>
+                <td><span class='badge' style='background:#f1f5f9;color:#64748b;'>Public/Session</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-get">GET</span></td>
                 <td><strong class="code-pill">/api/download-hierarchy-template</strong></td>
-                <td><span class="code-pill">L2189-L2226</span></td>
+                <td><span class="code-pill">L2198-L2235</span></td>
                 <td><code>download_hierarchy_template()</code></td>
                 <td><span class='badge' style='background:#f1f5f9;color:#64748b;'>Public/Session</span></td>
               </tr>
               <tr>
                 <td><span class="badge badge-get">GET</span></td>
                 <td><strong class="code-pill">/api/health</strong></td>
-                <td><span class="code-pill">L2233-L2239</span></td>
+                <td><span class="code-pill">L2242-L2248</span></td>
                 <td><code>health_check()</code></td>
                 <td><span class='badge' style='background:#f1f5f9;color:#64748b;'>Public/Session</span></td>
               </tr>
               <tr>
                 <td><span class="badge badge-get">GET</span></td>
                 <td><strong class="code-pill">/api/surveyed-points</strong></td>
-                <td><span class="code-pill">L2263-L2379</span></td>
+                <td><span class="code-pill">L2272-L2388</span></td>
                 <td><code>get_surveyed_points()</code></td>
                 <td><span class='badge badge-info'>require_any_auth</span></td>
               </tr>
               <tr>
                 <td><span class="badge badge-post">POST</span></td>
                 <td><strong class="code-pill">/api/sync</strong></td>
-                <td><span class="code-pill">L2382-L2535</span></td>
+                <td><span class="code-pill">L2391-L2544</span></td>
                 <td><code>sync_records()</code></td>
                 <td><span class='badge badge-info'>require_any_auth</span></td>
               </tr>
               <tr>
                 <td><span class="badge badge-get">GET</span></td>
                 <td><strong class="code-pill">/api/records</strong></td>
-                <td><span class="code-pill">L2539-L2603</span></td>
+                <td><span class="code-pill">L2548-L2612</span></td>
                 <td><code>get_all_records()</code></td>
                 <td><span class='badge badge-info'>require_management_auth</span></td>
               </tr>
               <tr>
                 <td><span class="badge badge-put">PUT</span></td>
                 <td><strong class="code-pill">/api/records/{client_uuid}</strong></td>
-                <td><span class="code-pill">L2606-L2655</span></td>
+                <td><span class="code-pill">L2615-L2664</span></td>
                 <td><code>update_survey_record()</code></td>
                 <td><span class='badge badge-info'>require_admin_auth</span></td>
               </tr>
               <tr>
                 <td><span class="badge badge-delete">DELETE</span></td>
                 <td><strong class="code-pill">/api/records/{client_uuid}</strong></td>
-                <td><span class="code-pill">L2658-L2698</span></td>
+                <td><span class="code-pill">L2667-L2707</span></td>
                 <td><code>delete_record()</code></td>
                 <td><span class='badge badge-info'>require_any_auth</span></td>
               </tr>
               <tr>
                 <td><span class="badge badge-post">POST</span></td>
                 <td><strong class="code-pill">/api/records/bulk-delete</strong></td>
-                <td><span class="code-pill">L2701-L2724</span></td>
+                <td><span class="code-pill">L2710-L2733</span></td>
                 <td><code>bulk_delete_records()</code></td>
                 <td><span class='badge badge-info'>require_any_auth</span></td>
               </tr>
               <tr>
                 <td><span class="badge badge-post">POST</span></td>
                 <td><strong class="code-pill">/api/records/clear-center</strong></td>
-                <td><span class="code-pill">L2727-L2746</span></td>
+                <td><span class="code-pill">L2736-L2755</span></td>
                 <td><code>clear_center_records()</code></td>
                 <td><span class='badge badge-info'>require_super_admin_auth</span></td>
               </tr>
               <tr>
                 <td><span class="badge badge-get">GET</span></td>
                 <td><strong class="code-pill">/api/export-excel</strong></td>
-                <td><span class="code-pill">L2749-L2787</span></td>
+                <td><span class="code-pill">L2758-L2796</span></td>
                 <td><code>export_server_excel()</code></td>
                 <td><span class='badge badge-info'>require_management_auth</span></td>
               </tr>
               <tr>
                 <td><span class="badge badge-get">GET</span></td>
                 <td><strong class="code-pill">/api/export-center-excel</strong></td>
-                <td><span class="code-pill">L2790-L2875</span></td>
+                <td><span class="code-pill">L2799-L2884</span></td>
                 <td><code>export_center_excel()</code></td>
                 <td><span class='badge badge-info'>require_export_auth</span></td>
               </tr>
               <tr>
                 <td><span class="badge badge-get">GET</span></td>
                 <td><strong class="code-pill">/api/export-data-zip</strong></td>
-                <td><span class="code-pill">L2878-L2950</span></td>
+                <td><span class="code-pill">L2887-L2959</span></td>
                 <td><code>export_data_zip()</code></td>
                 <td><span class='badge badge-info'>require_management_auth</span></td>
               </tr>
               <tr>
                 <td><span class="badge badge-post">POST</span></td>
                 <td><strong class="code-pill">/api/upload-survey-excel</strong></td>
-                <td><span class="code-pill">L2953-L3098</span></td>
+                <td><span class="code-pill">L2962-L3107</span></td>
                 <td><code>upload_survey_excel()</code></td>
                 <td><span class='badge badge-info'>require_admin_auth</span></td>
               </tr>
               <tr>
                 <td><span class="badge badge-get">GET</span></td>
                 <td><strong class="code-pill">/api/data-folders-summary</strong></td>
-                <td><span class="code-pill">L3101-L3183</span></td>
+                <td><span class="code-pill">L3110-L3192</span></td>
                 <td><code>get_data_folders_summary()</code></td>
                 <td><span class='badge badge-info'>require_management_auth</span></td>
               </tr>
               <tr>
                 <td><span class="badge badge-post">POST</span></td>
                 <td><strong class="code-pill">/api/resync-data-folders</strong></td>
-                <td><span class="code-pill">L3186-L3194</span></td>
+                <td><span class="code-pill">L3195-L3203</span></td>
                 <td><code>resync_data_folders()</code></td>
                 <td><span class='badge badge-info'>require_admin_auth</span></td>
               </tr>
               <tr>
                 <td><span class="badge badge-get">GET</span></td>
                 <td><strong class="code-pill">/docs/wiring</strong></td>
-                <td><span class="code-pill">L3199-L3204</span></td>
+                <td><span class="code-pill">L3208-L3213</span></td>
                 <td><code>get_wiring_report()</code></td>
                 <td><span class='badge' style='background:#f1f5f9;color:#64748b;'>Public/Session</span></td>
               </tr>
               <tr>
                 <td><span class="badge badge-get">GET</span></td>
                 <td><strong class="code-pill">/manifest.json</strong></td>
-                <td><span class="code-pill">L3207-L3219</span></td>
+                <td><span class="code-pill">L3216-L3228</span></td>
                 <td><code>get_pwa_manifest()</code></td>
                 <td><span class='badge' style='background:#f1f5f9;color:#64748b;'>Public/Session</span></td>
               </tr>
               <tr>
                 <td><span class="badge badge-get">GET</span></td>
                 <td><strong class="code-pill">/admin</strong></td>
-                <td><span class="code-pill">L3223-L6478</span></td>
+                <td><span class="code-pill">L3232-L6488</span></td>
                 <td><code>admin_dashboard()</code></td>
                 <td><span class='badge' style='background:#f1f5f9;color:#64748b;'>Public/Session</span></td>
               </tr>

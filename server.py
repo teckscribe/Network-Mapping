@@ -2183,7 +2183,16 @@ def delete_hierarchy_center(payload: dict, session: dict = Depends(require_super
     if deleted:
         save_hierarchy_data(hierarchy)
         return {"status": "success", "message": f"Center '{center}' removed from hierarchy."}
-    return {"status": "success", "message": f"Center '{center}' was not in hierarchy."}
+@app.get("/api/download-project-ppt")
+def download_project_ppt():
+    ppt_path = os.path.join(BASE_DIR, "GPON_Network_Mapping_Project_Report.pptx")
+    if os.path.exists(ppt_path):
+        return FileResponse(
+            ppt_path,
+            media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            filename="GPON_Network_Mapping_Project_Report.pptx"
+        )
+    raise HTTPException(status_code=404, detail="Presentation report not found")
 
 @app.get("/api/download-hierarchy-template")
 def download_hierarchy_template():
@@ -3354,6 +3363,7 @@ def admin_dashboard(response: Response):
           <button id="btn-top-import" class="btn" style="background:#0f766e; color:white;" onclick="document.getElementById('top-survey-upload-input').click()">📤 Import Survey Excel</button>
           <button id="btn-top-master-excel" class="btn btn-green" onclick="downloadWithAuth('/api/export-excel')">📊 Master Excel</button>
           <button id="btn-top-zip-excel" class="btn" style="background:#2563eb; color:white;" onclick="downloadWithAuth('/api/export-data-zip')">🗂️ All Centers (ZIP)</button>
+          <a href="/api/download-project-ppt" class="btn" style="background:#7c3aed; color:white;" title="Download Executive PPT Project Report for Superior Officers">📑 Download PPT Report</a>
           <a href="/" class="btn btn-outline" target="_blank" title="Open Field Survey Web App">📱 Field App</a>
           <a href="/admin/wiring" id="btn-admin-wiring" class="btn btn-outline" target="_blank" title="View System Architecture & Code Wiring Report" style="border-color:#0284c7; color:#0284c7; font-weight:600;">⚡ Wiring Report</a>
           <button onclick="fetchData()" class="btn btn-outline">🔄 Refresh</button>
