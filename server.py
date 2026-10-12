@@ -3589,9 +3589,9 @@ def admin_dashboard(response: Response):
             </div>
 
             <!-- Row 4: Assigned Region(s) & Assigned Center(s) -->
-            <div style="display:grid; grid-template-columns:1fr 1.3fr; gap:14px; margin-bottom:14px;">
+            <div style="display:grid; grid-template-columns:1fr 1.3fr; gap:14px; margin-bottom:14px; position:relative; z-index:20;">
               <!-- Multi-Region Selector -->
-              <div style="position:relative;">
+              <div style="position:relative; z-index:22;">
                 <label style="display:block; font-size:0.78rem; font-weight:700; color:#334155; margin-bottom:4px;">
                   Assigned Region(s)
                 </label>
@@ -3599,7 +3599,7 @@ def admin_dashboard(response: Response):
                   <span id="region-picker-label" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"><span style="color:#94a3b8; font-weight:normal;">-- Select Region(s) --</span></span>
                   <span style="font-size:0.75rem; color:#64748b;">▼</span>
                 </button>
-                <div id="region-dropdown-panel" style="display:none; position:absolute; top:100%; left:0; right:0; z-index:1000; background:white; border:1.5px solid #0284c7; border-radius:8px; padding:10px; margin-top:4px; box-shadow:0 10px 25px -5px rgba(0,0,0,0.15); max-height:220px; overflow-y:auto;">
+                <div id="region-dropdown-panel" style="display:none; position:absolute; top:100%; left:0; right:0; z-index:2000; background:white; border:1.5px solid #0284c7; border-radius:8px; padding:10px; margin-top:4px; box-shadow:0 10px 25px -5px rgba(0,0,0,0.15); max-height:220px; overflow-y:auto;">
                   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; padding-bottom:4px; border-bottom:1px solid #e2e8f0;">
                     <span style="font-size:0.75rem; font-weight:700; color:#475569;">Select Region(s)</span>
                     <button type="button" onclick="closeAllDropdowns()" style="background:#0284c7; color:white; border:none; padding:2px 8px; border-radius:4px; font-size:0.75rem; font-weight:700; cursor:pointer;">Done ✓</button>
@@ -3609,7 +3609,7 @@ def admin_dashboard(response: Response):
               </div>
 
               <!-- Multi-Center Selector -->
-              <div style="position:relative;">
+              <div style="position:relative; z-index:21;">
                 <label style="display:block; font-size:0.78rem; font-weight:700; color:#334155; margin-bottom:4px;">
                   Assigned Center(s) <span style="font-size:0.7rem; color:#0284c7; font-weight:normal;">(Select 1 or more)</span>
                 </label>
@@ -3617,7 +3617,7 @@ def admin_dashboard(response: Response):
                   <span id="center-picker-label" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"><span style="color:#94a3b8; font-weight:normal;">-- Select Center(s) --</span></span>
                   <span style="font-size:0.75rem; color:#64748b;">▼</span>
                 </button>
-                <div id="center-dropdown-panel" style="display:none; position:absolute; top:100%; left:0; right:0; min-width:280px; z-index:1000; background:white; border:1.5px solid #0284c7; border-radius:8px; padding:10px; margin-top:4px; box-shadow:0 10px 25px -5px rgba(0,0,0,0.15); max-height:280px; overflow-y:auto;">
+                <div id="center-dropdown-panel" style="display:none; position:absolute; top:100%; left:0; right:0; min-width:280px; z-index:2000; background:white; border:1.5px solid #0284c7; border-radius:8px; padding:10px; margin-top:4px; box-shadow:0 10px 25px -5px rgba(0,0,0,0.15); max-height:280px; overflow-y:auto;">
                   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; padding-bottom:6px; border-bottom:1px solid #e2e8f0;">
                     <input type="text" id="center-search-input" placeholder="🔍 Search centers..." oninput="filterCenterChecklist(this.value)" style="flex:1; padding:4px 8px; font-size:0.78rem; border:1px solid #cbd5e1; border-radius:4px; outline:none;">
                     <button type="button" onclick="selectAllCenters(true)" style="background:none; border:none; color:#0284c7; font-size:0.75rem; font-weight:700; cursor:pointer; margin-left:8px;">All</button>
@@ -3638,7 +3638,7 @@ def admin_dashboard(response: Response):
             </div>
 
             <!-- Modal Action Buttons -->
-            <div style="display:flex; justify-content:flex-end; gap:10px; border-top:1px solid #e2e8f0; padding-top:14px; position:relative; z-index:1002; background:white;">
+            <div style="display:flex; justify-content:flex-end; gap:10px; border-top:1px solid #e2e8f0; padding-top:14px; position:relative; z-index:1; background:white;">
               <button type="button" onclick="closeUserModal()" class="btn btn-outline" style="padding:8px 16px;">Cancel</button>
               <button type="submit" id="btn-modal-save-user" class="btn btn-green" style="padding:8px 20px; font-weight:700;">💾 Save User</button>
             </div>
