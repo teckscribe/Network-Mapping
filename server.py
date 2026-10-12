@@ -3579,6 +3579,10 @@ def admin_dashboard(response: Response):
                   <span style="font-size:0.75rem; color:#64748b;">▼</span>
                 </button>
                 <div id="region-dropdown-panel" style="display:none; position:absolute; top:100%; left:0; right:0; z-index:1000; background:white; border:1.5px solid #0284c7; border-radius:8px; padding:10px; margin-top:4px; box-shadow:0 10px 25px -5px rgba(0,0,0,0.15); max-height:220px; overflow-y:auto;">
+                  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; padding-bottom:4px; border-bottom:1px solid #e2e8f0;">
+                    <span style="font-size:0.75rem; font-weight:700; color:#475569;">Select Region(s)</span>
+                    <button type="button" onclick="closeAllDropdowns()" style="background:#0284c7; color:white; border:none; padding:2px 8px; border-radius:4px; font-size:0.75rem; font-weight:700; cursor:pointer;">Done ✓</button>
+                  </div>
                   <div id="region-checkbox-list"></div>
                 </div>
               </div>
@@ -3597,6 +3601,7 @@ def admin_dashboard(response: Response):
                     <input type="text" id="center-search-input" placeholder="🔍 Search centers..." oninput="filterCenterChecklist(this.value)" style="flex:1; padding:4px 8px; font-size:0.78rem; border:1px solid #cbd5e1; border-radius:4px; outline:none;">
                     <button type="button" onclick="selectAllCenters(true)" style="background:none; border:none; color:#0284c7; font-size:0.75rem; font-weight:700; cursor:pointer; margin-left:8px;">All</button>
                     <button type="button" onclick="selectAllCenters(false)" style="background:none; border:none; color:#64748b; font-size:0.75rem; font-weight:700; cursor:pointer; margin-left:4px;">None</button>
+                    <button type="button" onclick="closeAllDropdowns()" style="background:#0284c7; color:white; border:none; padding:3px 10px; border-radius:4px; font-size:0.75rem; font-weight:700; cursor:pointer; margin-left:8px;">Done ✓</button>
                   </div>
                   <div id="center-checkbox-list"></div>
                 </div>
@@ -3612,7 +3617,7 @@ def admin_dashboard(response: Response):
             </div>
 
             <!-- Modal Action Buttons -->
-            <div style="display:flex; justify-content:flex-end; gap:10px; border-top:1px solid #e2e8f0; padding-top:14px;">
+            <div style="display:flex; justify-content:flex-end; gap:10px; border-top:1px solid #e2e8f0; padding-top:14px; position:relative; z-index:1002; background:white;">
               <button type="button" onclick="closeUserModal()" class="btn btn-outline" style="padding:8px 16px;">Cancel</button>
               <button type="submit" id="btn-modal-save-user" class="btn btn-green" style="padding:8px 20px; font-weight:700;">💾 Save User</button>
             </div>
@@ -4781,13 +4786,19 @@ def admin_dashboard(response: Response):
         let selectedUserRegions = new Set();
         let selectedUserCenters = new Set();
 
+        function closeAllDropdowns() {
+          const rp = document.getElementById('region-dropdown-panel');
+          if (rp) rp.style.display = 'none';
+          const cp = document.getElementById('center-dropdown-panel');
+          if (cp) cp.style.display = 'none';
+        }
+
         function toggleMultiDropdown(panelId) {
           const p = document.getElementById(panelId);
           if (!p) return;
           const isShown = (p.style.display === 'block');
           // Hide both first
-          document.getElementById('region-dropdown-panel').style.display = 'none';
-          document.getElementById('center-dropdown-panel').style.display = 'none';
+          closeAllDropdowns();
           p.style.display = isShown ? 'none' : 'block';
         }
 
@@ -4940,7 +4951,7 @@ def admin_dashboard(response: Response):
             selectedUserCenters.add(cb.value);
             // Auto add region if not present
             const reg = cb.dataset.region || meta.centerToRegion[cb.value];
-            if (reg && !selectedUserRegions.has('ALL')) {
+            if (reg && !selectedUserRegions.has('ALL') && !selectedUserRegions.has(reg)) {
               selectedUserRegions.add(reg);
               renderRegionCheckboxes(meta);
             }
@@ -4948,8 +4959,9 @@ def admin_dashboard(response: Response):
             selectedUserCenters.delete(cb.value);
           }
 
-          const metaNow = getHierarchyMeta();
-          renderCenterCheckboxes(metaNow);
+          const allCb = document.getElementById('cb-all-centers');
+          if (allCb) allCb.checked = false;
+
           updateUserPickerLabelsAndBadges();
         }
 
@@ -5525,8 +5537,22 @@ def admin_dashboard(response: Response):
           });
         }
 
+        let isSavingUser = false;
+
+        function resetSaveUserButton(text = null) {
+          isSavingUser = false;
+          const saveBtn = document.getElementById('btn-modal-save-user');
+          if (saveBtn) {
+            saveBtn.disabled = false;
+            saveBtn.style.opacity = '1';
+            saveBtn.style.cursor = 'pointer';
+            if (text) saveBtn.innerHTML = text;
+          }
+        }
+
         function openAddUserModal() {
           setupRoleOptionsInModal();
+          resetSaveUserButton('💾 Save User');
           document.getElementById('user-modal-title').innerHTML = '➕ Add New User';
           document.getElementById('modal-new-user').value = '';
           document.getElementById('modal-new-user').removeAttribute('readonly');
@@ -5540,7 +5566,6 @@ def admin_dashboard(response: Response):
           document.getElementById('modal-new-phone').value = '';
           document.getElementById('modal-new-email').value = '';
           document.getElementById('modal-new-role').value = 'field_technician';
-          document.getElementById('btn-modal-save-user').innerHTML = '💾 Save User';
 
           populateUserRegionAndCenterDropdowns('', '');
           document.getElementById('user-modal').style.display = 'flex';
@@ -5548,6 +5573,7 @@ def admin_dashboard(response: Response):
 
         function openEditUserModal(username, fullName, phone, email, center, region, role) {
           setupRoleOptionsInModal();
+          resetSaveUserButton('💾 Update User');
           document.getElementById('user-modal-title').innerHTML = `✏️ Edit User: ${escapeHtml(username)}`;
           document.getElementById('modal-new-user').value = username;
           document.getElementById('modal-new-user').setAttribute('readonly', 'true');
@@ -5564,20 +5590,18 @@ def admin_dashboard(response: Response):
           populateUserRegionAndCenterDropdowns(region || '', center || '');
 
           document.getElementById('modal-new-role').value = role || 'field_technician';
-          document.getElementById('btn-modal-save-user').innerHTML = '💾 Update User';
           document.getElementById('user-modal').style.display = 'flex';
         }
 
         function closeUserModal() {
+          resetSaveUserButton();
           document.getElementById('user-modal').style.display = 'none';
-          const rp = document.getElementById('region-dropdown-panel');
-          if (rp) rp.style.display = 'none';
-          const cp = document.getElementById('center-dropdown-panel');
-          if (cp) cp.style.display = 'none';
+          closeAllDropdowns();
         }
 
         async function saveUserFromModal(e) {
           e.preventDefault();
+          if (isSavingUser) return;
           
           let regionsArr = Array.from(selectedUserRegions);
           const centersArr = Array.from(selectedUserCenters);
@@ -5603,6 +5627,22 @@ def admin_dashboard(response: Response):
           }
           if (regionsArr.length === 0) regionsArr = ['Thrissur'];
 
+          const saveBtn = document.getElementById('btn-modal-save-user');
+          const isEditMode = (document.getElementById('modal-new-user').getAttribute('readonly') === 'true');
+          const originalBtnHtml = saveBtn ? saveBtn.innerHTML : (isEditMode ? '💾 Update User' : '💾 Save User');
+
+          // Close any open dropdown panels immediately
+          closeAllDropdowns();
+
+          // Set busy state & immediate visual feedback on button
+          isSavingUser = true;
+          if (saveBtn) {
+            saveBtn.disabled = true;
+            saveBtn.style.opacity = '0.65';
+            saveBtn.style.cursor = 'not-allowed';
+            saveBtn.innerHTML = isEditMode ? '⏳ Updating User...' : '⏳ Saving User...';
+          }
+
           const u = {
             username: document.getElementById('modal-new-user').value.trim(),
             password: document.getElementById('modal-new-pass').value.trim(),
@@ -5622,14 +5662,16 @@ def admin_dashboard(response: Response):
             });
             const data = await res.json();
             if (res.ok) {
-              alert(data.message || 'User saved successfully!');
               closeUserModal();
+              alert(data.message || 'User saved successfully!');
               fetchUsers();
             } else {
               alert('Error: ' + (data.detail || 'Could not save user'));
             }
           } catch(err) {
             alert('Network error: ' + err.message);
+          } finally {
+            resetSaveUserButton(originalBtnHtml);
           }
         }
 

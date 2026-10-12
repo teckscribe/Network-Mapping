@@ -1,5 +1,5 @@
 # System Topology & End-to-End Data Flow Specification
-*Generated automatically on: 2026-10-10 18:01:30*
+*Generated automatically on: 2026-10-12 10:37:16*
 
 ## 1. Executive Architectural Blueprint
 The GPON Network Mapping platform is an enterprise-grade, offline-first field survey and GIS network documentation system. It connects field mobile Progressive Web Apps (PWA) with a 24/7 central Ubuntu/Windows server running FastAPI and SQLite.
