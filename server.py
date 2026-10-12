@@ -21,9 +21,6 @@ import json
 import re
 import uuid
 import zipfile
-import tarfile
-import threading
-import subprocess
 import shutil
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -3196,227 +3193,6 @@ def resync_data_folders(session: dict = Depends(require_admin_auth)):
     conn.close()
     return {"status": "success", "message": f"Storage optimized: 0 static Excel files on disk. {cnt} survey records active in SQLite.", "records_count": cnt}
 
-# ==========================================
-# GOOGLE DRIVE BACKUP & CLOUD SYNC SERVICES
-# ==========================================
-_backup_lock = threading.Lock()
-_backup_running = False
-
-def format_relative_time(dt_or_iso: Optional[Union[str, datetime.datetime]]) -> str:
-    """Calculates human-friendly relative time (e.g. 'Just now', '15m ago', '2h ago')."""
-    if not dt_or_iso:
-        return "Never run"
-    try:
-        if isinstance(dt_or_iso, str):
-            clean_ts = dt_or_iso.replace("Z", "+00:00")
-            ts = datetime.datetime.fromisoformat(clean_ts)
-        else:
-            ts = dt_or_iso
-        now = datetime.datetime.now(ts.tzinfo) if ts.tzinfo else datetime.datetime.now()
-        diff = (now - ts).total_seconds()
-        if diff < 0:
-            diff = 0
-        if diff < 45:
-            return "Just now"
-        if diff < 90:
-            return "1m ago"
-        if diff < 3600:
-            mins = int(diff // 60)
-            return f"{mins}m ago"
-        if diff < 7200:
-            return "1h ago"
-        if diff < 86400:
-            hours = int(diff // 3600)
-            return f"{hours}h ago"
-        if diff < 172800:
-            return "Yesterday"
-        days = int(diff // 86400)
-        return f"{days}d ago"
-    except Exception:
-        return str(dt_or_iso)
-
-def execute_backup_worker():
-    """Background worker executing the backup task with full friction & logging."""
-    global _backup_running
-    log_file_path = os.path.join(BASE_DIR, "backup.log")
-    status_file_path = os.path.join(BASE_DIR, "backup_status.json")
-    script_path = os.path.join(BASE_DIR, "backup_to_gdrive.sh")
-
-    def append_log(msg: str):
-        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        try:
-            with open(log_file_path, "a", encoding="utf-8") as f:
-                f.write(f"[{ts}] {msg}\n")
-        except Exception:
-            pass
-
-    def write_status(status_str: str, uploaded: bool, size_str: str, archive_str: str, msg_str: str):
-        now_dt = datetime.datetime.now().astimezone()
-        data = {
-            "status": status_str,
-            "uploaded_to_cloud": uploaded,
-            "archive_size": size_str,
-            "archive_name": archive_str,
-            "remote": os.getenv("RCLONE_DEST", "gdrive:GPON_Backups"),
-            "timestamp": now_dt.isoformat(),
-            "readable_time": now_dt.strftime("%d %b %Y, %I:%M:%S %p"),
-            "message": msg_str
-        }
-        try:
-            with open(status_file_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-        except Exception:
-            pass
-
-    try:
-        append_log("=== Triggering Backup Job (Admin Manual Request) ===")
-        write_status("in_progress", False, "0B", "Preparing...", "Backup in progress...")
-
-        bash_bin = shutil.which("bash") or shutil.which("sh")
-        if bash_bin and os.path.exists(script_path):
-            append_log(f"Executing backup script via {bash_bin}...")
-            env = os.environ.copy()
-            env["PROJECT_DIR"] = BASE_DIR
-            proc = subprocess.run(
-                [bash_bin, script_path],
-                cwd=BASE_DIR,
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=300
-            )
-            if proc.stdout:
-                for line in proc.stdout.splitlines():
-                    if line.strip():
-                        append_log(line.strip())
-            if proc.stderr:
-                for line in proc.stderr.splitlines():
-                    if line.strip():
-                        append_log(f"STDERR: {line.strip()}")
-            if proc.returncode != 0:
-                append_log(f"ERROR: Backup script failed with exit code {proc.returncode}")
-                write_status("failed", False, "0B", "", f"Backup script failed with exit code {proc.returncode}")
-        else:
-            # Pure Python backup fallback (safe cross-platform hot snapshot)
-            append_log("Running Python native hot backup...")
-            backup_dir = os.path.join(BASE_DIR, "gpon_backups")
-            os.makedirs(backup_dir, exist_ok=True)
-            ts_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            snap_file = os.path.join(backup_dir, f"snapshot_{ts_str}.db")
-            archive_name = f"gpon_backup_{ts_str}.tar.gz"
-            archive_path = os.path.join(backup_dir, archive_name)
-
-            if os.path.exists(DB_PATH):
-                src = sqlite3.connect(DB_PATH, timeout=30.0)
-                dst = sqlite3.connect(snap_file)
-                src.backup(dst)
-                dst.close()
-                src.close()
-                append_log("Safe SQLite online snapshot created.")
-            else:
-                raise FileNotFoundError(f"Database {DB_PATH} not found.")
-
-            with tarfile.open(archive_path, "w:gz") as tar:
-                tar.add(snap_file, arcname=f"snapshot_{ts_str}.db")
-                users_cfg = os.path.join(BASE_DIR, "users_config.json")
-                if os.path.exists(users_cfg):
-                    tar.add(users_cfg, arcname="users_config.json")
-                hier_cfg = os.path.join(BASE_DIR, "custom_hierarchy.json")
-                if os.path.exists(hier_cfg):
-                    tar.add(hier_cfg, arcname="custom_hierarchy.json")
-            if os.path.exists(snap_file):
-                os.remove(snap_file)
-
-            size_bytes = os.path.getsize(archive_path)
-            size_mb = f"{size_bytes / (1024 * 1024):.1f} MB" if size_bytes >= 1024*1024 else f"{size_bytes / 1024:.1f} KB"
-            append_log(f"Archive created: {archive_name} ({size_mb})")
-
-            rclone_bin = shutil.which("rclone")
-            rclone_remote = os.getenv("RCLONE_DEST", "gdrive:GPON_Backups")
-            if rclone_bin:
-                append_log(f"Uploading {archive_name} to Google Drive ({rclone_remote})...")
-                rc_proc = subprocess.run([rclone_bin, "copy", archive_path, rclone_remote], capture_output=True, text=True, timeout=180)
-                if rc_proc.returncode == 0:
-                    append_log("Google Drive upload completed successfully!")
-                    write_status("success", True, size_mb, archive_name, "Backup created and synced to Google Drive successfully.")
-                else:
-                    append_log(f"ERROR: rclone upload failed: {rc_proc.stderr}")
-                    write_status("failed", False, size_mb, archive_name, f"rclone error: {rc_proc.stderr[:100]}")
-            else:
-                append_log("WARNING: rclone not installed or configured. Backup preserved locally.")
-                write_status("warning", False, size_mb, archive_name, f"Local backup created ({size_mb}), rclone not configured.")
-    except Exception as e:
-        append_log(f"EXCEPTION during backup: {str(e)}")
-        write_status("failed", False, "0B", "", f"Backup error: {str(e)}")
-    finally:
-        _backup_running = False
-
-@app.get("/api/backup-status")
-def get_backup_status(session: dict = Depends(require_management_auth)):
-    """Returns Google Drive backup status, latest sync time, relative time, and recent logs."""
-    status_file_path = os.path.join(BASE_DIR, "backup_status.json")
-    log_file_path = os.path.join(BASE_DIR, "backup.log")
-
-    status_data = {}
-    if os.path.exists(status_file_path):
-        try:
-            with open(status_file_path, "r", encoding="utf-8") as f:
-                status_data = json.load(f)
-        except Exception:
-            pass
-
-    recent_logs = []
-    if os.path.exists(log_file_path):
-        try:
-            with open(log_file_path, "r", encoding="utf-8", errors="replace") as f:
-                lines = [l.strip() for l in f.readlines() if l.strip()]
-                recent_logs = lines[-20:]
-        except Exception:
-            pass
-
-    timestamp = status_data.get("timestamp")
-    readable_time = status_data.get("readable_time")
-    relative_time = format_relative_time(timestamp) if timestamp else "Never run"
-    status_code = status_data.get("status")
-
-    if not status_code:
-        if recent_logs:
-            status_code = "warning"
-            readable_time = "Recorded in log"
-            relative_time = "Check logs"
-        else:
-            status_code = "not_configured"
-            readable_time = "Never run"
-            relative_time = "Never run"
-
-    return {
-        "configured": os.path.exists(status_file_path) or os.path.exists(log_file_path),
-        "status": status_code,
-        "is_running": _backup_running,
-        "uploaded_to_cloud": bool(status_data.get("uploaded_to_cloud", False)),
-        "timestamp": timestamp,
-        "readable_time": readable_time or "Never run",
-        "relative_time": relative_time,
-        "archive_name": status_data.get("archive_name") or "None",
-        "archive_size": status_data.get("archive_size") or "0 B",
-        "remote": status_data.get("remote") or "gdrive:GPON_Backups",
-        "message": status_data.get("message") or ("Backup in progress..." if _backup_running else "Ready"),
-        "recent_logs": recent_logs
-    }
-
-@app.post("/api/trigger-backup")
-def trigger_backup(session: dict = Depends(require_admin_auth)):
-    """Triggers an asynchronous backup and cloud sync to Google Drive (Admin only)."""
-    global _backup_running
-    with _backup_lock:
-        if _backup_running:
-            return {"status": "already_running", "message": "A backup task is currently running in the background."}
-        _backup_running = True
-
-    t = threading.Thread(target=execute_backup_worker, daemon=True)
-    t.start()
-    return {"status": "started", "message": "Google Drive backup job started in background."}
-
 # Architecture Wiring & System Report Dashboard
 @app.get("/admin/wiring", response_class=FileResponse)
 @app.get("/docs/wiring", response_class=FileResponse)
@@ -3529,10 +3305,6 @@ def admin_dashboard(response: Response):
           <div style="display:flex; align-items:center; gap:10px;">
             <h1 style="margin:0; font-size:1.45rem; color:#0f172a;">📡 Network Mapping</h1>
             <span id="header-user-badge" class="tag" style="background:#6366f1;">Super Admin</span>
-            <button type="button" id="btn-gdrive-status-pill" onclick="openBackupStatusModal()" title="View Google Drive Cloud Backup & Sync Status" style="display:inline-flex; align-items:center; gap:6px; background:#f8fafc; border:1px solid #cbd5e1; border-radius:9999px; padding:3px 10px; font-size:0.75rem; font-weight:600; color:#334155; cursor:pointer; transition:all 0.2s ease;">
-              <span id="gdrive-status-dot" style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#94a3b8;"></span>
-              <span id="gdrive-status-text">Drive: Checking...</span>
-            </button>
           </div>
           <p style="margin:4px 0 0 0; font-size:0.82rem; color:#64748b;">
             Logged in as: <strong id="header-user-name">Administrator</strong> | <span id="header-user-jurisdiction">Center: <span id="header-user-center">ALL</span></span>
@@ -3850,73 +3622,6 @@ def admin_dashboard(response: Response):
               <button type="submit" id="btn-modal-save-user" class="btn btn-green" style="padding:8px 20px; font-weight:700;">💾 Save User</button>
             </div>
           </form>
-        </div>
-      </div>
-
-      <!-- Google Drive Backup & Cloud Sync Modal Window -->
-      <div id="gdrive-backup-modal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(15,23,42,0.6); backdrop-filter:blur(3px); z-index:9999; justify-content:center; align-items:center; padding:16px;">
-        <div style="background:white; border-radius:12px; padding:24px; max-width:620px; width:100%; max-height:92vh; overflow-y:auto; box-shadow:0 20px 25px -5px rgba(0,0,0,0.25), 0 8px 10px -6px rgba(0,0,0,0.1);">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; border-bottom:1px solid #e2e8f0; padding-bottom:12px;">
-            <div style="display:flex; align-items:center; gap:8px;">
-              <span style="font-size:1.3rem;">☁️</span>
-              <h3 style="margin:0; font-size:1.15rem; color:#0f172a; font-weight:700;">Google Drive Backup & Cloud Sync</h3>
-            </div>
-            <button type="button" onclick="closeBackupStatusModal()" style="background:none; border:none; font-size:1.5rem; line-height:1; color:#94a3b8; cursor:pointer; padding:4px 8px; border-radius:6px;">&times;</button>
-          </div>
-
-          <!-- Status Card -->
-          <div id="modal-gdrive-summary-card" style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:16px; margin-bottom:16px;">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-              <span style="font-size:0.82rem; font-weight:700; color:#475569;">Cloud Sync Status</span>
-              <span id="modal-gdrive-badge" class="tag" style="background:#10b981; color:white; font-size:0.78rem; padding:4px 10px;">🟢 Synced to Google Drive</span>
-            </div>
-            
-            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; font-size:0.83rem;">
-              <div>
-                <span style="color:#64748b; display:block; font-size:0.75rem;">Last Backup Time</span>
-                <strong id="modal-gdrive-last-time" style="color:#0f172a;">Checking...</strong>
-                <span id="modal-gdrive-rel-time" style="display:block; font-size:0.72rem; color:#6366f1;"></span>
-              </div>
-              <div>
-                <span style="color:#64748b; display:block; font-size:0.75rem;">Cloud Remote Destination</span>
-                <strong id="modal-gdrive-remote" style="color:#0f172a;">gdrive:GPON_Backups</strong>
-              </div>
-              <div>
-                <span style="color:#64748b; display:block; font-size:0.75rem;">Latest Archive Name</span>
-                <span id="modal-gdrive-archive" style="color:#334155; font-family:monospace; font-size:0.78rem; word-break:break-all;">-</span>
-              </div>
-              <div>
-                <span style="color:#64748b; display:block; font-size:0.75rem;">Archive Compressed Size</span>
-                <strong id="modal-gdrive-size" style="color:#0f172a;">-</strong>
-              </div>
-            </div>
-
-            <div id="modal-gdrive-msg-box" style="margin-top:10px; padding:8px 10px; background:#e0f2fe; border:1px solid #bae6fd; border-radius:6px; font-size:0.78rem; color:#0369a1;">
-              <span id="modal-gdrive-message">Backup service ready.</span>
-            </div>
-          </div>
-
-          <!-- Live Log Section -->
-          <div style="margin-bottom:16px;">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-              <label style="font-size:0.78rem; font-weight:700; color:#334155;">Recent Backup Execution Logs (Last 20 Lines):</label>
-              <button type="button" onclick="fetchBackupStatus()" style="background:none; border:none; font-size:0.75rem; color:#0284c7; cursor:pointer; font-weight:600;">🔄 Refresh Logs</button>
-            </div>
-            <pre id="modal-gdrive-logs" style="background:#0f172a; color:#e2e8f0; font-family:Consolas, monospace; font-size:0.74rem; padding:12px; border-radius:6px; max-height:160px; overflow-y:auto; white-space:pre-wrap; margin:0; line-height:1.4;">[Loading backup logs...]</pre>
-          </div>
-
-          <!-- Quick Tip -->
-          <div style="font-size:0.76rem; color:#64748b; margin-bottom:16px; line-height:1.4;">
-            💡 <em>Backups include online zero-lock SQLite snapshots (<code>gpon_survey_data.db</code>), user configs (<code>users_config.json</code>), and custom node hierarchy. Remote retention is set to 30 days.</em>
-          </div>
-
-          <!-- Actions -->
-          <div style="display:flex; justify-content:space-between; align-items:center; border-top:1px solid #e2e8f0; padding-top:14px;">
-            <button type="button" id="btn-trigger-backup-now" onclick="triggerManualBackup()" class="btn" style="background:#0284c7; color:white; font-weight:600; padding:8px 16px; display:inline-flex; align-items:center; gap:6px;">
-              <span id="btn-sync-icon">⚡</span> <span id="btn-sync-label">Sync to Drive Now</span>
-            </button>
-            <button type="button" onclick="closeBackupStatusModal()" class="btn btn-outline" style="padding:8px 18px;">Close</button>
-          </div>
         </div>
       </div>
 
@@ -6667,171 +6372,6 @@ def admin_dashboard(response: Response):
           });
         }
 
-        // ==========================================
-        // GOOGLE DRIVE BACKUP & CLOUD SYNC
-        // ==========================================
-        let isBackupPolling = false;
-        let backupPollTimer = null;
-
-        async function fetchBackupStatus() {
-          const pillDot = document.getElementById('gdrive-status-dot');
-          const pillText = document.getElementById('gdrive-status-text');
-          const modalBadge = document.getElementById('modal-gdrive-badge');
-          const modalLastTime = document.getElementById('modal-gdrive-last-time');
-          const modalRelTime = document.getElementById('modal-gdrive-rel-time');
-          const modalRemote = document.getElementById('modal-gdrive-remote');
-          const modalArchive = document.getElementById('modal-gdrive-archive');
-          const modalSize = document.getElementById('modal-gdrive-size');
-          const modalMessage = document.getElementById('modal-gdrive-message');
-          const modalLogs = document.getElementById('modal-gdrive-logs');
-          const btnSync = document.getElementById('btn-trigger-backup-now');
-          const btnSyncLabel = document.getElementById('btn-sync-label');
-          const btnSyncIcon = document.getElementById('btn-sync-icon');
-
-          try {
-            const res = await authFetch('/api/backup-status');
-            if (!res.ok) {
-              if (pillText) pillText.textContent = 'Drive: Off';
-              return;
-            }
-            const data = await res.json();
-
-            // 1. Update Header Status Pill
-            if (pillDot && pillText) {
-              if (data.is_running || data.status === 'in_progress') {
-                pillDot.style.background = '#0284c7'; // Blue syncing
-                pillText.textContent = 'Drive: Syncing...';
-              } else if (data.status === 'success' && data.uploaded_to_cloud) {
-                pillDot.style.background = '#10b981'; // Green synced
-                pillText.textContent = `Drive: ${data.relative_time}`;
-              } else if (data.status === 'warning' || (data.status === 'success' && !data.uploaded_to_cloud)) {
-                pillDot.style.background = '#f59e0b'; // Amber local only
-                pillText.textContent = 'Drive: Local Only';
-              } else if (data.status === 'failed') {
-                pillDot.style.background = '#ef4444'; // Red failed
-                pillText.textContent = 'Drive: Sync Error';
-              } else {
-                pillDot.style.background = '#94a3b8'; // Grey not configured
-                pillText.textContent = 'Drive: Not Synced';
-              }
-            }
-
-            // 2. Update Modal Fields if Modal exists
-            if (modalBadge) {
-              if (data.is_running || data.status === 'in_progress') {
-                modalBadge.style.background = '#0284c7';
-                modalBadge.textContent = '⏳ Backup & Sync in Progress...';
-              } else if (data.status === 'success' && data.uploaded_to_cloud) {
-                modalBadge.style.background = '#10b981';
-                modalBadge.textContent = '🟢 Synced to Google Drive';
-              } else if (data.status === 'warning' || (data.status === 'success' && !data.uploaded_to_cloud)) {
-                modalBadge.style.background = '#f59e0b';
-                modalBadge.textContent = '🟡 Local Backup Only (Cloud Pending)';
-              } else if (data.status === 'failed') {
-                modalBadge.style.background = '#ef4444';
-                modalBadge.textContent = '🔴 Backup / Sync Failed';
-              } else {
-                modalBadge.style.background = '#64748b';
-                modalBadge.textContent = '⚪ Not Configured Yet';
-              }
-            }
-
-            if (modalLastTime) modalLastTime.textContent = data.readable_time || 'Never';
-            if (modalRelTime) modalRelTime.textContent = data.relative_time ? `(${data.relative_time})` : '';
-            if (modalRemote) modalRemote.textContent = data.remote || 'gdrive:GPON_Backups';
-            if (modalArchive) modalArchive.textContent = data.archive_name || 'None';
-            if (modalSize) modalSize.textContent = data.archive_size || '0 B';
-            if (modalMessage) modalMessage.textContent = data.message || 'Ready.';
-
-            if (modalLogs) {
-              if (data.recent_logs && data.recent_logs.length > 0) {
-                modalLogs.textContent = data.recent_logs.join('\n');
-                modalLogs.scrollTop = modalLogs.scrollHeight;
-              } else {
-                modalLogs.textContent = '[No backup logs recorded yet]';
-              }
-            }
-
-            // 3. Handle Sync Button State & Permissions
-            if (btnSync && btnSyncLabel && btnSyncIcon) {
-              if (currentAdmin && currentAdmin.role === 'rcsm') {
-                btnSync.disabled = true;
-                btnSync.style.opacity = '0.5';
-                btnSync.style.cursor = 'not-allowed';
-                btnSyncLabel.textContent = 'Admin Access Required';
-              } else if (data.is_running || data.status === 'in_progress') {
-                btnSync.disabled = true;
-                btnSync.style.opacity = '0.7';
-                btnSync.style.cursor = 'not-allowed';
-                btnSyncIcon.textContent = '⏳';
-                btnSyncLabel.textContent = 'Syncing...';
-              } else {
-                btnSync.disabled = false;
-                btnSync.style.opacity = '1';
-                btnSync.style.cursor = 'pointer';
-                btnSyncIcon.textContent = '⚡';
-                btnSyncLabel.textContent = 'Sync to Drive Now';
-              }
-            }
-
-            // If backup was in progress, poll every 2s until completion
-            if (data.is_running || data.status === 'in_progress') {
-              if (!isBackupPolling) {
-                isBackupPolling = true;
-                clearTimeout(backupPollTimer);
-                backupPollTimer = setTimeout(() => {
-                  isBackupPolling = false;
-                  fetchBackupStatus();
-                }, 2000);
-              }
-            }
-          } catch (err) {
-            console.error('Failed to fetch backup status:', err);
-          }
-        }
-
-        function openBackupStatusModal() {
-          const modal = document.getElementById('gdrive-backup-modal');
-          if (modal) {
-            modal.style.display = 'flex';
-            fetchBackupStatus();
-          }
-        }
-
-        function closeBackupStatusModal() {
-          const modal = document.getElementById('gdrive-backup-modal');
-          if (modal) {
-            modal.style.display = 'none';
-          }
-        }
-
-        async function triggerManualBackup() {
-          const btnSync = document.getElementById('btn-trigger-backup-now');
-          const btnSyncLabel = document.getElementById('btn-sync-label');
-          const btnSyncIcon = document.getElementById('btn-sync-icon');
-
-          if (btnSync) {
-            btnSync.disabled = true;
-            btnSync.style.opacity = '0.7';
-            if (btnSyncIcon) btnSyncIcon.textContent = '⏳';
-            if (btnSyncLabel) btnSyncLabel.textContent = 'Starting Sync...';
-          }
-
-          try {
-            const res = await authFetch('/api/trigger-backup', { method: 'POST' });
-            const data = await res.json();
-            if (!res.ok) {
-              alert(data.detail || 'Failed to start backup.');
-              if (btnSync) btnSync.disabled = false;
-              return;
-            }
-            setTimeout(fetchBackupStatus, 500);
-          } catch (err) {
-            alert('Network error while requesting backup: ' + err.message);
-            if (btnSync) btnSync.disabled = false;
-          }
-        }
-
         async function initAdminData() {
           await fetchHierarchy();
           if (currentAdmin && currentAdmin.role === 'rcsm') {
@@ -6849,11 +6389,8 @@ def admin_dashboard(response: Response):
             updateFeedFilterDropdowns();
             filterAndRenderFeed();
           }
-          if (currentAdmin && (currentAdmin.role === 'super_admin' || currentAdmin.role === 'admin')) {
+          if (currentAdmin && currentAdmin.role === 'super_admin') {
             fetchUsers();
-          }
-          if (currentAdmin && (currentAdmin.role === 'super_admin' || currentAdmin.role === 'admin' || currentAdmin.role === 'rcsm')) {
-            fetchBackupStatus();
           }
         }
 
@@ -6862,14 +6399,13 @@ def admin_dashboard(response: Response):
           initAdminData();
         }
         setInterval(() => {
-          if (currentAdmin && (currentAdmin.role === 'super_admin' || currentAdmin.role === 'admin' || currentAdmin.role === 'rcsm')) {
+          if (currentAdmin && (currentAdmin.role === 'super_admin' || currentAdmin.role === 'rcsm')) {
             const currentTab = document.querySelector('.tab-btn.active');
             if (currentTab && currentTab.id === 'tab-btn-feed') {
               if (selectedFeedRegions.size > 0 && selectedFeedCenters.size > 0) {
                 fetchData();
               }
             }
-            fetchBackupStatus();
           }
         }, 15000);
       </script>
