@@ -49,3 +49,9 @@ desktop.ini
 # Environment and secret files
 .env
 .secret_key
+
+# Backup runtime files & archives
+backup.log
+backup_status.json
+gpon_backups/
+*.tar.gz
