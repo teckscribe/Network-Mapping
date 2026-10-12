@@ -1,6 +1,6 @@
 {
-  "name": "GPON Field Survey & Network Mapping",
-  "short_name": "GPON Survey",
+  "name": "Network Survey",
+  "short_name": "Network Survey",
   "start_url": "./index.html",
   "display": "standalone",
   "background_color": "#0f172a",
