@@ -3216,6 +3216,9 @@ def admin_dashboard(response: Response):
       <meta charset="UTF-8">
       <title>Network Mapping - Admin & Management Portal</title>
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+      <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+      <link rel="shortcut icon" href="/favicon.png">
       <script>
         // Immediate client-side security guard: run before DOM render to prevent FOUC / unauthorized visibility
         (function() {

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'gpon-survey-v67';
+const CACHE_NAME = 'gpon-survey-v68';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
@@ -8,6 +8,10 @@ const ASSETS_TO_CACHE = [
   './manifest.json',
   './icon-192.png',
   './icon-512.png',
+  './icon-maskable-192.png',
+  './icon-maskable-512.png',
+  './apple-touch-icon.png',
+  './favicon.png',
   './vendor/leaflet.js',
   './vendor/leaflet.css',
   './vendor/xlsx.full.min.js',
