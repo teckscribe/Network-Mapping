@@ -3203,6 +3203,21 @@ def get_wiring_report():
         return FileResponse(report_path, media_type="text/html", headers={"Cache-Control": "no-cache"})
     raise HTTPException(status_code=404, detail="Wiring report not found. Run scripts/generate_wiring_report.py first.")
 
+@app.get("/manifest.json")
+def get_pwa_manifest():
+    manifest_path = os.path.join(WEB_APP_DIR, "manifest.json")
+    if os.path.exists(manifest_path):
+        return FileResponse(
+            manifest_path,
+            media_type="application/manifest+json",
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0"
+            }
+        )
+    raise HTTPException(status_code=404, detail="Manifest not found")
+
 # Central Office Web Dashboard
 @app.get("/admin", response_class=HTMLResponse)
 def admin_dashboard(response: Response):

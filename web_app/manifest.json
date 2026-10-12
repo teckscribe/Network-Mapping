@@ -1,4 +1,5 @@
 {
+  "id": "network-survey-app-v2",
   "name": "Network Survey",
   "short_name": "Network Survey",
   "start_url": "./index.html",
