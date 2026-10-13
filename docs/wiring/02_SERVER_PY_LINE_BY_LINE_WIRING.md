@@ -1,7 +1,7 @@
 # Server.py Line-by-Line & Route Wiring Dissection
-*Generated automatically on: 2026-10-13 16:06:14*
+*Generated automatically on: 2026-10-13 16:46:53*
 
-Total lines in `server.py`: **7132** LOC
+Total lines in `server.py`: **7152** LOC
 
 ## 1. Subsystem Functional Blocks (Line-by-Line Breakdown)
 The 6,229 lines of `server.py` are partitioned into 16 mission-critical functional blocks:
@@ -29,48 +29,48 @@ The 6,229 lines of `server.py` are partitioned into 16 mission-critical function
 
 | HTTP Method | Route Path | Line Range | Handler Function | Security & Role Gate | Description |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `POST` | `/api/login` | L985-L1068 | `login()` | `Public / Session` | REST Endpoint |
-| `POST` | `/api/logout` | L1071-L1073 | `api_logout()` | `Public / Session` | Stateless session logout endpoint. |
-| `GET` | `/api/user-profile` | L1076-L1109 | `get_user_profile()` | `require_any_auth` | REST Endpoint |
-| `GET` | `/api/users` | L1112-L1133 | `get_users()` | `require_admin_auth` | REST Endpoint |
-| `POST` | `/api/users` | L1136-L1205 | `create_user()` | `require_admin_auth` | REST Endpoint |
-| `GET` | `/api/download-users-template` | L1208-L1286 | `download_users_template()` | `Public / Session` | Generates an institutional Excel template for bulk user provisioning with access tiers. |
-| `POST` | `/api/upload-users-excel` | L1289-L1443 | `upload_users_excel()` | `require_admin_auth` | Bulk uploads user credentials and access rights from an Excel (.xlsx/.xls) or CSV file. |
-| `POST` | `/api/request-password-reset-otp` | L1540-L1626 | `request_password_reset_otp()` | `Public / Session` | REST Endpoint |
-| `POST` | `/api/test-smtp` | L1629-L1725 | `test_smtp_endpoint()` | `require_super_admin_auth` | REST Endpoint |
-| `POST` | `/api/verify-password-reset-otp` | L1728-L1781 | `verify_password_reset_otp()` | `Public / Session` | REST Endpoint |
-| `POST` | `/api/change-password` | L1784-L1830 | `change_password()` | `require_any_auth` | REST Endpoint |
-| `DELETE` | `/api/users/{username}` | L1833-L1851 | `delete_user()` | `require_admin_auth` | REST Endpoint |
-| `GET` | `/api/config/users` | L1854-L1858 | `export_users_config()` | `require_super_admin_auth` | REST Endpoint |
-| `POST` | `/api/config/users` | L1861-L1873 | `import_users_config()` | `require_super_admin_auth` | REST Endpoint |
-| `GET` | `/api/hierarchy` | L1880-L1898 | `get_hierarchy()` | `Public / Session` | REST Endpoint |
-| `POST` | `/api/upload-hierarchy` | L1901-L1935 | `upload_hierarchy()` | `require_admin_auth` | REST Endpoint |
-| `POST` | `/api/upload-hierarchy-excel` | L1938-L2084 | `upload_hierarchy_excel()` | `require_admin_auth` | REST Endpoint |
-| `POST` | `/api/hierarchy/olt` | L2087-L2139 | `save_or_edit_olt()` | `require_admin_auth` | REST Endpoint |
-| `DELETE` | `/api/hierarchy/olt` | L2142-L2162 | `delete_olt()` | `require_admin_auth` | REST Endpoint |
-| `POST` | `/api/hierarchy/bulk-delete` | L2165-L2189 | `bulk_delete_olts()` | `require_admin_auth` | Delete multiple Nodes at once. Expects {"items": [{"center":..., "rt_room":..., "olt_name":...}, ...]} |
-| `DELETE` | `/api/hierarchy/clear` | L2192-L2194 | `clear_hierarchy()` | `require_super_admin_auth` | REST Endpoint |
-| `DELETE` | `/api/hierarchy/center` | L2197-L2210 | `delete_hierarchy_center()` | `require_super_admin_auth` | REST Endpoint |
-| `GET` | `/api/download-project-ppt` | L2212-L2220 | `download_project_ppt()` | `Public / Session` | REST Endpoint |
-| `GET` | `/api/backup-status` | L2223-L2251 | `get_backup_status()` | `Public / Session` | Decoupled zero-overhead backup status reporter. |
-| `GET` | `/api/download-hierarchy-template` | L2254-L2291 | `download_hierarchy_template()` | `Public / Session` | REST Endpoint |
-| `GET` | `/api/health` | L2298-L2304 | `health_check()` | `Public / Session` | REST Endpoint |
-| `GET` | `/api/surveyed-points` | L2340-L2456 | `get_surveyed_points()` | `require_any_auth` | Returns an index map of all surveyed enclosure/splitter points across the network. |
-| `POST` | `/api/sync` | L2459-L2630 | `sync_records()` | `require_any_auth` | REST Endpoint |
-| `GET` | `/api/records` | L2634-L2697 | `get_all_records()` | `require_management_auth` | REST Endpoint |
-| `PUT` | `/api/records/{client_uuid}` | L2700-L2761 | `update_survey_record()` | `require_admin_auth` | REST Endpoint |
-| `DELETE` | `/api/records/{client_uuid}` | L2764-L2804 | `delete_record()` | `require_any_auth` | REST Endpoint |
-| `POST` | `/api/records/bulk-delete` | L2807-L2830 | `bulk_delete_records()` | `require_any_auth` | REST Endpoint |
-| `POST` | `/api/records/clear-center` | L2833-L2852 | `clear_center_records()` | `require_super_admin_auth` | REST Endpoint |
-| `GET` | `/api/export-excel` | L2855-L2893 | `export_server_excel()` | `require_management_auth` | REST Endpoint |
-| `GET` | `/api/export-center-excel` | L2896-L2981 | `export_center_excel()` | `require_export_auth` | Exports and downloads filtered survey Excel file streamed dynamically in-memory. |
-| `GET` | `/api/export-data-zip` | L2984-L3056 | `export_data_zip()` | `require_management_auth` | Generates and downloads a ZIP archive of all region/center Excel files dynamically in-memory. |
-| `POST` | `/api/upload-survey-excel` | L3059-L3213 | `upload_survey_excel()` | `require_admin_auth` | Imports survey records from an Excel (.xlsx/.xls) or CSV file directly into SQLite in-memory. |
-| `GET` | `/api/data-folders-summary` | L3216-L3298 | `get_data_folders_summary()` | `require_management_auth` | Returns structured summary of region and center survey records with dynamic in-memory exports. |
-| `POST` | `/api/resync-data-folders` | L3301-L3309 | `resync_data_folders()` | `require_admin_auth` | Optimizes server storage and recounts SQLite records. |
-| `GET` | `/docs/wiring` | L3314-L3319 | `get_wiring_report()` | `Public / Session` | Serves the interactive architecture wiring and blast-radius report. |
-| `GET` | `/manifest.json` | L3322-L3334 | `get_pwa_manifest()` | `Public / Session` | REST Endpoint |
-| `GET` | `/admin` | L3338-L7124 | `admin_dashboard()` | `Public / Session` | REST Endpoint |
+| `POST` | `/api/login` | L994-L1077 | `login()` | `Public / Session` | REST Endpoint |
+| `POST` | `/api/logout` | L1080-L1082 | `api_logout()` | `Public / Session` | Stateless session logout endpoint. |
+| `GET` | `/api/user-profile` | L1085-L1118 | `get_user_profile()` | `require_any_auth` | REST Endpoint |
+| `GET` | `/api/users` | L1121-L1142 | `get_users()` | `require_admin_auth` | REST Endpoint |
+| `POST` | `/api/users` | L1145-L1214 | `create_user()` | `require_admin_auth` | REST Endpoint |
+| `GET` | `/api/download-users-template` | L1217-L1295 | `download_users_template()` | `Public / Session` | Generates an institutional Excel template for bulk user provisioning with access tiers. |
+| `POST` | `/api/upload-users-excel` | L1298-L1452 | `upload_users_excel()` | `require_admin_auth` | Bulk uploads user credentials and access rights from an Excel (.xlsx/.xls) or CSV file. |
+| `POST` | `/api/request-password-reset-otp` | L1549-L1635 | `request_password_reset_otp()` | `Public / Session` | REST Endpoint |
+| `POST` | `/api/test-smtp` | L1638-L1734 | `test_smtp_endpoint()` | `require_super_admin_auth` | REST Endpoint |
+| `POST` | `/api/verify-password-reset-otp` | L1737-L1790 | `verify_password_reset_otp()` | `Public / Session` | REST Endpoint |
+| `POST` | `/api/change-password` | L1793-L1839 | `change_password()` | `require_any_auth` | REST Endpoint |
+| `DELETE` | `/api/users/{username}` | L1842-L1860 | `delete_user()` | `require_admin_auth` | REST Endpoint |
+| `GET` | `/api/config/users` | L1863-L1867 | `export_users_config()` | `require_super_admin_auth` | REST Endpoint |
+| `POST` | `/api/config/users` | L1870-L1882 | `import_users_config()` | `require_super_admin_auth` | REST Endpoint |
+| `GET` | `/api/hierarchy` | L1889-L1907 | `get_hierarchy()` | `Public / Session` | REST Endpoint |
+| `POST` | `/api/upload-hierarchy` | L1910-L1944 | `upload_hierarchy()` | `require_admin_auth` | REST Endpoint |
+| `POST` | `/api/upload-hierarchy-excel` | L1947-L2093 | `upload_hierarchy_excel()` | `require_admin_auth` | REST Endpoint |
+| `POST` | `/api/hierarchy/olt` | L2096-L2148 | `save_or_edit_olt()` | `require_admin_auth` | REST Endpoint |
+| `DELETE` | `/api/hierarchy/olt` | L2151-L2171 | `delete_olt()` | `require_admin_auth` | REST Endpoint |
+| `POST` | `/api/hierarchy/bulk-delete` | L2174-L2198 | `bulk_delete_olts()` | `require_admin_auth` | Delete multiple Nodes at once. Expects {"items": [{"center":..., "rt_room":..., "olt_name":...}, ...]} |
+| `DELETE` | `/api/hierarchy/clear` | L2201-L2203 | `clear_hierarchy()` | `require_super_admin_auth` | REST Endpoint |
+| `DELETE` | `/api/hierarchy/center` | L2206-L2219 | `delete_hierarchy_center()` | `require_super_admin_auth` | REST Endpoint |
+| `GET` | `/api/download-project-ppt` | L2221-L2229 | `download_project_ppt()` | `Public / Session` | REST Endpoint |
+| `GET` | `/api/backup-status` | L2232-L2260 | `get_backup_status()` | `Public / Session` | Decoupled zero-overhead backup status reporter. |
+| `GET` | `/api/download-hierarchy-template` | L2263-L2300 | `download_hierarchy_template()` | `Public / Session` | REST Endpoint |
+| `GET` | `/api/health` | L2307-L2313 | `health_check()` | `Public / Session` | REST Endpoint |
+| `GET` | `/api/surveyed-points` | L2349-L2465 | `get_surveyed_points()` | `require_any_auth` | Returns an index map of all surveyed enclosure/splitter points across the network. |
+| `POST` | `/api/sync` | L2468-L2641 | `sync_records()` | `require_any_auth` | REST Endpoint |
+| `GET` | `/api/records` | L2645-L2708 | `get_all_records()` | `require_management_auth` | REST Endpoint |
+| `PUT` | `/api/records/{client_uuid}` | L2711-L2776 | `update_survey_record()` | `require_admin_auth` | REST Endpoint |
+| `DELETE` | `/api/records/{client_uuid}` | L2779-L2819 | `delete_record()` | `require_any_auth` | REST Endpoint |
+| `POST` | `/api/records/bulk-delete` | L2822-L2845 | `bulk_delete_records()` | `require_any_auth` | REST Endpoint |
+| `POST` | `/api/records/clear-center` | L2848-L2867 | `clear_center_records()` | `require_super_admin_auth` | REST Endpoint |
+| `GET` | `/api/export-excel` | L2870-L2908 | `export_server_excel()` | `require_management_auth` | REST Endpoint |
+| `GET` | `/api/export-center-excel` | L2911-L2996 | `export_center_excel()` | `require_export_auth` | Exports and downloads filtered survey Excel file streamed dynamically in-memory. |
+| `GET` | `/api/export-data-zip` | L2999-L3071 | `export_data_zip()` | `require_management_auth` | Generates and downloads a ZIP archive of all region/center Excel files dynamically in-memory. |
+| `POST` | `/api/upload-survey-excel` | L3074-L3233 | `upload_survey_excel()` | `require_admin_auth` | Imports survey records from an Excel (.xlsx/.xls) or CSV file directly into SQLite in-memory. |
+| `GET` | `/api/data-folders-summary` | L3236-L3318 | `get_data_folders_summary()` | `require_management_auth` | Returns structured summary of region and center survey records with dynamic in-memory exports. |
+| `POST` | `/api/resync-data-folders` | L3321-L3329 | `resync_data_folders()` | `require_admin_auth` | Optimizes server storage and recounts SQLite records. |
+| `GET` | `/docs/wiring` | L3334-L3339 | `get_wiring_report()` | `Public / Session` | Serves the interactive architecture wiring and blast-radius report. |
+| `GET` | `/manifest.json` | L3342-L3354 | `get_pwa_manifest()` | `Public / Session` | REST Endpoint |
+| `GET` | `/admin` | L3358-L7144 | `admin_dashboard()` | `Public / Session` | REST Endpoint |
 
 ## 3. SQLite Database Query Registry
 | Line | Target Table | SQL Operation Snippet |
@@ -106,26 +106,26 @@ The 6,229 lines of `server.py` are partitioned into 16 mission-critical function
 | L551 | `users` | `SELECT username, assigned_center FROM users` |
 | L558 | `users` | `UPDATE users SET assigned_center = ? WHERE username = ?` |
 | L668 | `users` | `SELECT role, assigned_region, assigned_center FROM users WHERE LOWER(TRIM(username)) = ...` |
-| L1034 | `users` | `UPDATE users SET password = ? WHERE username = ?` |
-| L1085 | `users` | `SELECT * FROM users WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))` |
-| L1116 | `users` | `SELECT username, full_name, phone, email, assigned_center, assigned_region, role, creat...` |
-| L1168 | `users` | `SELECT password, role FROM users WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))` |
-| L1388 | `users` | `SELECT password, assigned_center, assigned_region, phone, role FROM users WHERE LOWER(T...` |
-| L1603 | `password_reset_otps` | `DELETE FROM password_reset_otps WHERE username = ?` |
-| L1742 | `password_reset_otps` | `SELECT * FROM password_reset_otps WHERE username = ?` |
-| L1750 | `password_reset_otps` | `DELETE FROM password_reset_otps WHERE username = ?` |
-| L1756 | `password_reset_otps` | `DELETE FROM password_reset_otps WHERE username = ?` |
-| L1763 | `password_reset_otps` | `UPDATE password_reset_otps SET attempts = ? WHERE username = ?` |
-| L1770 | `users` | `UPDATE users SET password = ? WHERE LOWER(TRIM(username)) = ?` |
-| L1771 | `password_reset_otps` | `DELETE FROM password_reset_otps WHERE username = ?` |
-| L1804 | `users` | `SELECT * FROM users WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))` |
-| L1825 | `users` | `UPDATE users SET password = ? WHERE username = ?` |
-| L1837 | `users` | `SELECT role FROM users WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))` |
-| L1847 | `users` | `DELETE FROM users WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))` |
-| L2617 | `survey_records` | `SELECT COUNT(*) FROM survey_records` |
-| L2703 | `survey_records` | `SELECT client_uuid, olt_name, port_number, enclosure_number, enclosure_id, splitter_id ...` |
-| L2776 | `survey_records` | `DELETE FROM survey_records WHERE client_uuid = ? OR LOWER(client_uuid) = LOWER(?)` |
-| L2842 | `survey_records` | `DELETE FROM survey_records WHERE LOWER(TRIM(center)) = LOWER(TRIM(?)) AND LOWER(TRIM(re...` |
-| L2844 | `survey_records` | `DELETE FROM survey_records WHERE LOWER(TRIM(center)) = LOWER(TRIM(?))` |
-| L3222 | `survey_records` | `SELECT region, center, COUNT(*) FROM survey_records GROUP BY region, center` |
-| L3306 | `survey_records` | `SELECT COUNT(*) FROM survey_records` |
+| L1043 | `users` | `UPDATE users SET password = ? WHERE username = ?` |
+| L1094 | `users` | `SELECT * FROM users WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))` |
+| L1125 | `users` | `SELECT username, full_name, phone, email, assigned_center, assigned_region, role, creat...` |
+| L1177 | `users` | `SELECT password, role FROM users WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))` |
+| L1397 | `users` | `SELECT password, assigned_center, assigned_region, phone, role FROM users WHERE LOWER(T...` |
+| L1612 | `password_reset_otps` | `DELETE FROM password_reset_otps WHERE username = ?` |
+| L1751 | `password_reset_otps` | `SELECT * FROM password_reset_otps WHERE username = ?` |
+| L1759 | `password_reset_otps` | `DELETE FROM password_reset_otps WHERE username = ?` |
+| L1765 | `password_reset_otps` | `DELETE FROM password_reset_otps WHERE username = ?` |
+| L1772 | `password_reset_otps` | `UPDATE password_reset_otps SET attempts = ? WHERE username = ?` |
+| L1779 | `users` | `UPDATE users SET password = ? WHERE LOWER(TRIM(username)) = ?` |
+| L1780 | `password_reset_otps` | `DELETE FROM password_reset_otps WHERE username = ?` |
+| L1813 | `users` | `SELECT * FROM users WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))` |
+| L1834 | `users` | `UPDATE users SET password = ? WHERE username = ?` |
+| L1846 | `users` | `SELECT role FROM users WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))` |
+| L1856 | `users` | `DELETE FROM users WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))` |
+| L2628 | `survey_records` | `SELECT COUNT(*) FROM survey_records` |
+| L2714 | `survey_records` | `SELECT client_uuid, olt_name, port_number, enclosure_number, enclosure_id, splitter_id ...` |
+| L2791 | `survey_records` | `DELETE FROM survey_records WHERE client_uuid = ? OR LOWER(client_uuid) = LOWER(?)` |
+| L2857 | `survey_records` | `DELETE FROM survey_records WHERE LOWER(TRIM(center)) = LOWER(TRIM(?)) AND LOWER(TRIM(re...` |
+| L2859 | `survey_records` | `DELETE FROM survey_records WHERE LOWER(TRIM(center)) = LOWER(TRIM(?))` |
+| L3242 | `survey_records` | `SELECT region, center, COUNT(*) FROM survey_records GROUP BY region, center` |
+| L3326 | `survey_records` | `SELECT COUNT(*) FROM survey_records` |

@@ -234,11 +234,14 @@
           </div>
         </div>
  
-        <!-- Formula Bar fx (Live Enclosure ID Auto Calculation) -->
-        <div class="gs-formula-bar" style="margin-top: 14px; margin-bottom: 0;">
+        <!-- Formula Bar fx (Live Enclosure ID & Splitter ID Auto Calculation) -->
+        <div class="gs-formula-bar" style="margin-top: 14px; margin-bottom: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
           <span class="gs-fx">fx</span>
           <span style="color:#5f6368; font-size:0.8rem;">Enclosure ID =</span>
           <span class="gs-formula-val" id="enclosure-id-preview">---</span>
+          <span style="color:#cbd5e1; margin: 0 4px;">|</span>
+          <span style="color:#5f6368; font-size:0.8rem;">Splitter ID =</span>
+          <span class="gs-formula-val" id="splitter-id-preview" style="color: #0284c7;">---</span>
         </div>
 
         <!-- ACSO Supervisor Update Mode Banner -->
@@ -476,6 +479,6 @@
   <script src="vendor/leaflet.js"></script>
   <script src="vendor/xlsx.full.min.js"></script>
   <script src="preload_data.js?v=72"></script>
-  <script src="app.js?v=83"></script>
+  <script src="app.js?v=84"></script>
 </body>
 </html>

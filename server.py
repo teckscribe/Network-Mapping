@@ -752,6 +752,15 @@ def build_excel_workbook(rows, title="Survey_Data") -> openpyxl.Workbook:
         cell.border = thin_border
 
     for row_idx, r in enumerate(rows, 3):
+        enc_val = (r['enclosure_id'] or '').strip()
+        spl_val = (r['splitter_id'] or '').strip()
+        formatted_splitter_id = spl_val
+        if spl_val and enc_val:
+            if not spl_val.upper().startswith(enc_val.upper()):
+                formatted_splitter_id = f"{enc_val}{spl_val}"
+            else:
+                formatted_splitter_id = spl_val
+
         vals = [
             r['region'] if r['region'] else 'Thrissur',
             r['center'] or '',
@@ -762,9 +771,9 @@ def build_excel_workbook(rows, title="Survey_Data") -> openpyxl.Workbook:
             r['kseb_post_number'] or '',
             r['landmark'] or '',
             r['enclosure_number'] or '',
-            r['enclosure_id'] or '',
+            enc_val,
             r['lat_long'] or '',
-            r['splitter_id'] or '',
+            formatted_splitter_id,
             r['splitter_ratio'] or '',
             r['customers_connected'] or 0,
             r['splitter_lead_color'] or '',
@@ -2476,6 +2485,8 @@ def sync_records(payload: SyncPayload, session: dict = Depends(require_any_auth)
 
             enc_id = (r.enclosure_id or "").strip()
             spl_id = (r.splitter_id or "").strip()
+            if spl_id and enc_id and spl_id.upper().startswith(enc_id.upper()) and len(spl_id) > len(enc_id):
+                spl_id = spl_id[len(enc_id):].strip()
             lead_color = (r.splitter_lead_color or "").strip()
 
             # Check if this specific enclosure, splitter, AND lead color already exists in database
@@ -2538,7 +2549,7 @@ def sync_records(payload: SyncPayload, session: dict = Depends(require_any_auth)
                 """, (
                     r.client_uuid, r.region, r.center, r.rt_room, r.technology,
                     r.olt_name, r.port_number, r.kseb_post_number, r.landmark,
-                    r.enclosure_number, r.enclosure_id, r.lat_long, r.splitter_id,
+                    r.enclosure_number, r.enclosure_id, r.lat_long, spl_id,
                     r.splitter_ratio, r.customers_connected, r.splitter_lead_color,
                     r.adl_subscriber_id, r.acs_subscriber_id,
                     r.survey_date_time or (r.created_at[:19].replace('T', ' ') if r.created_at else now_str[:19].replace('T', ' ')),
@@ -2575,7 +2586,7 @@ def sync_records(payload: SyncPayload, session: dict = Depends(require_any_auth)
                         r.client_uuid,
                         r.region, r.center, r.rt_room, r.technology,
                         r.olt_name, r.port_number, r.kseb_post_number, r.landmark,
-                        r.enclosure_number, r.enclosure_id, r.lat_long, r.splitter_id,
+                        r.enclosure_number, r.enclosure_id, r.lat_long, spl_id,
                         r.splitter_ratio, r.customers_connected, r.splitter_lead_color,
                         r.adl_subscriber_id, r.acs_subscriber_id,
                         r.survey_date_time or now_str[:19].replace('T', ' '),
@@ -2714,6 +2725,12 @@ def update_survey_record(client_uuid: str, record: UpdateSurveyRecordModel, sess
     if not new_enc_id and olt_name:
         new_enc_id = compute_server_enclosure_id(olt_name, new_port, new_enc_no)
 
+    target_enc = new_enc_id or existing[4]
+    new_spl = record.splitter_id
+    if new_spl and target_enc and new_spl.upper().startswith(target_enc.upper()) and len(new_spl) > len(target_enc):
+        new_spl = new_spl[len(target_enc):].strip()
+    target_spl = new_spl if new_spl is not None else existing[5]
+
     cur.execute("""
         UPDATE survey_records SET
             kseb_post_number = COALESCE(?, kseb_post_number),
@@ -2741,13 +2758,11 @@ def update_survey_record(client_uuid: str, record: UpdateSurveyRecordModel, sess
         record.port_number,
         record.enclosure_number,
         new_enc_id,
-        record.splitter_id,
+        new_spl,
         client_uuid
     ))
 
     # Splitter-level dynamic synchronization: cascade customer count to all existing records of this splitter
-    target_enc = new_enc_id or existing[4]
-    target_spl = record.splitter_id if record.splitter_id is not None else existing[5]
     if record.customers_connected is not None and target_enc and target_spl:
         cur.execute("""
             UPDATE survey_records
@@ -3127,6 +3142,11 @@ async def upload_survey_excel(file: UploadFile = File(...), session: dict = Depe
                 enclosure_id = get_val(row, "enclosureid", "fdbid", "boxid")
                 lat_long = get_val(row, "latlong", "coordinates", "gps", "latlng")
                 splitter_id = get_val(row, "splitterid")
+                if splitter_id and enclosure_id:
+                    s_clean = splitter_id.strip()
+                    e_clean = enclosure_id.strip()
+                    if s_clean.upper().startswith(e_clean.upper()) and len(s_clean) > len(e_clean):
+                        splitter_id = s_clean[len(e_clean):].strip()
                 splitter_ratio = get_val(row, "splitterratio", "ratio")
                 customers_raw = get_val(row, "customersconnected", "cust", "customers", default="0")
                 splitter_color = get_val(row, "splitterout", "splitteroutcolourcode", "splitterleadcolor", "splitteroutcode", "colourcode", "color")

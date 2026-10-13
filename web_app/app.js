@@ -244,19 +244,32 @@ function getColorVariants(color) {
 
 function getLeadKey(eid, spl, color) {
   if (!eid || !spl) return '';
+  const eidUp = eid.trim().toUpperCase();
+  let splUp = spl.trim().toUpperCase();
+  if (splUp.startsWith(eidUp) && splUp.length > eidUp.length) {
+    splUp = splUp.substring(eidUp.length).trim();
+  }
   const c = color ? String(color).trim().toUpperCase() : '';
-  return `${eid}|${spl}|${c}`.toUpperCase();
+  return `${eidUp}|${splUp}|${c}`;
 }
 
 function getSplitterKey(eid, spl) {
   if (!eid || !spl) return '';
-  return `${eid}|${spl}`.toUpperCase();
+  const eidUp = eid.trim().toUpperCase();
+  let splUp = spl.trim().toUpperCase();
+  if (splUp.startsWith(eidUp) && splUp.length > eidUp.length) {
+    splUp = splUp.substring(eidUp.length).trim();
+  }
+  return `${eidUp}|${splUp}`;
 }
 
 function getLeadSurveyedInfo(eid, spl, color) {
   if (!eid || !spl) return null;
   const eidUp = eid.trim().toUpperCase();
-  const splUp = spl.trim().toUpperCase();
+  let splUp = spl.trim().toUpperCase();
+  if (splUp.startsWith(eidUp) && splUp.length > eidUp.length) {
+    splUp = splUp.substring(eidUp.length).trim();
+  }
   const colVariants = getColorVariants(color);
 
   // 1. Check in networkSurveyedPoints
@@ -309,7 +322,10 @@ function getLeadSurveyedInfo(eid, spl, color) {
 function getSplitterSummary(eid, spl) {
   if (!eid || !spl) return null;
   const eidUp = eid.trim().toUpperCase();
-  const splUp = spl.trim().toUpperCase();
+  let splUp = spl.trim().toUpperCase();
+  if (splUp.startsWith(eidUp) && splUp.length > eidUp.length) {
+    splUp = splUp.substring(eidUp.length).trim();
+  }
   const splKey = `${eidUp}|${splUp}`;
 
   const leadsSet = new Set();
@@ -1056,6 +1072,7 @@ const postInput = document.getElementById('post-input');
 const landmarkInput = document.getElementById('landmark-input');
 const enclosureSelect = document.getElementById('enclosure-select');
 const enclosureIdPreview = document.getElementById('enclosure-id-preview');
+const splitterIdPreview = document.getElementById('splitter-id-preview');
 const splitterIdSelect = document.getElementById('splitter-id-select');
 const splitterRatioSelect = document.getElementById('splitter-ratio-select');
 const custCountInput = document.getElementById('cust-count-input');
@@ -1132,17 +1149,27 @@ function escapeHtml(str) {
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
 }
 
-// Update Enclosure ID Preview
+// Update Enclosure ID & Splitter ID Preview
 function updateEnclosureId() {
-  const olt = oltSelect.value;
-  const port = portSelect.value;
-  const enc = enclosureSelect.value;
+  const olt = oltSelect ? oltSelect.value : '';
+  const port = portSelect ? portSelect.value : '';
+  const enc = enclosureSelect ? enclosureSelect.value : '';
   if (!olt || !port || !enc) {
-    enclosureIdPreview.innerText = '---';
+    if (enclosureIdPreview) enclosureIdPreview.innerText = '---';
+    if (splitterIdPreview) splitterIdPreview.innerText = '---';
     return;
   }
   const eid = computeEnclosureId(olt, port, enc);
-  enclosureIdPreview.innerText = eid || '---';
+  if (enclosureIdPreview) enclosureIdPreview.innerText = eid || '---';
+
+  const spl = splitterIdSelect ? splitterIdSelect.value : '';
+  if (splitterIdPreview) {
+    if (eid && spl) {
+      splitterIdPreview.innerText = spl.toUpperCase().startsWith(eid.toUpperCase()) ? spl : `${eid}${spl}`;
+    } else {
+      splitterIdPreview.innerText = '---';
+    }
+  }
 }
 
 function getRegionForCenter(centerName) {
@@ -1863,6 +1890,7 @@ function handleEnclosureChange() {
 
 // Handle Splitter Selection: Auto-fills splitter metadata & triggers color updates
 function handleSplitterSelectionChange() {
+  updateEnclosureId();
   const olt = oltSelect ? oltSelect.value : '';
   const port = portSelect ? portSelect.value : '';
   const enc = enclosureSelect ? enclosureSelect.value : '';
@@ -3005,7 +3033,11 @@ function showSubmitConfirmModal(entry, isAcsoUpdate = false) {
   }
 
   const encId = entry["Enclosure ID"] || '-';
-  const splitInfo = `${entry["Splitter ID"] || '-'} (${entry["Splitter Ratio"] || '-'})`;
+  const rawSpl = entry["Splitter ID"] || '';
+  const displaySplId = (rawSpl && encId && encId !== '-') 
+    ? (rawSpl.toUpperCase().startsWith(encId.toUpperCase()) ? rawSpl : `${encId}${rawSpl}`)
+    : (rawSpl || '-');
+  const splitInfo = `${displaySplId} (${entry["Splitter Ratio"] || '-'})`;
   const portStr = entry["Port Number"] || '-';
   const portLabel = (portStr && portStr.includes(',')) ? 'Ports' : 'Port';
   const nodeInfo = `${entry["OLT/Node  Name"] || '-'} [${portLabel} ${portStr}]`;
@@ -3226,6 +3258,13 @@ async function exportToExcel() {
   ];
 
   localExportRows.forEach(r => {
+    const rawEid = (r["Enclosure ID"] || r.enclosure_id || "").trim();
+    const rawSpl = (r["Splitter ID"] || r.splitter_id || "").trim();
+    let formattedSpl = rawSpl;
+    if (rawSpl && rawEid) {
+      formattedSpl = rawSpl.toUpperCase().startsWith(rawEid.toUpperCase()) ? rawSpl : `${rawEid}${rawSpl}`;
+    }
+
     rows.push([
       r["Region"] || "Thrissur",
       r["Center"] || "",
@@ -3236,9 +3275,9 @@ async function exportToExcel() {
       r["KSEB Post Number"] || "",
       r["Land Mark"] || "",
       r["Enclosure Number"] || "",
-      r["Enclosure ID"] || "",
+      rawEid,
       r["Lat /Long"] || "",
-      r["Splitter ID"] || "",
+      formattedSpl,
       r["Splitter Ratio"] || "",
       r["No: Of Customer Connected"] || 0,
       r["Splitter Out"] || r["Splitter Lead Colour Code"] || r["splitter_lead_color"] || "",
