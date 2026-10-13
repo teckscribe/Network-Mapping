@@ -87,4 +87,9 @@ fi
 # 5. Local cleanup: keep only last 7 days of local archives
 find "$BACKUP_LOCAL_DIR" -type f -name "gpon_backup_*.tar.gz" -mtime +7 -delete 2>/dev/null || true
 
+# 6. Update decoupled backup health status for web server (zero overhead)
+if [ -f "$APP_DIR/scripts/verify_backup_health.py" ]; then
+    python3 "$APP_DIR/scripts/verify_backup_health.py" --update 2>/dev/null || true
+fi
+
 log "=== Backup Finished Successfully ==="
