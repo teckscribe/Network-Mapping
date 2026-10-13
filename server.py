@@ -4567,20 +4567,20 @@ def admin_dashboard(response: Response):
         }
 
         function updateFeedSelectionUI() {
-          const isSuperAdmin = (currentAdmin && currentAdmin.role === 'super_admin');
+          const canManage = (currentAdmin && (currentAdmin.role === 'super_admin' || currentAdmin.role === 'admin'));
           const countEl = document.getElementById('feed-selection-count');
           const btnEl = document.getElementById('btn-feed-delete-selected');
           const masterCb = document.getElementById('feed-select-all-cb');
           const thMaster = document.getElementById('th-feed-select-all');
 
           if (thMaster) {
-            thMaster.style.display = isSuperAdmin ? 'table-cell' : 'none';
+            thMaster.style.display = canManage ? 'table-cell' : 'none';
           }
 
           const selectedCount = selectedFeedRecordUuids.size;
 
           if (countEl && btnEl) {
-            if (isSuperAdmin && selectedCount > 0) {
+            if (canManage && selectedCount > 0) {
               countEl.innerText = `${selectedCount} selected`;
               countEl.style.display = 'inline-block';
               btnEl.style.display = 'inline-block';
@@ -5347,9 +5347,9 @@ def admin_dashboard(response: Response):
         }
 
         function filterAndRenderFeed() {
-          const isSuperAdmin = (currentAdmin && currentAdmin.role === 'super_admin');
+          const canManage = (currentAdmin && (currentAdmin.role === 'super_admin' || currentAdmin.role === 'admin'));
           const thMaster = document.getElementById('th-feed-select-all');
-          if (thMaster) thMaster.style.display = isSuperAdmin ? 'table-cell' : 'none';
+          if (thMaster) thMaster.style.display = canManage ? 'table-cell' : 'none';
 
           if (selectedFeedRegions.size === 0 || selectedFeedCenters.size === 0) {
             selectedFeedRecordUuids.clear();
@@ -5434,7 +5434,7 @@ def admin_dashboard(response: Response):
             
             let checkboxHtml = '';
             let actionHtml = '';
-            if (isSuperAdmin) {
+            if (canManage) {
               const isChecked = selectedFeedRecordUuids.has(String(r.client_uuid));
               checkboxHtml = `<td style="text-align:center; width:36px;">
                 <input type="checkbox" class="feed-record-cb" value="${escapeHtml(r.client_uuid)}" ${isChecked ? 'checked' : ''} onchange="onSingleFeedRecordCheckboxChanged(this)" style="cursor:pointer; width:16px; height:16px;">
@@ -5578,8 +5578,8 @@ def admin_dashboard(response: Response):
         }
 
         async function deleteSurveyRecord(uuid) {
-          if (!currentAdmin || currentAdmin.role !== 'super_admin') {
-            alert('Permission Denied: Only Super Admin can delete records.');
+          if (!currentAdmin || (currentAdmin.role !== 'super_admin' && currentAdmin.role !== 'admin')) {
+            alert('Permission Denied: Only Admin or Super Admin can delete records.');
             return;
           }
           const confirmed = await showConfirmModal(
@@ -5609,8 +5609,8 @@ def admin_dashboard(response: Response):
         }
 
         async function deleteSelectedSurveyRecords() {
-          if (!currentAdmin || currentAdmin.role !== 'super_admin') {
-            alert('Permission Denied: Only Super Admin can delete records.');
+          if (!currentAdmin || (currentAdmin.role !== 'super_admin' && currentAdmin.role !== 'admin')) {
+            alert('Permission Denied: Only Admin or Super Admin can delete records.');
             return;
           }
           const count = selectedFeedRecordUuids.size;
