@@ -2498,6 +2498,7 @@ function captureGPS() {
 
   bestAccuracy = Infinity;
   let sampleCount = 0;
+  let firstFixReceived = false;
 
   const onLocationSuccess = (pos) => {
     sampleCount++;
@@ -2524,7 +2525,7 @@ function captureGPS() {
       } else if (acc <= 25) {
         accBadge = `<span style="color:#d97706; font-weight:600;">🟡 ±${Math.round(acc)}m (Moderate - Adjust on Map)</span>`;
       } else {
-        accBadge = `<span style="color:#dc2626; font-weight:600;">🔴 ±${Math.round(acc)}m (Cell Tower - Fine-tune on Map)</span>`;
+        accBadge = `<span style="color:#dc2626; font-weight:600;">🔴 ±${Math.round(acc)}m (Wi-Fi / Network - Adjust on Map)</span>`;
       }
       gpsAccText.innerHTML = accBadge;
 
@@ -2532,21 +2533,31 @@ function captureGPS() {
       updateMapPosition(currentLat, currentLon, currentAccuracy);
     }
 
-    // Smart Multi-Tier Lock (Option A - 1.5s to 3s Fast Response):
+    // Smart Multi-Tier Lock (Fast on Phones, Reliable on Laptops):
     // Tier 1: Instant Lock if High Precision (<= 6m) achieved immediately (~1s)
     if (acc <= 6.0) {
       finalizeGPS(gpsBtn, `High precision satellite fix locked (±${Math.round(acc)}m)!`);
       return;
     }
-    // Tier 2: Quick Lock if Good GNSS fix (<= 12m) confirmed across 2 samples (~1.5-2s)
+    // Tier 2: Quick Lock if Good GNSS fix (<= 12m) confirmed across 2 samples (~1.5-2s on phone)
     if (acc <= 12.0 && sampleCount >= 2) {
       finalizeGPS(gpsBtn, `Good GNSS fix locked (±${Math.round(acc)}m)!`);
       return;
     }
-    // Tier 3: Convergence Lock after 3+ samples (~2.5-3s) if within 15m
-    if (sampleCount >= 3 && bestAccuracy <= 15.0) {
-      finalizeGPS(gpsBtn, `Location locked (±${Math.round(bestAccuracy)}m)!`);
+    // Tier 3: Laptop / Desktop Wi-Fi location (acc > 20m):
+    // Laptops do not have satellite chips and only fire 1 Wi-Fi reading. Lock immediately!
+    if (acc > 20.0) {
+      finalizeGPS(gpsBtn, `Location locked via Wi-Fi/Network (±${Math.round(acc)}m)`);
       return;
+    }
+
+    // Tier 4: For mid-range mobile GPS (7m - 20m), start a fast 2.5s settle timer once first fix arrives
+    if (!firstFixReceived) {
+      firstFixReceived = true;
+      if (gpsWatchTimer !== null) clearTimeout(gpsWatchTimer);
+      gpsWatchTimer = setTimeout(() => {
+        finalizeGPS(gpsBtn, `Location locked at best accuracy (±${Math.round(bestAccuracy)}m)`);
+      }, 2500);
     }
   };
 
@@ -2554,7 +2565,7 @@ function captureGPS() {
     if (currentLat === null) {
       manualCoordsInput.placeholder = 'GPS unavailable - enter manually or tap map';
       gpsAccText.innerHTML = `<span style="color:#dc2626; font-weight:600;">⚠️ ${err.message || 'Signal lost'}</span>`;
-      showToast('GPS signal weak or unavailable. Tap map to select pole.', false);
+      showToast(err.code === 1 ? '⚠️ Location permission denied in browser.' : 'GPS signal weak or unavailable. Tap map to select pole.', false);
     }
     finalizeGPS(gpsBtn);
   };
@@ -2577,16 +2588,17 @@ function captureGPS() {
     });
   }
 
-  // Settle time limit: After 3.5 seconds, lock the best fix obtained so far (Option A)
+  // Initial acquisition timeout: Give up to 10 seconds to receive the VERY FIRST fix (essential for laptops using Wi-Fi positioning)
   gpsWatchTimer = setTimeout(() => {
-    if (bestAccuracy <= 25.0) {
-      finalizeGPS(gpsBtn, `GPS locked at best available accuracy (±${Math.round(bestAccuracy)}m)`);
-    } else if (currentLat !== null) {
-      finalizeGPS(gpsBtn, `GPS fix acquired (±${Math.round(bestAccuracy)}m) - fine-tune on map if needed`);
+    if (currentLat !== null) {
+      finalizeGPS(gpsBtn, `Location locked (±${Math.round(bestAccuracy)}m)`);
     } else {
+      manualCoordsInput.placeholder = 'GPS unavailable - enter manually or tap map';
+      gpsAccText.innerHTML = `<span style="color:#dc2626; font-weight:600;">⚠️ Location timeout - enter or tap map</span>`;
+      showToast('⚠️ No location signal received within 10s. Tap map or enter manually.', false);
       finalizeGPS(gpsBtn);
     }
-  }, 3500);
+  }, 10000);
 }
 
 function finalizeGPS(btn, successMsg = null) {
