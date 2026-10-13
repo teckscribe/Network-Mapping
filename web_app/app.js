@@ -1795,9 +1795,13 @@ function handleEnclosureChange() {
         }
       }
     } else {
-      // New / unmapped enclosure: Keep user-entered KSEB pole number, landmark, and GPS coordinates intact!
-      // Do not wipe fields if surveyor already typed the post number or captured GPS for this site.
+      // New / unmapped enclosure: Clear pole-specific fields (KSEB post number & GPS coordinates) to null
+      // so surveyor enters the fresh pole number and captures new GPS coordinates for this enclosure
+      resetPoleFields(true);
     }
+  } else {
+    // No enclosure selected: Reset pole fields to empty
+    resetPoleFields(true);
   }
 
   updateEnclosureId();
@@ -2205,7 +2209,7 @@ function selectSinglePort(portValue, event) {
 
   const selectedArray = portValue ? [portValue] : [];
   if (enclosureSelect) enclosureSelect.value = '';
-  resetPoleFields(false);
+  resetPoleFields(true);
   clearCustomerInputs();
   syncPortSelection(selectedArray);
 
@@ -2239,7 +2243,7 @@ function getSelectedPortsArray() {
 function updateSelectedPortsFromCheckboxes() {
   const selected = getSelectedPortsArray();
   if (enclosureSelect) enclosureSelect.value = '';
-  resetPoleFields(false);
+  resetPoleFields(true);
   clearCustomerInputs();
   syncPortSelection(selected);
 }
@@ -2445,7 +2449,7 @@ oltSelect.addEventListener('change', () => {
 if (oltTypeSelect) oltTypeSelect.addEventListener('change', onOLTTypeChange);
 if (portSelect) portSelect.addEventListener('change', () => {
   if (enclosureSelect) enclosureSelect.value = '';
-  resetPoleFields(false);
+  resetPoleFields(true);
   clearCustomerInputs();
   updateAvailableEnclosures();
   updateAvailableSplitters();
