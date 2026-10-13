@@ -1,5 +1,5 @@
 # Web App (app.js) Frontend Engine Wiring Dissection
-*Generated automatically on: 2026-10-13 13:13:14*
+*Generated automatically on: 2026-10-13 13:16:51*
 
 Total lines in `web_app/app.js`: **4094** LOC
 
@@ -32,12 +32,12 @@ The 3,960 lines of `web_app/app.js` are partitioned into 17 high-reliability cli
 | :--- | :--- | :--- | :--- | :--- |
 | L424 | `GET` | `${serverUrl}/api/surveyed-points${query}` | REST Client | Network communication with central server |
 | L631 | `POST` | `${serverUrl}/api/login` | REST Client | Network communication with central server |
-| L785 | `POST` | `${serverUrl}/api/logout` | REST Client | Network communication with central server |
-| L900 | `POST` | `${serverUrl}/api/request-password-reset-otp` | REST Client | Network communication with central server |
-| L941 | `POST` | `${serverUrl}/api/request-password-reset-otp` | REST Client | Network communication with central server |
-| L1001 | `POST` | `${serverUrl}/api/verify-password-reset-otp` | REST Client | Network communication with central server |
-| L3639 | `POST` | `${serverUrl}/api/records/bulk-delete` | REST Client | Network communication with central server |
-| L3669 | `GET` | `${serverUrl}/api/health` | REST Client | Network communication with central server |
+| L784 | `POST` | `${serverUrl}/api/logout` | REST Client | Network communication with central server |
+| L899 | `POST` | `${serverUrl}/api/request-password-reset-otp` | REST Client | Network communication with central server |
+| L940 | `POST` | `${serverUrl}/api/request-password-reset-otp` | REST Client | Network communication with central server |
+| L1000 | `POST` | `${serverUrl}/api/verify-password-reset-otp` | REST Client | Network communication with central server |
+| L3638 | `POST` | `${serverUrl}/api/records/bulk-delete` | REST Client | Network communication with central server |
+| L3668 | `GET` | `${serverUrl}/api/health` | REST Client | Network communication with central server |
 | L3700 | `GET` | `${serverUrl}/api/hierarchy` | REST Client | Network communication with central server |
 | L3724 | `GET` | `${serverUrl}/api/user-profile` | REST Client | Network communication with central server |
 | L3755 | `POST` | `${serverUrl}/api/upload-hierarchy` | REST Client | Network communication with central server |

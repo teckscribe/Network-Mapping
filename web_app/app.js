@@ -753,9 +753,8 @@ function setCurrentUser(user) {
   updateUserBar();
   initDropdowns();
   fetchSurveyedPoints();
-  if (!DEFAULT_PRELOAD.hierarchy || Object.keys(DEFAULT_PRELOAD.hierarchy).length === 0) {
-    fetchHierarchyFromServer();
-  }
+  // Always pull the latest hierarchy after login (no-op re-render if unchanged)
+  fetchHierarchyFromServer();
 }
 
 async function logout() {
@@ -3673,7 +3672,8 @@ async function checkServerConnection() {
       fetchSurveyedPoints();
       const data = await res.json().catch(() => null);
       if (data && data.hierarchy_version) {
-        if (data.hierarchy_version !== lastKnownHierarchyVersion || !DEFAULT_PRELOAD.hierarchy || Object.keys(DEFAULT_PRELOAD.hierarchy).length === 0) {
+        // Only record the version as "known" when logged in, because fetchHierarchyFromServer() is auth-guarded
+        if (currentUser && (data.hierarchy_version !== lastKnownHierarchyVersion || !DEFAULT_PRELOAD.hierarchy || Object.keys(DEFAULT_PRELOAD.hierarchy).length === 0)) {
           lastKnownHierarchyVersion = data.hierarchy_version;
           localStorage.setItem('gpon_hierarchy_version', String(data.hierarchy_version));
           fetchHierarchyFromServer();
