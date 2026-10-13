@@ -377,14 +377,6 @@ function getSplitterSummary(eid, spl) {
   };
 }
 
-function getSurveyedInfo(eid, spl, color = '') {
-  if (!eid || !spl) return null;
-  if (color) {
-    return getLeadSurveyedInfo(eid, spl, color);
-  }
-  return getSplitterSummary(eid, spl) || getLeadSurveyedInfo(eid, spl, '');
-}
-
 function getSurveyedSplittersForEnclosure(eid) {
   const surveyed = new Set();
   const eidUpper = (eid || '').toUpperCase();
@@ -732,12 +724,6 @@ async function handleLogin(e) {
       setLoginError('⚠️ <strong>Unable to connect to server.</strong><br><span style="font-size: 0.78rem;">Please check your mobile data / Wi-Fi or verify credentials.</span>');
     }
   }
-}
-
-function quickLogin(u, p) {
-  document.getElementById('login-username').value = u;
-  document.getElementById('login-password').value = p;
-  handleLogin();
 }
 
 function setCurrentUser(user) {
@@ -1953,54 +1939,6 @@ function handleColorSelectionChange() {
   }
 }
 
-function populateFieldsFromExistingRecord(info) {
-  if (!info) return;
-  if (postInput && !postInput.value.trim()) {
-    postInput.value = info.kseb_post_number || info["KSEB Post Number"] || '';
-  }
-  if (landmarkInput && !landmarkInput.value.trim()) {
-    landmarkInput.value = info.landmark || info["Land Mark"] || '';
-  }
-  if (custCountInput) {
-    custCountInput.value = (info.customers_connected !== undefined ? info.customers_connected : info["No: Of Customer Connected"]) || 0;
-  }
-  const ratio = info.splitter_ratio || info["Splitter Ratio"];
-  if (ratio && splitterRatioSelect && !splitterRatioSelect.value) {
-    splitterRatioSelect.value = ratio;
-    updateSplitterColorOptions();
-  }
-
-  const color = info.splitter_lead_color || info["Splitter Lead Colour Code"];
-  if (color && splitterColorSelect) {
-    splitterColorSelect.value = color;
-  }
-
-  updateSubscriberInputsState();
-
-  if (adlSubInput) {
-    adlSubInput.value = info.adl_subscriber_id || info["ADL Subscriber ID"] || '';
-  }
-  if (acsSubInput) {
-    acsSubInput.value = info.acs_subscriber_id || info["ACS Subscriber ID"] || '';
-  }
-
-  const coords = info.lat_long || info["Lat /Long"];
-  if (coords && coords.includes(',') && (!currentLat || !currentLon)) {
-    if (manualCoordsInput) manualCoordsInput.value = coords;
-    const parts = coords.split(',').map(s => parseFloat(s.trim()));
-    if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
-      currentLat = parts[0];
-      currentLon = parts[1];
-      if (gpsAccText) {
-        gpsAccText.innerHTML = `<span style="color:#0284c7; font-weight:600;">📍 Existing Survey Coords (${coords})</span>`;
-      }
-      if (mapInstance && typeof L !== 'undefined') {
-        renderMapMarker(currentLat, currentLon, 10);
-      }
-    }
-  }
-}
-
 
 function onCenterChange(targetRt = null, targetOlt = null) {
   const c = centerSelect.value;
@@ -2248,37 +2186,6 @@ function selectSinglePort(portValue, event) {
   setTimeout(closePortDropdown, 120);
 }
 
-function onPortCheckboxChange(checkbox, event) {
-  selectSinglePort(checkbox ? checkbox.value : '', event);
-}
-
-function selectAllPorts(selectAll) {
-  if (!selectAll) {
-    selectSinglePort('');
-  }
-}
-
-function getSelectedPortsArray() {
-  const grid = document.getElementById('port-checkbox-grid');
-  if (!grid) return [];
-  const checked = grid.querySelectorAll('input[type="checkbox"]:checked');
-  const vals = Array.from(checked).map(cb => cb.value);
-  vals.sort((a, b) => {
-    const numA = parseInt(a.replace(/\D/g, ''), 10) || 0;
-    const numB = parseInt(b.replace(/\D/g, ''), 10) || 0;
-    return numA - numB;
-  });
-  return vals;
-}
-
-function updateSelectedPortsFromCheckboxes() {
-  const selected = getSelectedPortsArray();
-  if (enclosureSelect) enclosureSelect.value = '';
-  resetPoleFields(true);
-  clearCustomerInputs();
-  syncPortSelection(selected);
-}
-
 function syncPortSelection(selected) {
   const labelEl = document.getElementById('port-picker-label');
   const badgeEl = document.getElementById('selected-ports-count-badge');
@@ -2317,24 +2224,6 @@ function syncPortSelection(selected) {
   updateEnclosureId();
 }
 
-function setSelectedPorts(portsArray) {
-  const grid = document.getElementById('port-checkbox-grid');
-  if (!grid) return;
-  const ports = Array.isArray(portsArray) ? portsArray : (portsArray ? [portsArray] : []);
-  const targetPort = ports[0] || '';
-  grid.querySelectorAll('.port-checkbox-tile').forEach(tile => {
-    const cb = tile.querySelector('input[type="checkbox"]');
-    const isTarget = (tile.dataset.port === targetPort && targetPort !== '');
-    if (cb) cb.checked = isTarget;
-    if (isTarget || (!targetPort && tile.classList.contains('port-reset-tile'))) {
-      tile.classList.add('checked');
-    } else {
-      tile.classList.remove('checked');
-    }
-  });
-  syncPortSelection(targetPort ? [targetPort] : []);
-}
-
 function onOLTTypeChange() {
   const c = centerSelect ? centerSelect.value : '';
   const rt = rtRoomSelect ? rtRoomSelect.value : '';
@@ -2363,98 +2252,6 @@ function onOLTTypeChange() {
   } else {
     renderPortCheckboxes([]);
   }
-}
-
-// Excel Hierarchy Upload (Center, RT Room, Technology, OLT/Node Name)
-function handleExcelHierarchyUpload(e) {
-  const file = e.target.files[0];
-  if (!file) return;
-
-  const reader = new FileReader();
-  reader.onload = function(evt) {
-    try {
-      const data = evt.target.result;
-      const workbook = XLSX.read(data, { type: 'binary' });
-
-      let importedOlts = 0;
-      const importedCenters = new Set();
-      const newHierarchy = {};
-
-      workbook.SheetNames.forEach(sheetName => {
-        const sheet = workbook.Sheets[sheetName];
-        const jsonRows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-
-        jsonRows.forEach(row => {
-          const normRow = {};
-          Object.keys(row).forEach(k => {
-            const cleanKey = k.toLowerCase().replace(/[^a-z0-9]/g, '');
-            normRow[cleanKey] = String(row[k]).trim();
-          });
-
-          const region = normRow['region'] || normRow['district'] || 'Thrissur';
-          const center = normRow['center'] || normRow['regioncenter'] || normRow['centre'] || '';
-          const rtRoom = normRow['rtroom'] || normRow['room'] || 'Main RT';
-          const tech = normRow['gponftthwdm'] || normRow['tech'] || normRow['technology'] || 'GPON';
-          let olt = normRow['oltnodename'] || normRow['oltname'] || normRow['olt'] || '';
-          if (!olt) {
-            const ipVal = normRow['deviceip'] || normRow['ip'] || normRow['ipaddress'] || '';
-            if (ipVal) olt = ipVal.toLowerCase().startsWith('olt') ? ipVal : `OLT (${ipVal})`;
-          }
-
-          if (center && olt && center.toLowerCase() !== 'center' && !olt.toLowerCase().includes('olt/node')) {
-            importedCenters.add(center);
-
-            if (!newHierarchy[center]) newHierarchy[center] = {};
-            if (!newHierarchy[center][rtRoom]) newHierarchy[center][rtRoom] = {};
-
-            const oType = normRow['olttype'] || normRow['type'] || '8 P';
-            let portCount = 8;
-            if (oType.includes('16')) portCount = 16;
-            else if (oType.includes('32')) portCount = 32;
-
-            // Deduplicate across each RT room case-insensitively
-            let targetKey = olt;
-            for (const existKey of Object.keys(newHierarchy[center][rtRoom])) {
-              if (existKey.toLowerCase().trim() === olt.toLowerCase().trim()) {
-                targetKey = existKey;
-                break;
-              }
-            }
-
-            if (targetKey === olt && !newHierarchy[center][rtRoom][targetKey]) {
-              importedOlts++;
-            }
-
-            newHierarchy[center][rtRoom][targetKey] = {
-              region,
-              tech,
-              olt_type: oType,
-              ports: Array.from({ length: portCount }, (_, i) => `P${i + 1}`)
-            };
-          }
-        });
-      });
-
-      if (importedOlts > 0) {
-        Object.keys(newHierarchy).forEach(c => {
-          if (!DEFAULT_PRELOAD.hierarchy[c]) DEFAULT_PRELOAD.hierarchy[c] = {};
-          Object.assign(DEFAULT_PRELOAD.hierarchy[c], newHierarchy[c]);
-        });
-
-        localStorage.setItem('gpon_custom_hierarchy', JSON.stringify(DEFAULT_PRELOAD.hierarchy));
-        initDropdowns();
-        showToast(`🎉 Imported ${importedOlts} OLTs across ${importedCenters.size} Centers from Excel!`);
-        syncHierarchyToServer(DEFAULT_PRELOAD.hierarchy);
-      } else {
-        showToast('No matching Center and OLT columns found in uploaded Excel.', false);
-      }
-    } catch (err) {
-      console.error(err);
-      showToast('Error reading Excel file: ' + err.message, false);
-    }
-  };
-  reader.readAsBinaryString(file);
-  e.target.value = '';
 }
 
 // Event Listeners for Cascading
@@ -3382,49 +3179,6 @@ async function exportToExcel() {
   showToast(`Offline Excel exported for ${targetCenter}!`);
 }
 
-// Records Modal Management
-function openRecordsModal() {
-  const modal = document.getElementById('records-modal');
-  const container = document.getElementById('records-list-container');
-  if (!modal || !container) {
-    console.warn('Records modal element not found in DOM');
-    return;
-  }
-  container.innerHTML = '';
-
-  if (records.length === 0) {
-    container.innerHTML = '<p style="text-align:center; color:#94a3b8; padding:20px;">No survey points saved yet.</p>';
-  } else {
-    records.slice().reverse().forEach((r, idx) => {
-      const realIndex = records.length - 1 - idx;
-      const isSynced = r.sync_status === 'synced';
-      const syncBadge = isSynced 
-        ? '<span style="color:#10b981; font-weight:bold; font-size:0.75rem;">[Synced ✓]</span>' 
-        : '<span style="color:#f59e0b; font-weight:bold; font-size:0.75rem;">[Pending Sync ⏳]</span>';
-      const oltDisplay = r["OLT/Node  Name"] || r["OLT/Node Name"] || r.olt_name || '';
-
-      const item = document.createElement('div');
-      item.className = 'record-item';
-      item.innerHTML = `
-        <div class="record-item-main">
-          <div class="record-title">${escapeHtml(r["Enclosure ID"])} — ${escapeHtml(r["KSEB Post Number"])} ${syncBadge}</div>
-          <div class="record-sub">${escapeHtml(oltDisplay)} | Port: ${escapeHtml(r["Port Number"])} | Ratio: ${escapeHtml(r["Splitter Ratio"])}</div>
-          <div class="record-sub">GPS: ${escapeHtml(r["Lat /Long"]) || 'No GPS'} | Cust: ${r["No: Of Customer Connected"]}</div>
-        </div>
-        <button class="record-del" onclick="deleteRecord(${realIndex})">✕</button>
-      `;
-      container.appendChild(item);
-    });
-  }
-
-  modal.style.display = 'block';
-}
-
-function closeRecordsModal() {
-  const modal = document.getElementById('records-modal');
-  if (modal) modal.style.display = 'none';
-}
-
 let pendingDeleteIndex = null;
 
 function deleteRecord(index) {
@@ -3552,12 +3306,6 @@ async function executeDeleteRecord(index) {
     updateSyncUI();
     updateAvailableEnclosures();
     updateAvailableSplitters();
-
-    // If records modal was open, refresh it
-    const recModal = document.getElementById('records-modal');
-    if (recModal && recModal.style.display === 'block') {
-      openRecordsModal();
-    }
   } catch (err) {
     console.error('Error during local record deletion:', err);
   }
@@ -3609,51 +3357,6 @@ async function executeDeleteRecord(index) {
       }
     }
     showToast('✓ Record deleted locally (will delete from server when connected)');
-  }
-}
-
-async function clearAllRecords() {
-  if (records.length === 0) return;
-  if (!confirm(`Are you sure you want to permanently delete all ${records.length} records from both this device AND the server? This cannot be undone.`)) {
-    return;
-  }
-  
-  const allUuids = records.map(r => r.client_uuid).filter(Boolean);
-  records = [];
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
-  if (typeof networkSurveyedPoints !== 'undefined') {
-    networkSurveyedPoints = {};
-  }
-  updateRecordsBadge();
-  updateSyncUI();
-  updateAvailableEnclosures();
-  updateAvailableSplitters();
-  closeRecordsModal();
-
-  if (allUuids.length > 0) {
-    try {
-      const authToken = localStorage.getItem('gpon_auth_token') || '';
-      const delHeaders = { 'Content-Type': 'application/json' };
-      if (authToken) delHeaders['Authorization'] = 'Bearer ' + authToken;
-      await fetch(`${serverUrl}/api/records/bulk-delete`, {
-        method: 'POST',
-        headers: delHeaders,
-        body: JSON.stringify({ uuids: allUuids })
-      });
-      showToast('All records permanently deleted from device and server');
-    } catch (e) {
-      let pendingDeletions = [];
-      try {
-        pendingDeletions = JSON.parse(localStorage.getItem('gpon_pending_deletions') || '[]');
-      } catch(err) { pendingDeletions = []; }
-      allUuids.forEach(u => {
-        if (!pendingDeletions.includes(u)) pendingDeletions.push(u);
-      });
-      localStorage.setItem('gpon_pending_deletions', JSON.stringify(pendingDeletions));
-      showToast('All records cleared locally (server will sync deletions)');
-    }
-  } else {
-    showToast('All records cleared');
   }
 }
 
@@ -3743,27 +3446,6 @@ async function refreshCurrentUserProfile() {
     }
   } catch (e) {
     // Offline or server unreachable
-  }
-}
-
-async function syncHierarchyToServer(hierarchy) {
-  try {
-    const token = localStorage.getItem('gpon_auth_token') || '';
-    const headers = { 'Content-Type': 'application/json' };
-    if (token) headers['Authorization'] = 'Bearer ' + token;
-
-    const res = await fetch(`${serverUrl}/api/upload-hierarchy`, {
-      method: 'POST',
-      headers: headers,
-      body: JSON.stringify({ hierarchy: hierarchy })
-    });
-    if (res.ok) {
-      console.log('Hierarchy synced to server successfully');
-    } else {
-      console.warn('Hierarchy sync returned error:', res.status);
-    }
-  } catch (e) {
-    console.log('Server not reachable for hierarchy upload sync');
   }
 }
 
@@ -3980,18 +3662,6 @@ async function triggerManualSync() {
   await checkServerConnection();
   refreshCurrentUserProfile();
   syncWithServer(false);
-}
-
-function configureServerUrl() {
-  const current = localStorage.getItem('gpon_server_url') || serverUrl;
-  const input = prompt('Enter Ubuntu Server Address (e.g. http://192.168.1.100:9001 or Cloudflare Tunnel URL):', current);
-  if (input !== null && input.trim() !== '') {
-    serverUrl = input.trim().replace(/\/+$/, '');
-    localStorage.setItem('gpon_server_url', serverUrl);
-    showToast('Server address updated!');
-    checkServerConnection();
-    syncWithServer(false);
-  }
 }
 
 // Register Service Worker for Offline PWA

@@ -7,7 +7,6 @@ import os
 import sqlite3
 import datetime
 import time
-import random
 import secrets
 import hashlib
 import hmac
@@ -15,7 +14,6 @@ import base64
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-import socket
 import io
 import json
 import re
@@ -1429,12 +1427,12 @@ def send_otp_email(to_email: str, recipient_name: str, otp_code: str) -> tuple[b
     tls = conf["tls"]
 
     if not host or not user:
-        print(f"\n=======================================================")
-        print(f"[OTP DISPATCH (SIMULATION / LOG MODE)]")
+        print("\n=======================================================")
+        print("[OTP DISPATCH (SIMULATION / LOG MODE)]")
         print(f"Recipient: {recipient_name} <{to_email}>")
         print(f"OTP Code:  {otp_code} (Valid for 10 minutes)")
-        print(f"Notice: SMTP_HOST/SMTP_USER not set in .env. Logged for testing.")
-        print(f"=======================================================\n")
+        print("Notice: SMTP_HOST/SMTP_USER not set in .env. Logged for testing.")
+        print("=======================================================\n")
         return True, "Simulation mode (logged to console)"
 
     try:
@@ -2589,7 +2587,6 @@ def get_all_records(
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
-    user_role = session.get("role", "")
     username = session.get("username", "")
 
     raw_centers = centers or center or ""
