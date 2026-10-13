@@ -487,6 +487,33 @@ def init_db():
     cur.execute("CREATE INDEX IF NOT EXISTS idx_records_enclosure ON survey_records(enclosure_id)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_records_enc_spl ON survey_records(enclosure_id, splitter_id)")
 
+    # Harmonize existing historical records: unify customer counts across the same physical splitter to highest/latest count
+    try:
+        cur.execute("""
+            UPDATE survey_records
+            SET customers_connected = (
+                SELECT MAX(s2.customers_connected)
+                FROM survey_records s2
+                WHERE UPPER(TRIM(s2.enclosure_id)) = UPPER(TRIM(survey_records.enclosure_id))
+                  AND UPPER(TRIM(s2.splitter_id)) = UPPER(TRIM(survey_records.splitter_id))
+                  AND s2.customers_connected IS NOT NULL
+            )
+            WHERE enclosure_id IS NOT NULL 
+              AND splitter_id IS NOT NULL
+              AND TRIM(enclosure_id) != ''
+              AND TRIM(splitter_id) != ''
+              AND EXISTS (
+                SELECT 1 FROM survey_records s3
+                WHERE UPPER(TRIM(s3.enclosure_id)) = UPPER(TRIM(survey_records.enclosure_id))
+                  AND UPPER(TRIM(s3.splitter_id)) = UPPER(TRIM(survey_records.splitter_id))
+                  AND s3.customers_connected IS NOT NULL
+                  AND (survey_records.customers_connected IS NULL OR s3.customers_connected > survey_records.customers_connected)
+              );
+        """)
+        conn.commit()
+    except Exception as e:
+        logger.warning(f"Historical splitter customer count harmonization skipped: {e}")
+
     # 1. Sync from persistent users_config.json if it exists
     load_users_from_json(conn)
 
