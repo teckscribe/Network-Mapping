@@ -2158,47 +2158,69 @@ function renderPortCheckboxes(ports, selectedPorts = []) {
     return;
   }
 
+  // 1. Top default option: -- Select Port -- (matches Enclosure's -- Select Enclosure --)
+  const isNoneSelected = (!selectedPorts || selectedPorts.length === 0);
+  const resetTile = document.createElement('div');
+  resetTile.className = 'port-checkbox-tile port-reset-tile' + (isNoneSelected ? ' checked' : '');
+  resetTile.innerHTML = `<span style="color:#64748b; font-style:italic;">-- Select Port --</span>`;
+  resetTile.addEventListener('click', (e) => selectSinglePort('', e));
+  grid.appendChild(resetTile);
+
+  // 2. Continuous one-by-one port list with tick box
   currentAvailablePorts.forEach(p => {
     const isChecked = selectedPorts.includes(p);
-    const tile = document.createElement('label');
+    const tile = document.createElement('div');
     tile.className = 'port-checkbox-tile' + (isChecked ? ' checked' : '');
     tile.dataset.port = p;
     tile.innerHTML = `
-      <input type="checkbox" value="${escapeHtml(p)}" ${isChecked ? 'checked' : ''} onchange="onPortCheckboxChange(this, event)">
+      <input type="checkbox" value="${escapeHtml(p)}" ${isChecked ? 'checked' : ''} tabindex="-1" style="pointer-events:none;">
       <span>${escapeHtml(p)}</span>
     `;
+    tile.addEventListener('click', (e) => selectSinglePort(p, e));
     grid.appendChild(tile);
   });
 
   syncPortSelection(selectedPorts);
 }
 
-function onPortCheckboxChange(checkbox, event) {
-  if (event) event.stopPropagation();
-  const tile = checkbox.closest('.port-checkbox-tile');
-  if (tile) {
-    if (checkbox.checked) {
-      tile.classList.add('checked');
-    } else {
-      tile.classList.remove('checked');
-    }
+function selectSinglePort(portValue, event) {
+  if (event) {
+    event.stopPropagation();
+    event.preventDefault();
   }
-  updateSelectedPortsFromCheckboxes();
+
+  const grid = document.getElementById('port-checkbox-grid');
+  if (grid) {
+    grid.querySelectorAll('.port-checkbox-tile').forEach(tile => {
+      const cb = tile.querySelector('input[type="checkbox"]');
+      const isTarget = (tile.dataset.port === portValue && portValue !== '');
+      if (cb) cb.checked = isTarget;
+      if (isTarget || (!portValue && tile.classList.contains('port-reset-tile'))) {
+        tile.classList.add('checked');
+      } else {
+        tile.classList.remove('checked');
+      }
+    });
+  }
+
+  const selectedArray = portValue ? [portValue] : [];
+  if (enclosureSelect) enclosureSelect.value = '';
+  resetPoleFields(false);
+  clearCustomerInputs();
+  syncPortSelection(selectedArray);
+
+  // Automatically close dropdown window immediately upon selection (matching Enclosure behavior)
+  setTimeout(closePortDropdown, 120);
+}
+
+function onPortCheckboxChange(checkbox, event) {
+  selectSinglePort(checkbox ? checkbox.value : '', event);
 }
 
 function selectAllPorts(selectAll) {
-  const grid = document.getElementById('port-checkbox-grid');
-  if (!grid) return;
-  const checkboxes = grid.querySelectorAll('input[type="checkbox"]');
-  checkboxes.forEach(cb => {
-    cb.checked = !!selectAll;
-    const tile = cb.closest('.port-checkbox-tile');
-    if (tile) {
-      if (selectAll) tile.classList.add('checked');
-      else tile.classList.remove('checked');
-    }
-  });
-  updateSelectedPortsFromCheckboxes();
+  if (!selectAll) {
+    selectSinglePort('');
+  }
 }
 
 function getSelectedPortsArray() {
@@ -2227,16 +2249,16 @@ function syncPortSelection(selected) {
   const badgeEl = document.getElementById('selected-ports-count-badge');
   const hiddenInput = document.getElementById('port-select');
 
-  const commaStr = selected.join(', ');
+  const commaStr = (Array.isArray(selected) ? selected : []).join(', ');
 
   if (hiddenInput) {
     hiddenInput.value = commaStr;
   }
 
-  if (selected.length === 0) {
+  if (!selected || selected.length === 0) {
     if (labelEl) {
       const olt = oltSelect ? oltSelect.value : '';
-      labelEl.innerText = olt ? '-- Select Port(s) --' : '-- Select Node First --';
+      labelEl.innerText = olt ? '-- Select Port --' : '-- Select Node First --';
       labelEl.className = 'port-picker-placeholder';
     }
     if (badgeEl) badgeEl.style.display = 'none';
@@ -2245,19 +2267,13 @@ function syncPortSelection(selected) {
       labelEl.innerText = selected[0];
       labelEl.className = 'port-picker-selected';
     }
-    if (badgeEl) {
-      badgeEl.innerText = '1 port';
-      badgeEl.style.display = 'inline-block';
-    }
+    if (badgeEl) badgeEl.style.display = 'none';
   } else {
     if (labelEl) {
       labelEl.innerText = commaStr;
       labelEl.className = 'port-picker-selected';
     }
-    if (badgeEl) {
-      badgeEl.innerText = `${selected.length} ports`;
-      badgeEl.style.display = 'inline-block';
-    }
+    if (badgeEl) badgeEl.style.display = 'none';
   }
 
   // Trigger cascade updates
@@ -2269,17 +2285,19 @@ function syncPortSelection(selected) {
 function setSelectedPorts(portsArray) {
   const grid = document.getElementById('port-checkbox-grid');
   if (!grid) return;
-  const checkboxes = grid.querySelectorAll('input[type="checkbox"]');
-  checkboxes.forEach(cb => {
-    const shouldCheck = portsArray.includes(cb.value);
-    cb.checked = shouldCheck;
-    const tile = cb.closest('.port-checkbox-tile');
-    if (tile) {
-      if (shouldCheck) tile.classList.add('checked');
-      else tile.classList.remove('checked');
+  const ports = Array.isArray(portsArray) ? portsArray : (portsArray ? [portsArray] : []);
+  const targetPort = ports[0] || '';
+  grid.querySelectorAll('.port-checkbox-tile').forEach(tile => {
+    const cb = tile.querySelector('input[type="checkbox"]');
+    const isTarget = (tile.dataset.port === targetPort && targetPort !== '');
+    if (cb) cb.checked = isTarget;
+    if (isTarget || (!targetPort && tile.classList.contains('port-reset-tile'))) {
+      tile.classList.add('checked');
+    } else {
+      tile.classList.remove('checked');
     }
   });
-  syncPortSelection(portsArray);
+  syncPortSelection(targetPort ? [targetPort] : []);
 }
 
 function onOLTTypeChange() {
