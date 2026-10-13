@@ -1881,7 +1881,10 @@ function handleSplitterSelectionChange() {
     if (splSummary.splitter_ratio && splitterRatioSelect) {
       splitterRatioSelect.value = splSummary.splitter_ratio;
     }
-    // Note: Do not auto-fetch customers_connected (user controls manually or leaves 0)
+    // Pre-fill existing connected customers count for this splitter if already surveyed
+    if (custCountInput && splSummary.customers_connected !== undefined && splSummary.customers_connected !== null && splSummary.customers_connected !== '') {
+      custCountInput.value = splSummary.customers_connected;
+    }
     if (postInput && (!postInput.value.trim() || splSummary.kseb_post_number)) {
       if (splSummary.kseb_post_number) postInput.value = splSummary.kseb_post_number;
     }
@@ -2836,6 +2839,7 @@ function saveRecord() {
     "Enclosure ID": eid,
     "Lat /Long": latLongStr,
     "Splitter ID": spl,
+    "Splitter Unique ID": `${eid}-${spl}`,
     "Splitter Ratio": splitterRatioSelect.value,
     "No: Of Customer Connected": parseInt(custCountInput.value) || 0,
     "Splitter Out": colorCode,
@@ -2843,6 +2847,7 @@ function saveRecord() {
     "ADL Subscriber ID": adlId,
     "ACS Subscriber ID": acsId,
     splitter_lead_color: colorCode,
+    splitter_unique_id: `${eid}-${spl}`,
     adl_subscriber_id: adlId,
     acs_subscriber_id: acsId,
     survey_date_time: formattedDateTime,
@@ -2863,6 +2868,22 @@ function saveRecord() {
     } else {
       records.push(entry);
     }
+
+    const newCustCount = entry["No: Of Customer Connected"];
+    const targetEid = eid.trim().toUpperCase();
+    const targetSpl = spl.trim().toUpperCase();
+
+    // Splitter-level dynamic synchronization:
+    // Update all existing local records sharing this (Enclosure ID + Splitter ID) so customer count is 100% unified
+    records.forEach(r => {
+      const rEid = (r["Enclosure ID"] || r.enclosure_id || '').trim().toUpperCase();
+      const rSpl = (r["Splitter ID"] || r.splitter_id || '').trim().toUpperCase();
+      if (rEid === targetEid && rSpl === targetSpl) {
+        r["No: Of Customer Connected"] = newCustCount;
+        r.customers_connected = newCustCount;
+      }
+    });
+
     localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
 
     // Update in-memory and local cache map immediately for this lead
@@ -2873,6 +2894,17 @@ function saveRecord() {
     variants.forEach(v => {
       networkSurveyedPoints[`${eid}|${spl}|${v}`.toUpperCase()] = entry;
     });
+
+    // Also cascade updated customer count to all existing lead entries in local surveyed cache
+    if (networkSurveyedPoints) {
+      const splPrefix = `${targetEid}|${targetSpl}|`;
+      Object.keys(networkSurveyedPoints).forEach(k => {
+        if (k.startsWith(splPrefix) && networkSurveyedPoints[k]) {
+          networkSurveyedPoints[k]["No: Of Customer Connected"] = newCustCount;
+          networkSurveyedPoints[k].customers_connected = newCustCount;
+        }
+      });
+    }
 
     // Update splitter summary in cache
     const splKey = getSplitterKey(eid, spl);
@@ -2896,7 +2928,7 @@ function saveRecord() {
       networkSurveyedPoints[splKey].leads.push(normC);
     }
     networkSurveyedPoints[splKey].count = networkSurveyedPoints[splKey].leads.length;
-    networkSurveyedPoints[splKey].customers_connected = entry["No: Of Customer Connected"];
+    networkSurveyedPoints[splKey].customers_connected = newCustCount;
     localStorage.setItem('gpon_network_surveyed_points', JSON.stringify(networkSurveyedPoints));
   } catch (err) {
     console.error('Local storage write failed:', err);

@@ -2520,6 +2520,15 @@ def sync_records(payload: SyncPayload, session: dict = Depends(require_any_auth)
                 ))
                 synced_uuids.append(r.client_uuid)
 
+                # Splitter-level dynamic synchronization: cascade customer count to all existing records of this splitter
+                if enc_id and spl_id and r.customers_connected is not None:
+                    cur.execute("""
+                        UPDATE survey_records
+                        SET customers_connected = ?
+                        WHERE UPPER(TRIM(enclosure_id)) = UPPER(TRIM(?))
+                          AND UPPER(TRIM(splitter_id)) = UPPER(TRIM(?))
+                    """, (r.customers_connected, enc_id, spl_id))
+
             # Case B: Record exists with a DIFFERENT client_uuid for this specific lead
             else:
                 existing_uuid, orig_user, orig_name, orig_date, orig_color = existing
@@ -2554,6 +2563,15 @@ def sync_records(payload: SyncPayload, session: dict = Depends(require_any_auth)
                         "splitter_id": spl_id,
                         "splitter_lead_color": lead_color
                     })
+
+                    # Splitter-level dynamic synchronization: cascade customer count to all existing records of this splitter
+                    if enc_id and spl_id and r.customers_connected is not None:
+                        cur.execute("""
+                            UPDATE survey_records
+                            SET customers_connected = ?
+                            WHERE UPPER(TRIM(enclosure_id)) = UPPER(TRIM(?))
+                              AND UPPER(TRIM(splitter_id)) = UPPER(TRIM(?))
+                        """, (r.customers_connected, enc_id, spl_id))
                 else:
                     # OPTION D: Field Tech duplicate prevention! Block duplicate insertion
                     skipped_duplicates.append({
@@ -2699,6 +2717,18 @@ def update_survey_record(client_uuid: str, record: UpdateSurveyRecordModel, sess
         record.splitter_id,
         client_uuid
     ))
+
+    # Splitter-level dynamic synchronization: cascade customer count to all existing records of this splitter
+    target_enc = new_enc_id or existing[4]
+    target_spl = record.splitter_id if record.splitter_id is not None else existing[5]
+    if record.customers_connected is not None and target_enc and target_spl:
+        cur.execute("""
+            UPDATE survey_records
+            SET customers_connected = ?
+            WHERE UPPER(TRIM(enclosure_id)) = UPPER(TRIM(?))
+              AND UPPER(TRIM(splitter_id)) = UPPER(TRIM(?))
+        """, (record.customers_connected, target_enc, target_spl))
+
     conn.commit()
     conn.close()
     return {"status": "success", "message": "Record updated successfully."}
@@ -3135,6 +3165,15 @@ async def upload_survey_excel(file: UploadFile = File(...), session: dict = Depe
                     now_str, now_str
                 ))
                 imported_count += 1
+
+                # Splitter-level dynamic synchronization: cascade customer count to all existing records of this splitter
+                if enclosure_id and splitter_id and cust_num is not None:
+                    cur.execute("""
+                        UPDATE survey_records
+                        SET customers_connected = ?
+                        WHERE UPPER(TRIM(enclosure_id)) = UPPER(TRIM(?))
+                          AND UPPER(TRIM(splitter_id)) = UPPER(TRIM(?))
+                    """, (cust_num, enclosure_id, splitter_id))
 
         conn.commit()
     finally:
@@ -5470,16 +5509,26 @@ def admin_dashboard(response: Response):
             );
           }
 
-          // Compute stats
-          let custTotal = 0;
+          // Compute stats accurately by grouping connected customers per physical splitter
           const encSet = new Set();
           const centerSet = new Set();
+          const splitterCustMap = {};
+          let unassignedCust = 0;
 
           filtered.forEach(r => {
-            custTotal += (r.customers_connected || 0);
+            const splKey = (r.enclosure_id && r.splitter_id)
+              ? `${r.enclosure_id.trim().toUpperCase()}|${r.splitter_id.trim().toUpperCase()}`
+              : null;
+            if (splKey) {
+              splitterCustMap[splKey] = r.customers_connected || 0;
+            } else {
+              unassignedCust += (r.customers_connected || 0);
+            }
             if (r.enclosure_id) encSet.add(r.enclosure_id);
             if (r.center) centerSet.add(r.center);
           });
+
+          const custTotal = Object.values(splitterCustMap).reduce((a, b) => a + b, 0) + unassignedCust;
 
           document.getElementById('feed-stat-records').innerText = filtered.length;
           document.getElementById('feed-stat-customers').innerText = custTotal;
