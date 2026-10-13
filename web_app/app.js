@@ -437,7 +437,23 @@ function getSurveyedSplittersForEnclosure(eid) {
   return Array.from(surveyed);
 }
 
-async function fetchSurveyedPoints() {
+// Form Edit State Tracking: Guards against background heartbeats wiping user inputs
+let custCountManuallyEdited = false;
+let currentActiveSplitter = null;
+let currentActiveLeadColor = null;
+
+function isUserInteractingWithForm() {
+  const active = document.activeElement;
+  const formCard = document.querySelector('.gs-card') || document.body;
+  const isInputActive = active && (active.tagName === 'INPUT' || active.tagName === 'SELECT' || active.tagName === 'TEXTAREA') && formCard.contains(active);
+  if (isInputActive) return true;
+  if (custCountManuallyEdited) return true;
+  if (typeof adlSubInput !== 'undefined' && adlSubInput && adlSubInput.value && adlSubInput.value.trim().length > 0) return true;
+  if (typeof acsSubInput !== 'undefined' && acsSubInput && acsSubInput.value && acsSubInput.value.trim().length > 0) return true;
+  return false;
+}
+
+async function fetchSurveyedPoints(isBackground = false) {
   try {
     const center = (centerSelect && centerSelect.value && centerSelect.value !== 'Center') 
       ? centerSelect.value 
@@ -458,8 +474,12 @@ async function fetchSurveyedPoints() {
         } catch (quotaErr) {
           console.warn('[Storage] Quota exceeded for surveyed points cache, keeping in-memory:', quotaErr);
         }
+        // If this is a periodic background fetch and user is actively working on the form,
+        // do not rebuild select menus or trigger form cascades to prevent UI flicker or wiping user input
+        if (isBackground && isUserInteractingWithForm()) {
+          return;
+        }
         updateAvailableEnclosures();
-        updateAvailableSplitters();
       }
     }
   } catch (err) {
@@ -1723,6 +1743,7 @@ function updateAvailableSplitters() {
 
 // Reset customer-specific subscriber inputs and editing state (preserves splitter-level connected customers)
 function clearCustomerInputs() {
+  currentActiveLeadColor = null;
   if (adlSubInput) adlSubInput.value = '';
   if (acsSubInput) acsSubInput.value = '';
   currentAcsoEditingUuid = null;
@@ -1773,6 +1794,9 @@ function resetPoleFields(force = true) {
     // Preserve user-entered KSEB pole number and GPS coordinates
     return;
   }
+  custCountManuallyEdited = false;
+  currentActiveSplitter = null;
+  currentActiveLeadColor = null;
   if (postInput) postInput.value = '';
   if (landmarkInput) landmarkInput.value = '';
   if (custCountInput) custCountInput.value = '0';
@@ -1897,8 +1921,16 @@ function handleSplitterSelectionChange() {
   const spl = splitterIdSelect ? splitterIdSelect.value : '';
 
   if (!olt || !port || !enc || !spl) {
+    currentActiveSplitter = null;
     updateSplitterColorOptions();
     return;
+  }
+
+  const isSplitterChanged = (currentActiveSplitter !== spl);
+  currentActiveSplitter = spl;
+
+  if (isSplitterChanged) {
+    custCountManuallyEdited = false;
   }
 
   const eid = computeEnclosureId(olt, port, enc);
@@ -1910,28 +1942,44 @@ function handleSplitterSelectionChange() {
       splitterRatioSelect.value = splSummary.splitter_ratio;
     }
     // Pre-fill existing connected customers count for this splitter if already surveyed
+    // GUARD: Never overwrite if user is actively editing this field or manually changed it
     if (custCountInput && splSummary.customers_connected !== undefined && splSummary.customers_connected !== null && splSummary.customers_connected !== '') {
-      custCountInput.value = splSummary.customers_connected;
+      if (!custCountManuallyEdited && document.activeElement !== custCountInput) {
+        custCountInput.value = splSummary.customers_connected;
+      }
     }
-    if (postInput && (!postInput.value.trim() || splSummary.kseb_post_number)) {
-      if (splSummary.kseb_post_number) postInput.value = splSummary.kseb_post_number;
+    if (postInput && (!postInput.value.trim() || isSplitterChanged)) {
+      if (splSummary.kseb_post_number && document.activeElement !== postInput) {
+        postInput.value = splSummary.kseb_post_number;
+      }
     }
-    if (landmarkInput && (!landmarkInput.value.trim() || splSummary.landmark)) {
-      if (splSummary.landmark) landmarkInput.value = splSummary.landmark;
+    if (landmarkInput && (!landmarkInput.value.trim() || isSplitterChanged)) {
+      if (splSummary.landmark && document.activeElement !== landmarkInput) {
+        landmarkInput.value = splSummary.landmark;
+      }
     }
     if (splSummary.lat_long && splSummary.lat_long.includes(',')) {
-      if (manualCoordsInput && (!manualCoordsInput.value.trim() || splSummary.lat_long)) manualCoordsInput.value = splSummary.lat_long;
-      const parts = splSummary.lat_long.split(',').map(s => parseFloat(s.trim()));
-      if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
-        currentLat = parts[0];
-        currentLon = parts[1];
-        if (gpsAccText) {
-          gpsAccText.innerHTML = `<span style="color:#0284c7; font-weight:600;">📍 Existing Survey Coords (${splSummary.lat_long})</span>`;
+      if (isSplitterChanged || !manualCoordsInput || !manualCoordsInput.value.trim()) {
+        if (manualCoordsInput && document.activeElement !== manualCoordsInput) {
+          manualCoordsInput.value = splSummary.lat_long;
         }
-        if (mapInstance && typeof L !== 'undefined') {
-          updateMapPosition(currentLat, currentLon, 10);
+        const parts = splSummary.lat_long.split(',').map(s => parseFloat(s.trim()));
+        if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+          currentLat = parts[0];
+          currentLon = parts[1];
+          if (gpsAccText) {
+            gpsAccText.innerHTML = `<span style="color:#0284c7; font-weight:600;">📍 Existing Survey Coords (${splSummary.lat_long})</span>`;
+          }
+          if (mapInstance && typeof L !== 'undefined') {
+            updateMapPosition(currentLat, currentLon, 10);
+          }
         }
       }
+    }
+  } else if (isSplitterChanged) {
+    // Brand new splitter: default customer count to 0 unless manually changed
+    if (custCountInput && !custCountManuallyEdited && document.activeElement !== custCountInput) {
+      custCountInput.value = '0';
     }
   }
 
@@ -1939,7 +1987,7 @@ function handleSplitterSelectionChange() {
 }
 
 // Handle Lead Color Selection: Toggles ACSO Update Banner & Pre-fills Existing Lead Survey Data
-function handleColorSelectionChange() {
+function handleColorSelectionChange(forceReset = false) {
   const banner = document.getElementById('acso-update-banner');
   const descEl = document.getElementById('acso-update-desc');
   const submitBtn = document.getElementById('btn-save-record') || document.querySelector('.btn-add-row');
@@ -1954,6 +2002,7 @@ function handleColorSelectionChange() {
   const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'admin' || role === 'super_admin');
 
   if (!olt || !port || !enc || !spl || !col) {
+    currentActiveLeadColor = null;
     if (banner) banner.style.display = 'none';
     if (submitBtn) {
       submitBtn.innerHTML = '<span>➕</span> Submit';
@@ -1963,6 +2012,9 @@ function handleColorSelectionChange() {
     updateSubscriberInputsState();
     return;
   }
+
+  const isColorChanged = (currentActiveLeadColor !== col);
+  currentActiveLeadColor = col;
 
   const eid = computeEnclosureId(olt, port, enc);
   const leadSurvey = getLeadSurveyedInfo(eid, spl, col);
@@ -1982,9 +2034,15 @@ function handleColorSelectionChange() {
       submitBtn.style.background = '#0284c7';
     }
 
-    // Pre-populate subscriber inputs from existing record
-    if (adlSubInput) adlSubInput.value = leadSurvey.adl_subscriber_id || leadSurvey["ADL Subscriber ID"] || '';
-    if (acsSubInput) acsSubInput.value = leadSurvey.acs_subscriber_id || leadSurvey["ACS Subscriber ID"] || '';
+    // Pre-populate subscriber inputs from existing record only if switched color or forced
+    if (isColorChanged || forceReset) {
+      if (adlSubInput && document.activeElement !== adlSubInput) {
+        adlSubInput.value = leadSurvey.adl_subscriber_id || leadSurvey["ADL Subscriber ID"] || '';
+      }
+      if (acsSubInput && document.activeElement !== acsSubInput) {
+        acsSubInput.value = leadSurvey.acs_subscriber_id || leadSurvey["ACS Subscriber ID"] || '';
+      }
+    }
   } else {
     // Normal / Brand-New Lead Entry Mode!
     currentAcsoEditingUuid = null;
@@ -1993,15 +2051,23 @@ function handleColorSelectionChange() {
       submitBtn.innerHTML = '<span>➕</span> Submit';
       submitBtn.style.background = '';
     }
-    if (adlSubInput) adlSubInput.value = '';
-    if (acsSubInput) acsSubInput.value = '';
-    // Total connected customers in the splitter continues its last status across leads!
+    // CRITICAL: Only wipe subscriber inputs if the user switched to a DIFFERENT lead color!
+    // NEVER wipe them during background refreshes or when user is on the same lead!
+    if (isColorChanged || forceReset) {
+      if (adlSubInput && document.activeElement !== adlSubInput) adlSubInput.value = '';
+      if (acsSubInput && document.activeElement !== acsSubInput) acsSubInput.value = '';
+    }
   }
 
-  // Splitter Out is selected: enable subscriber inputs and auto-focus ADL input
+  // Splitter Out is selected: enable subscriber inputs
   updateSubscriberInputsState();
-  if (adlSubInput && !adlSubInput.disabled) {
-    try { adlSubInput.focus(); } catch (e) {}
+
+  // Only auto-focus ADL input if the surveyor explicitly switched color, not during background polling
+  if (isColorChanged && adlSubInput && !adlSubInput.disabled) {
+    const active = document.activeElement;
+    if (!active || active === document.body || active === splitterColorSelect) {
+      try { adlSubInput.focus(); } catch (e) {}
+    }
   }
 }
 
@@ -2364,10 +2430,19 @@ splitterRatioSelect.addEventListener('change', () => {
   updateSplitterColorOptions();
 });
 splitterIdSelect.addEventListener('change', () => {
+  custCountManuallyEdited = false;
   clearCustomerInputs();
   handleSplitterSelectionChange();
 });
-if (splitterColorSelect) splitterColorSelect.addEventListener('change', handleColorSelectionChange);
+if (splitterColorSelect) splitterColorSelect.addEventListener('change', () => handleColorSelectionChange());
+if (custCountInput) {
+  custCountInput.addEventListener('input', () => {
+    custCountManuallyEdited = true;
+  });
+  custCountInput.addEventListener('change', () => {
+    custCountManuallyEdited = true;
+  });
+}
 
 // Close port dropdown panel on tap/click outside
 document.addEventListener('click', (e) => {
@@ -2727,6 +2802,7 @@ function adjustCustomer(delta) {
   let val = parseInt(custCountInput.value) || 0;
   val = Math.max(0, val + delta);
   custCountInput.value = val;
+  custCountManuallyEdited = true;
 }
 
 // Save Entry
@@ -3013,6 +3089,7 @@ function saveRecord() {
 
   // Clear customer-specific subscriber inputs only (keep equipment & pole strictly pinned!)
   clearCustomerInputs();
+  custCountManuallyEdited = false;
   currentActiveEnclosure = entry["Enclosure"] || (enclosureSelect ? enclosureSelect.value : '');
 
   const savedSpl = splitterIdSelect ? splitterIdSelect.value : '';
@@ -3528,7 +3605,7 @@ async function checkServerConnection() {
     clearTimeout(timeoutId);
     if (res.ok) {
       isServerReachable = true;
-      fetchSurveyedPoints();
+      fetchSurveyedPoints(true);
       const data = await res.json().catch(() => null);
       if (data && data.hierarchy_version) {
         // Only record the version as "known" when logged in, because fetchHierarchyFromServer() is auth-guarded
@@ -3799,7 +3876,7 @@ async function syncWithServer(silent = false) {
         showToast(`Synced ${totalSyncedCount} records with Ubuntu server!`);
       }
 
-      fetchSurveyedPoints();
+      fetchSurveyedPoints(true);
       updateRecordsBadge();
     }
   } catch (err) {
