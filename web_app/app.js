@@ -2532,9 +2532,21 @@ function captureGPS() {
       updateMapPosition(currentLat, currentLon, currentAccuracy);
     }
 
-    // Stop early if excellent satellite accuracy (< 3m) is achieved or 10+ samples converged
-    if (acc <= 3.0 || sampleCount >= 10) {
-      finalizeGPS(gpsBtn, 'High precision satellite fix locked!');
+    // Smart Multi-Tier Lock (Option A - 1.5s to 3s Fast Response):
+    // Tier 1: Instant Lock if High Precision (<= 6m) achieved immediately (~1s)
+    if (acc <= 6.0) {
+      finalizeGPS(gpsBtn, `High precision satellite fix locked (±${Math.round(acc)}m)!`);
+      return;
+    }
+    // Tier 2: Quick Lock if Good GNSS fix (<= 12m) confirmed across 2 samples (~1.5-2s)
+    if (acc <= 12.0 && sampleCount >= 2) {
+      finalizeGPS(gpsBtn, `Good GNSS fix locked (±${Math.round(acc)}m)!`);
+      return;
+    }
+    // Tier 3: Convergence Lock after 3+ samples (~2.5-3s) if within 15m
+    if (sampleCount >= 3 && bestAccuracy <= 15.0) {
+      finalizeGPS(gpsBtn, `Location locked (±${Math.round(bestAccuracy)}m)!`);
+      return;
     }
   };
 
@@ -2553,22 +2565,28 @@ function captureGPS() {
       onLocationError,
       {
         enableHighAccuracy: true,
-        timeout: 15000,
+        timeout: 10000,
         maximumAge: 0
       }
     );
   } catch (e) {
     navigator.geolocation.getCurrentPosition(onLocationSuccess, onLocationError, {
       enableHighAccuracy: true,
-      timeout: 15000,
+      timeout: 10000,
       maximumAge: 0
     });
   }
 
-  // Settle time limit: After 12 seconds, lock the best fix obtained so far
+  // Settle time limit: After 3.5 seconds, lock the best fix obtained so far (Option A)
   gpsWatchTimer = setTimeout(() => {
-    finalizeGPS(gpsBtn, bestAccuracy <= 15 ? 'GPS locked at best available satellite accuracy' : null);
-  }, 12000);
+    if (bestAccuracy <= 25.0) {
+      finalizeGPS(gpsBtn, `GPS locked at best available accuracy (±${Math.round(bestAccuracy)}m)`);
+    } else if (currentLat !== null) {
+      finalizeGPS(gpsBtn, `GPS fix acquired (±${Math.round(bestAccuracy)}m) - fine-tune on map if needed`);
+    } else {
+      finalizeGPS(gpsBtn);
+    }
+  }, 3500);
 }
 
 function finalizeGPS(btn, successMsg = null) {
