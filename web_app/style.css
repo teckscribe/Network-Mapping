@@ -810,4 +810,17 @@ body {
   color: #1e293b;
 }
 
+/* High-Definition GPON Pole Pin Map Marker */
+.gpon-pole-pin-icon {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+.gpon-pole-pin-icon svg {
+  transition: transform 0.15s ease;
+}
+.gpon-pole-pin-icon:hover svg {
+  transform: scale(1.15);
+}
+
 

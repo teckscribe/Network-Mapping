@@ -1862,7 +1862,7 @@ function handleEnclosureChange() {
             gpsAccText.innerHTML = `<span style="color:#0284c7; font-weight:600;">📍 Existing Survey Coords (${poleInfo.lat_long})</span>`;
           }
           if (mapInstance && typeof L !== 'undefined') {
-            renderMapMarker(currentLat, currentLon, 10);
+            updateMapPosition(currentLat, currentLon, 10);
           }
         }
       }
@@ -1929,7 +1929,7 @@ function handleSplitterSelectionChange() {
           gpsAccText.innerHTML = `<span style="color:#0284c7; font-weight:600;">📍 Existing Survey Coords (${splSummary.lat_long})</span>`;
         }
         if (mapInstance && typeof L !== 'undefined') {
-          renderMapMarker(currentLat, currentLon, 10);
+          updateMapPosition(currentLat, currentLon, 10);
         }
       }
     }
@@ -2527,6 +2527,38 @@ function finalizeGPS(btn, successMsg = null) {
   }
 }
 
+// High-Definition Crisp Red Pole Pin Marker Icon (100% Offline SVG, Zero 404s)
+function getPolePinIcon() {
+  if (typeof L === 'undefined') return undefined;
+  return L.divIcon({
+    className: 'gpon-pole-pin-icon',
+    html: `<div style="width:32px; height:42px; filter:drop-shadow(0 3px 5px rgba(0,0,0,0.45)); cursor:grab;">
+      <svg width="32" height="42" viewBox="0 0 32 42" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M16 0C7.16344 0 0 7.16344 0 16C0 27.5 16 42 16 42C16 42 32 27.5 32 16C32 7.16344 24.8366 0 16 0Z" fill="#EA4335"/>
+        <circle cx="16" cy="15" r="6.5" fill="#FFFFFF"/>
+        <circle cx="16" cy="15" r="3.5" fill="#B31412"/>
+      </svg>
+    </div>`,
+    iconSize: [32, 42],
+    iconAnchor: [16, 42],
+    popupAnchor: [0, -42]
+  });
+}
+
+// Fix Leaflet default icon paths to prevent broken image requests
+if (typeof L !== 'undefined' && L.Icon && L.Icon.Default) {
+  try {
+    delete L.Icon.Default.prototype._getIconUrl;
+    L.Icon.Default.mergeOptions({
+      iconRetinaUrl: 'vendor/marker-icon-2x.png',
+      iconUrl: 'vendor/marker-icon.png',
+      shadowUrl: 'vendor/marker-shadow.png'
+    });
+  } catch (err) {
+    console.warn('[Leaflet] Error configuring default icon fallback:', err);
+  }
+}
+
 // Update Map Position, Marker, and Accuracy Halo
 function updateMapPosition(lat, lon, acc = null) {
   if (!mapInstance) return;
@@ -2534,7 +2566,10 @@ function updateMapPosition(lat, lon, acc = null) {
   if (mapMarker) {
     mapMarker.setLatLng([lat, lon]);
   } else {
-    mapMarker = L.marker([lat, lon], { draggable: true, autoPan: true }).addTo(mapInstance);
+    const pinIcon = getPolePinIcon();
+    const markerOpts = { draggable: true, autoPan: true };
+    if (pinIcon) markerOpts.icon = pinIcon;
+    mapMarker = L.marker([lat, lon], markerOpts).addTo(mapInstance);
     mapMarker.bindPopup("<b>📍 Pole Location</b><br>Drag to fine-tune exact post spot.").openPopup();
     mapMarker.on('dragend', function(e) {
       const pt = e.target.getLatLng();
@@ -2626,7 +2661,10 @@ function initMap(lat, lon) {
     }).addTo(mapInstance);
   }
 
-  mapMarker = L.marker([lat, lon], { draggable: true, autoPan: true }).addTo(mapInstance);
+  const pinIcon = getPolePinIcon();
+  const markerOpts = { draggable: true, autoPan: true };
+  if (pinIcon) markerOpts.icon = pinIcon;
+  mapMarker = L.marker([lat, lon], markerOpts).addTo(mapInstance);
   mapMarker.bindPopup("<b>📍 Pole Location</b><br>Drag to fine-tune exact post spot.").openPopup();
 
   // Dragend event

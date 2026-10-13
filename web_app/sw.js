@@ -1,4 +1,4 @@
-const CACHE_NAME = 'gpon-survey-v90';
+const CACHE_NAME = 'gpon-survey-v91';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
@@ -19,7 +19,13 @@ const ASSETS_TO_CACHE = [
   './vendor/xlsx.full.min.js',
   './vendor/marker-icon.png',
   './vendor/marker-shadow.png',
-  './vendor/marker-icon-2x.png'
+  './vendor/marker-icon-2x.png',
+  './images/marker-icon.png',
+  './images/marker-shadow.png',
+  './images/marker-icon-2x.png',
+  './vendor/images/marker-icon.png',
+  './vendor/images/marker-shadow.png',
+  './vendor/images/marker-icon-2x.png'
 ];
 
 self.addEventListener('install', (event) => {
