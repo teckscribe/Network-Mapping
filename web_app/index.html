@@ -162,6 +162,11 @@
           </div>
 
           <div class="gs-cell-group col-full">
+            <label class="gs-cell-label" for="enclosure-select">Enclosure # <span style="color:#ef4444; font-weight:700;">*</span></label>
+            <select id="enclosure-select" class="gs-select"></select>
+          </div>
+
+          <div class="gs-cell-group col-full">
             <label class="gs-cell-label" for="post-input">KSEB Post Number <span style="color:#ef4444; font-weight:700;">*</span></label>
             <input type="text" id="post-input" class="gs-input" placeholder="e.g. MAT 148/9 or KGD 45/1" autocomplete="off" autocapitalize="characters">
           </div>
@@ -194,13 +199,6 @@
           </div>
 
           <div class="gs-cell-group">
-            <label class="gs-cell-label" for="enclosure-select" style="min-height:2.2rem; display:flex; flex-direction:column; justify-content:flex-start;">
-              <span>Enclosure # <span style="color:#ef4444; font-weight:700;">*</span></span>
-            </label>
-            <select id="enclosure-select" class="gs-select"></select>
-          </div>
-
-          <div class="gs-cell-group">
             <label class="gs-cell-label" for="splitter-id-select" style="min-height:2.2rem; display:flex; flex-direction:column; justify-content:flex-start; line-height:1.2;">
               <span>Splitter ID <span style="color:#ef4444; font-weight:700;">*</span></span>
               <span style="font-size:0.65rem; font-weight:500; color:#64748b; text-transform:none; letter-spacing:0; margin-top:2px;">(For additional splitter Select Next)</span>
@@ -209,7 +207,9 @@
           </div>
 
           <div class="gs-cell-group">
-            <label class="gs-cell-label" for="splitter-ratio-select">Splitter Ratio <span style="color:#ef4444; font-weight:700;">*</span></label>
+            <label class="gs-cell-label" for="splitter-ratio-select" style="min-height:2.2rem; display:flex; flex-direction:column; justify-content:flex-start;">
+              <span>Splitter Ratio <span style="color:#ef4444; font-weight:700;">*</span></span>
+            </label>
             <select id="splitter-ratio-select" class="gs-select"></select>
           </div>
 
@@ -480,6 +480,6 @@
   <script src="vendor/leaflet.js"></script>
   <script src="vendor/xlsx.full.min.js"></script>
   <script src="preload_data.js?v=71"></script>
-  <script src="app.js?v=78"></script>
+  <script src="app.js?v=79"></script>
 </body>
 </html>
