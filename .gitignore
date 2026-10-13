@@ -40,6 +40,8 @@ Node Master/
 data/
 *.bak
 backup_status.json
+*.pptx
+*.ppt
 
 # OS generated files
 .DS_Store
