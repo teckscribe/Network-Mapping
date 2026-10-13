@@ -1340,6 +1340,7 @@ function updateCentersForSelectedRegion(selectedReg, prevCenter = '') {
 function onRegionChange() {
   const selReg = regionSelect ? regionSelect.value : '';
   updateCentersForSelectedRegion(selReg);
+  if (splitterRatioSelect) splitterRatioSelect.value = '';
   currentActiveEnclosure = '';
   resetPoleFields();
   clearCustomerInputs();
@@ -1794,6 +1795,11 @@ function handleEnclosureChange() {
 
   clearCustomerInputs();
 
+  // Reset Splitter Ratio to null / empty default when changing enclosure
+  if (splitterRatioSelect) {
+    splitterRatioSelect.value = '';
+  }
+
   if (newEnc && olt && port) {
     const eid = computeEnclosureId(olt, port, newEnc);
     const poleInfo = getEnclosurePoleInfo(eid);
@@ -2188,6 +2194,7 @@ function selectSinglePort(portValue, event) {
 
   const selectedArray = portValue ? [portValue] : [];
   if (enclosureSelect) enclosureSelect.value = '';
+  if (splitterRatioSelect) splitterRatioSelect.value = '';
   currentActiveEnclosure = '';
   resetPoleFields(true);
   clearCustomerInputs();
@@ -2270,6 +2277,7 @@ if (regionSelect) {
   regionSelect.addEventListener('change', onRegionChange);
 }
 centerSelect.addEventListener('change', () => {
+  if (splitterRatioSelect) splitterRatioSelect.value = '';
   currentActiveEnclosure = '';
   resetPoleFields();
   clearCustomerInputs();
@@ -2277,12 +2285,14 @@ centerSelect.addEventListener('change', () => {
   fetchSurveyedPoints();
 });
 rtRoomSelect.addEventListener('change', () => {
+  if (splitterRatioSelect) splitterRatioSelect.value = '';
   currentActiveEnclosure = '';
   resetPoleFields();
   clearCustomerInputs();
   onRTRoomChange();
 });
 oltSelect.addEventListener('change', () => {
+  if (splitterRatioSelect) splitterRatioSelect.value = '';
   currentActiveEnclosure = '';
   resetPoleFields();
   clearCustomerInputs();
@@ -2291,6 +2301,7 @@ oltSelect.addEventListener('change', () => {
 if (oltTypeSelect) oltTypeSelect.addEventListener('change', onOLTTypeChange);
 if (portSelect) portSelect.addEventListener('change', () => {
   if (enclosureSelect) enclosureSelect.value = '';
+  if (splitterRatioSelect) splitterRatioSelect.value = '';
   currentActiveEnclosure = '';
   resetPoleFields(true);
   clearCustomerInputs();

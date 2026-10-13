@@ -1,7 +1,7 @@
 # Web App (app.js) Frontend Engine Wiring Dissection
-*Generated automatically on: 2026-10-13 14:02:16*
+*Generated automatically on: 2026-10-13 14:19:11*
 
-Total lines in `web_app/app.js`: **3780** LOC
+Total lines in `web_app/app.js`: **3791** LOC
 
 ## 1. Subsystem Functional Blocks (Line-by-Line Breakdown)
 The 3,960 lines of `web_app/app.js` are partitioned into 17 high-reliability client engines:
@@ -36,11 +36,11 @@ The 3,960 lines of `web_app/app.js` are partitioned into 17 high-reliability cli
 | L886 | `POST` | `${serverUrl}/api/request-password-reset-otp` | REST Client | Network communication with central server |
 | L927 | `POST` | `${serverUrl}/api/request-password-reset-otp` | REST Client | Network communication with central server |
 | L987 | `POST` | `${serverUrl}/api/verify-password-reset-otp` | REST Client | Network communication with central server |
-| L3387 | `GET` | `${serverUrl}/api/health` | REST Client | Network communication with central server |
-| L3419 | `GET` | `${serverUrl}/api/hierarchy` | REST Client | Network communication with central server |
-| L3443 | `GET` | `${serverUrl}/api/user-profile` | REST Client | Network communication with central server |
-| L3526 | `POST` | `${serverUrl}/api/records/bulk-delete` | REST Client | Network communication with central server |
-| L3601 | `POST` | `${serverUrl}/api/sync` | REST Client | Network communication with central server |
+| L3398 | `GET` | `${serverUrl}/api/health` | REST Client | Network communication with central server |
+| L3430 | `GET` | `${serverUrl}/api/hierarchy` | REST Client | Network communication with central server |
+| L3454 | `GET` | `${serverUrl}/api/user-profile` | REST Client | Network communication with central server |
+| L3537 | `POST` | `${serverUrl}/api/records/bulk-delete` | REST Client | Network communication with central server |
+| L3612 | `POST` | `${serverUrl}/api/sync` | REST Client | Network communication with central server |
 
 ## 3. LocalStorage State & Invariants
 | Key | Scope & Type | Lifecycle | Description |
