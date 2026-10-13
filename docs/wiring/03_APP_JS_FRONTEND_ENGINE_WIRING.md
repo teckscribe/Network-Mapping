@@ -1,7 +1,7 @@
 # Web App (app.js) Frontend Engine Wiring Dissection
-*Generated automatically on: 2026-10-13 22:17:53*
+*Generated automatically on: 2026-10-13 22:31:08*
 
-Total lines in `web_app/app.js`: **3997** LOC
+Total lines in `web_app/app.js`: **4092** LOC
 
 ## 1. Subsystem Functional Blocks (Line-by-Line Breakdown)
 The 3,960 lines of `web_app/app.js` are partitioned into 17 high-reliability client engines:
@@ -30,17 +30,17 @@ The 3,960 lines of `web_app/app.js` are partitioned into 17 high-reliability cli
 
 | Line | HTTP Method | Target Endpoint | Function Context | Payload / Purpose |
 | :--- | :--- | :--- | :--- | :--- |
-| L467 | `GET` | `${serverUrl}/api/surveyed-points${query}` | REST Client | Network communication with central server |
-| L678 | `POST` | `${serverUrl}/api/login` | REST Client | Network communication with central server |
-| L825 | `POST` | `${serverUrl}/api/logout` | REST Client | Network communication with central server |
-| L940 | `POST` | `${serverUrl}/api/request-password-reset-otp` | REST Client | Network communication with central server |
-| L981 | `POST` | `${serverUrl}/api/request-password-reset-otp` | REST Client | Network communication with central server |
-| L1041 | `POST` | `${serverUrl}/api/verify-password-reset-otp` | REST Client | Network communication with central server |
-| L3604 | `GET` | `${serverUrl}/api/health` | REST Client | Network communication with central server |
-| L3636 | `GET` | `${serverUrl}/api/hierarchy` | REST Client | Network communication with central server |
-| L3660 | `GET` | `${serverUrl}/api/user-profile` | REST Client | Network communication with central server |
-| L3743 | `POST` | `${serverUrl}/api/records/bulk-delete` | REST Client | Network communication with central server |
-| L3818 | `POST` | `${serverUrl}/api/sync` | REST Client | Network communication with central server |
+| L534 | `GET` | `${serverUrl}/api/surveyed-points${query}` | REST Client | Network communication with central server |
+| L749 | `POST` | `${serverUrl}/api/login` | REST Client | Network communication with central server |
+| L896 | `POST` | `${serverUrl}/api/logout` | REST Client | Network communication with central server |
+| L1011 | `POST` | `${serverUrl}/api/request-password-reset-otp` | REST Client | Network communication with central server |
+| L1052 | `POST` | `${serverUrl}/api/request-password-reset-otp` | REST Client | Network communication with central server |
+| L1112 | `POST` | `${serverUrl}/api/verify-password-reset-otp` | REST Client | Network communication with central server |
+| L3699 | `GET` | `${serverUrl}/api/health` | REST Client | Network communication with central server |
+| L3731 | `GET` | `${serverUrl}/api/hierarchy` | REST Client | Network communication with central server |
+| L3755 | `GET` | `${serverUrl}/api/user-profile` | REST Client | Network communication with central server |
+| L3838 | `POST` | `${serverUrl}/api/records/bulk-delete` | REST Client | Network communication with central server |
+| L3913 | `POST` | `${serverUrl}/api/sync` | REST Client | Network communication with central server |
 
 ## 3. LocalStorage State & Invariants
 | Key | Scope & Type | Lifecycle | Description |

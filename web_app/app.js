@@ -444,13 +444,80 @@ let currentActiveLeadColor = null;
 
 function isUserInteractingWithForm() {
   const active = document.activeElement;
-  const formCard = document.querySelector('.gs-card') || document.body;
+  const formCard = document.getElementById('entry-form-card') || document.querySelector('.gs-card') || document.body;
   const isInputActive = active && (active.tagName === 'INPUT' || active.tagName === 'SELECT' || active.tagName === 'TEXTAREA') && formCard.contains(active);
   if (isInputActive) return true;
   if (custCountManuallyEdited) return true;
   if (typeof adlSubInput !== 'undefined' && adlSubInput && adlSubInput.value && adlSubInput.value.trim().length > 0) return true;
   if (typeof acsSubInput !== 'undefined' && acsSubInput && acsSubInput.value && acsSubInput.value.trim().length > 0) return true;
   return false;
+}
+
+let pendingSurveyRefresh = false;
+let lastConflictWarningKey = '';
+
+// Update Splitter Out option labels / lock state IN PLACE (no rebuild, no value change, no change handlers).
+// Keeps lock status live even while the surveyor is typing, and warns if their selected lead was just taken.
+function softRefreshLeadLabels() {
+  try {
+    if (!splitterColorSelect) return;
+    const olt = oltSelect ? oltSelect.value : '';
+    const port = portSelect ? portSelect.value : '';
+    const enc = enclosureSelect ? enclosureSelect.value : '';
+    const spl = splitterIdSelect ? splitterIdSelect.value : '';
+    if (!olt || !port || !enc || !spl) return;
+    const eid = computeEnclosureId(olt, port, enc);
+    const role = currentUser ? normalizeClientRole(currentUser.role) : 'field_technician';
+    const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'admin' || role === 'super_admin');
+    const selectedCol = splitterColorSelect.value;
+
+    Array.from(splitterColorSelect.options).forEach(opt => {
+      const col = opt.value;
+      if (!col) return;
+      const leadSurvey = getLeadSurveyedInfo(eid, spl, col);
+      if (leadSurvey) {
+        const byWho = leadSurvey.surveyor_name || leadSurvey.surveyor_username || 'Surveyor';
+        if (isSupervisor) {
+          const txt = `${col} — ✏️ Surveyed (${byWho})`;
+          opt.innerText = txt;
+          opt.textContent = txt;
+          opt.style.color = '#0284c7';
+          opt.style.fontWeight = '600';
+        } else {
+          const txt = `${col} — 🔒 Surveyed (${byWho})`;
+          opt.innerText = txt;
+          opt.textContent = txt;
+          opt.style.color = '#94a3b8';
+          opt.style.backgroundColor = '#f1f5f9';
+          // Never disable the currently selected option (that would silently change the value)
+          if (col !== selectedCol) opt.disabled = true;
+        }
+      }
+    });
+
+    // Conflict warning: selected lead was surveyed by someone else while this surveyor was typing
+    if (selectedCol) {
+      const taken = getLeadSurveyedInfo(eid, spl, selectedCol);
+      const isOwnEdit = taken && currentAcsoEditingUuid && taken.client_uuid === currentAcsoEditingUuid;
+      const key = `${eid}|${spl}|${selectedCol}`;
+      if (taken && !isOwnEdit && lastConflictWarningKey !== key) {
+        lastConflictWarningKey = key;
+        const byWho = taken.surveyor_name || taken.surveyor_username || 'another surveyor';
+        showToast(isSupervisor
+          ? `⚠️ ${spl} • ${selectedCol} was just surveyed by ${byWho}. Submitting will OVERWRITE their record.`
+          : `⚠️ ${spl} • ${selectedCol} was just surveyed by ${byWho}. Please choose another Splitter Out.`, false);
+      }
+    }
+  } catch (e) {
+    console.warn('[SoftRefresh] failed:', e);
+  }
+}
+
+// Apply the deferred full dropdown rebuild once the surveyor is no longer editing
+function applyPendingSurveyRefresh() {
+  if (!pendingSurveyRefresh || isUserInteractingWithForm()) return;
+  pendingSurveyRefresh = false;
+  updateAvailableEnclosures();
 }
 
 async function fetchSurveyedPoints(isBackground = false) {
@@ -475,10 +542,14 @@ async function fetchSurveyedPoints(isBackground = false) {
           console.warn('[Storage] Quota exceeded for surveyed points cache, keeping in-memory:', quotaErr);
         }
         // If this is a periodic background fetch and user is actively working on the form,
-        // do not rebuild select menus or trigger form cascades to prevent UI flicker or wiping user input
+        // do not rebuild select menus or trigger form cascades to prevent UI flicker or wiping user input.
+        // Instead: soft-update lead lock labels in place, and defer the full rebuild until the surveyor is idle.
         if (isBackground && isUserInteractingWithForm()) {
+          pendingSurveyRefresh = true;
+          softRefreshLeadLabels();
           return;
         }
+        pendingSurveyRefresh = false;
         updateAvailableEnclosures();
       }
     }
@@ -1863,6 +1934,7 @@ function handleEnclosureChange() {
   const newEnc = enclosureSelect ? enclosureSelect.value : '';
   const prevEnc = currentActiveEnclosure;
 
+  custCountManuallyEdited = false;
   clearCustomerInputs();
 
   // Reset Splitter Ratio to null / empty default when changing enclosure
@@ -1926,14 +1998,16 @@ function handleSplitterSelectionChange() {
     return;
   }
 
-  const isSplitterChanged = (currentActiveSplitter !== spl);
-  currentActiveSplitter = spl;
+  const eid = computeEnclosureId(olt, port, enc);
+  // Key by Enclosure ID + Splitter ID so E1/S1 -> E2/S1 counts as a different splitter
+  const splKey = `${eid}|${spl}`.toUpperCase();
+  const isSplitterChanged = (currentActiveSplitter !== splKey);
+  currentActiveSplitter = splKey;
 
   if (isSplitterChanged) {
     custCountManuallyEdited = false;
   }
 
-  const eid = computeEnclosureId(olt, port, enc);
   const splSummary = getSplitterSummary(eid, spl);
 
   if (splSummary) {
@@ -2013,10 +2087,12 @@ function handleColorSelectionChange(forceReset = false) {
     return;
   }
 
-  const isColorChanged = (currentActiveLeadColor !== col);
-  currentActiveLeadColor = col;
-
   const eid = computeEnclosureId(olt, port, enc);
+  const leadKey = `${eid}|${spl}|${col}`.toUpperCase();
+  const isColorChanged = (currentActiveLeadColor !== leadKey);
+  currentActiveLeadColor = leadKey;
+  if (isColorChanged) lastConflictWarningKey = '';
+
   const leadSurvey = getLeadSurveyedInfo(eid, spl, col);
 
   if (leadSurvey && isSupervisor) {
@@ -2062,12 +2138,16 @@ function handleColorSelectionChange(forceReset = false) {
   // Splitter Out is selected: enable subscriber inputs
   updateSubscriberInputsState();
 
-  // Only auto-focus ADL input if the surveyor explicitly switched color, not during background polling
+  // Only auto-focus ADL input if the surveyor explicitly switched color, not during background polling.
+  // Small delay lets Android/iOS native pickers close first, then focus moves to ADL input.
   if (isColorChanged && adlSubInput && !adlSubInput.disabled) {
-    const active = document.activeElement;
-    if (!active || active === document.body || active === splitterColorSelect) {
-      try { adlSubInput.focus(); } catch (e) {}
-    }
+    setTimeout(() => {
+      const active = document.activeElement;
+      const okToFocus = !active || active === document.body || active === splitterColorSelect;
+      if (okToFocus && adlSubInput && !adlSubInput.disabled) {
+        try { adlSubInput.focus(); } catch (e) {}
+      }
+    }, 150);
   }
 }
 
@@ -2441,6 +2521,13 @@ if (custCountInput) {
   });
   custCountInput.addEventListener('change', () => {
     custCountManuallyEdited = true;
+  });
+}
+const entryFormCard = document.getElementById('entry-form-card');
+if (entryFormCard) {
+  entryFormCard.addEventListener('focusout', () => {
+    // Wait for focus to settle on the next element before deciding the user is idle
+    setTimeout(applyPendingSurveyRefresh, 400);
   });
 }
 
@@ -2915,6 +3002,14 @@ function saveRecord() {
 
   // OPTION C: ACSO Supervisor Update Mode for this specific lead
   const isAcsoUpdate = !!(existingLeadSurvey && isSupervisor);
+
+  // Safety: supervisor started a NEW entry, but another surveyor saved this lead in the meantime.
+  // Do not silently overwrite their record — ask first.
+  if (isAcsoUpdate && colorCode && currentAcsoEditingUuid !== existingLeadSurvey.client_uuid) {
+    const byWho = existingLeadSurvey.surveyor_name || existingLeadSurvey.surveyor_username || 'another surveyor';
+    const ok = window.confirm(`${spl} • ${colorCode} in ${eid} was just surveyed by ${byWho}.\n\nOK = overwrite their record with your entry\nCancel = go back and review (your typed values are kept)`);
+    if (!ok) return;
+  }
 
   if (!isAcsoUpdate) {
     // Condition for brand-new entries: prevent duplicate lead in same enclosure locally
