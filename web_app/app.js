@@ -2153,7 +2153,7 @@ function renderPortCheckboxes(ports, selectedPorts = []) {
   grid.innerHTML = '';
 
   if (!currentAvailablePorts.length) {
-    grid.innerHTML = '<div style="grid-column: 1/-1; text-align:center; color:#94a3b8; font-size:0.8rem; padding:10px;">Select Node to view ports</div>';
+    grid.innerHTML = '<div style="text-align:center; color:#94a3b8; font-size:0.85rem; padding:12px;">Select Node to view ports</div>';
     syncPortSelection([]);
     return;
   }

@@ -6,7 +6,7 @@
   <title>Network Survey</title>
   
   <!-- PWA Manifest & Meta -->
-  <link rel="manifest" href="manifest.json?v=75">
+  <link rel="manifest" href="manifest.json?v=76">
   <meta name="theme-color" content="#ffffff">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -19,7 +19,7 @@
 
   <!-- Local Offline Vendor Styles -->
   <link rel="stylesheet" href="vendor/leaflet.css">
-  <link rel="stylesheet" href="style.css?v=47">
+  <link rel="stylesheet" href="style.css?v=48">
   <script>
     // Synchronous Pre-Render Auth Check: Prevents Flash of Unauthenticated Content (FOUC)
     // If user is already logged in with a valid session, hide login modal before first paint.
@@ -134,15 +134,8 @@
               <span class="port-picker-arrow">▼</span>
             </button>
 
-            <!-- Dropdown Multi-Select Panel with Checkboxes -->
+            <!-- Dropdown Multi-Select Panel with Checkboxes (Continuous vertical list like Enclosure) -->
             <div id="port-dropdown-panel" class="port-dropdown-panel" style="display:none;">
-              <div class="port-dropdown-header">
-                <span style="font-size:0.75rem; font-weight:700; color:#64748b; text-transform:uppercase; letter-spacing:0.5px;">Ports</span>
-                <div style="display:flex; gap:8px; align-items:center;">
-                  <button type="button" class="btn-port-action" onclick="selectAllPorts(false)" title="Clear selection">Clear</button>
-                  <button type="button" class="btn-port-done" onclick="closePortDropdown()">Done ✓</button>
-                </div>
-              </div>
               <div id="port-checkbox-grid" class="port-checkbox-grid">
                 <!-- Checkboxes dynamically generated based on OLT ports -->
               </div>
@@ -467,7 +460,7 @@
   <!-- Local Offline Vendor Scripts -->
   <script src="vendor/leaflet.js"></script>
   <script src="vendor/xlsx.full.min.js"></script>
-  <script src="preload_data.js?v=69"></script>
-  <script src="app.js?v=69"></script>
+  <script src="preload_data.js?v=70"></script>
+  <script src="app.js?v=70"></script>
 </body>
 </html>
