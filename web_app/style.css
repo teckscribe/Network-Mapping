@@ -245,7 +245,7 @@ body {
 }
 
 .gs-cell-group > label {
-  margin-bottom: auto;
+  margin-bottom: 0;
 }
 
 .gs-cell-label {
