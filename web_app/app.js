@@ -8,6 +8,7 @@ let accuracyCircle = null;
 let gpsWatchId = null;
 let gpsWatchTimer = null;
 let bestAccuracy = Infinity;
+let currentActiveEnclosure = '';
 
 const STORAGE_KEY = 'gpon_survey_records_v1';
 let records = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
@@ -1339,6 +1340,7 @@ function updateCentersForSelectedRegion(selectedReg, prevCenter = '') {
 function onRegionChange() {
   const selReg = regionSelect ? regionSelect.value : '';
   updateCentersForSelectedRegion(selReg);
+  currentActiveEnclosure = '';
   resetPoleFields();
   clearCustomerInputs();
   onCenterChange();
@@ -1787,12 +1789,13 @@ function getEnclosurePoleInfo(eid) {
 function handleEnclosureChange() {
   const olt = oltSelect ? oltSelect.value : '';
   const port = portSelect ? portSelect.value : '';
-  const enc = enclosureSelect ? enclosureSelect.value : '';
+  const newEnc = enclosureSelect ? enclosureSelect.value : '';
+  const prevEnc = currentActiveEnclosure;
 
   clearCustomerInputs();
 
-  if (enc && olt && port) {
-    const eid = computeEnclosureId(olt, port, enc);
+  if (newEnc && olt && port) {
+    const eid = computeEnclosureId(olt, port, newEnc);
     const poleInfo = getEnclosurePoleInfo(eid);
     if (poleInfo && (poleInfo.lat_long || poleInfo.kseb_post_number || poleInfo.landmark)) {
       if (postInput) postInput.value = poleInfo.kseb_post_number || '';
@@ -1812,12 +1815,19 @@ function handleEnclosureChange() {
         }
       }
     } else {
-      // New / unmapped enclosure: Clear pole-specific fields (KSEB post number & GPS coordinates) to null
-      // so surveyor enters the fresh pole number and captures new GPS coordinates for this enclosure
-      resetPoleFields(true);
+      // New / unmapped enclosure:
+      // If surveyor switched from an existing enclosure (e.g. E1 -> E2), clear pole fields to null
+      // so E1's pole number and GPS do not contaminate E2.
+      // But if this is the first enclosure selection for this site (prevEnc is empty),
+      // preserve user-entered KSEB pole number and GPS coordinates!
+      if (prevEnc && prevEnc !== newEnc) {
+        resetPoleFields(true);
+      }
     }
+    currentActiveEnclosure = newEnc;
   } else {
     // No enclosure selected: Reset pole fields to empty
+    currentActiveEnclosure = '';
     resetPoleFields(true);
   }
 
@@ -2178,6 +2188,7 @@ function selectSinglePort(portValue, event) {
 
   const selectedArray = portValue ? [portValue] : [];
   if (enclosureSelect) enclosureSelect.value = '';
+  currentActiveEnclosure = '';
   resetPoleFields(true);
   clearCustomerInputs();
   syncPortSelection(selectedArray);
@@ -2259,17 +2270,20 @@ if (regionSelect) {
   regionSelect.addEventListener('change', onRegionChange);
 }
 centerSelect.addEventListener('change', () => {
+  currentActiveEnclosure = '';
   resetPoleFields();
   clearCustomerInputs();
   onCenterChange();
   fetchSurveyedPoints();
 });
 rtRoomSelect.addEventListener('change', () => {
+  currentActiveEnclosure = '';
   resetPoleFields();
   clearCustomerInputs();
   onRTRoomChange();
 });
 oltSelect.addEventListener('change', () => {
+  currentActiveEnclosure = '';
   resetPoleFields();
   clearCustomerInputs();
   onOLTChange();
@@ -2277,6 +2291,7 @@ oltSelect.addEventListener('change', () => {
 if (oltTypeSelect) oltTypeSelect.addEventListener('change', onOLTTypeChange);
 if (portSelect) portSelect.addEventListener('change', () => {
   if (enclosureSelect) enclosureSelect.value = '';
+  currentActiveEnclosure = '';
   resetPoleFields(true);
   clearCustomerInputs();
   updateAvailableEnclosures();
@@ -2869,6 +2884,7 @@ function saveRecord() {
 
   // Clear customer-specific subscriber inputs only (keep equipment & pole strictly pinned!)
   clearCustomerInputs();
+  currentActiveEnclosure = entry["Enclosure"] || (enclosureSelect ? enclosureSelect.value : '');
 
   const savedSpl = splitterIdSelect ? splitterIdSelect.value : '';
   const savedRatio = splitterRatioSelect ? splitterRatioSelect.value : '';
