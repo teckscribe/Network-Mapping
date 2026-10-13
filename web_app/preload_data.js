@@ -13,33 +13,16 @@ const DEFAULT_PRELOAD = {
   },
   ratios: ["1:2", "1:4", "1:8", "1:16", "1:32"],
   color_codes_by_ratio: {
-    "1:2": ["Out 1 - Blue", "Out 2 - Orange"],
-    "1:4": ["Out 1 - Blue", "Out 2 - Orange", "Out 3 - Green", "Out 4 - Brown"],
+    "1:2": ["Out-1", "Out-2"],
+    "1:4": ["Out-1", "Out-2", "Out-3", "Out-4"],
     "1:8": [
-      "Out 1 - Blue", "Out 2 - Orange", "Out 3 - Green", "Out 4 - Brown",
-      "Out 5 - Slate", "Out 6 - White", "Out 7 - Red", "Out 8 - Black"
+      "Out-1", "Out-2", "Out-3", "Out-4",
+      "Out-5", "Out-6", "Out-7", "Out-8"
     ],
-    "1:16": [
-      "Out 1 - Blue", "Out 2 - Orange", "Out 3 - Green", "Out 4 - Brown",
-      "Out 5 - Slate", "Out 6 - White", "Out 7 - Red", "Out 8 - Black",
-      "Out 9 - Yellow", "Out 10 - Violet", "Out 11 - Rose", "Out 12 - Aqua",
-      "Out 13 - Blue", "Out 14 - Orange", "Out 15 - Green", "Out 16 - Brown"
-    ],
-    "1:32": [
-      "Out 1 - Blue", "Out 2 - Orange", "Out 3 - Green", "Out 4 - Brown",
-      "Out 5 - Slate", "Out 6 - White", "Out 7 - Red", "Out 8 - Black",
-      "Out 9 - Yellow", "Out 10 - Violet", "Out 11 - Rose", "Out 12 - Aqua",
-      "Out 13 - Blue", "Out 14 - Orange", "Out 15 - Green", "Out 16 - Brown",
-      "Out 17 - Slate", "Out 18 - White", "Out 19 - Red", "Out 20 - Black",
-      "Out 21 - Yellow", "Out 22 - Violet", "Out 23 - Rose", "Out 24 - Aqua",
-      "Out 25 - Blue", "Out 26 - Orange", "Out 27 - Green", "Out 28 - Brown",
-      "Out 29 - Slate", "Out 30 - White", "Out 31 - Red", "Out 32 - Black"
-    ]
+    "1:16": Array.from({length: 16}, (_, i) => `Out-${i + 1}`),
+    "1:32": Array.from({length: 32}, (_, i) => `Out-${i + 1}`)
   },
-  color_codes: [
-    "Blue", "Orange", "Green", "Brown", "Slate", "White",
-    "Red", "Black", "Yellow", "Violet", "Rose", "Aqua"
-  ]
+  color_codes: Array.from({length: 32}, (_, i) => `Out-${i + 1}`)
 };
 
 // Check for user-uploaded custom hierarchy from Excel / Local Storage

@@ -203,25 +203,43 @@ try {
   networkSurveyedPoints = {};
 }
 
+const FIBER_COLORS = ["BLUE", "ORANGE", "GREEN", "BROWN", "SLATE", "WHITE", "RED", "BLACK", "YELLOW", "VIOLET", "ROSE", "AQUA"];
+const COLOR_TO_NUM = {};
+const NUM_TO_COLOR = {};
+FIBER_COLORS.forEach((col, idx) => {
+  COLOR_TO_NUM[col] = idx + 1;
+  NUM_TO_COLOR[idx + 1] = col;
+});
+
 function getColorVariants(color) {
   const c = String(color || '').trim().toUpperCase();
   if (!c) return [];
-  const variants = [c];
-  const m = c.match(/^OUT\s+(\d+)\s*-\s*(.+)$/);
+  const variants = new Set([c]);
+
+  let portNum = null;
+  const m = c.match(/^OUT\s*[- ]\s*(\d+)|^OUT\s*(\d+)/i);
   if (m) {
-    const portNum = parseInt(m[1], 10);
-    const colName = m[2].trim();
-    // Only ports 1-12 alias to plain color name (prevents Out 13/25 from colliding with Out 1)
-    if (portNum <= 12 && !variants.includes(colName)) {
-      variants.push(colName);
-    }
-  } else {
-    const out1Variant = `OUT 1 - ${c}`;
-    if (!variants.includes(out1Variant)) {
-      variants.push(out1Variant);
+    portNum = parseInt(m[1] || m[2], 10);
+  } else if (COLOR_TO_NUM[c]) {
+    portNum = COLOR_TO_NUM[c];
+  }
+
+  if (portNum && !isNaN(portNum) && portNum > 0) {
+    variants.add(`OUT-${portNum}`);
+    variants.add(`OUT -${portNum}`);
+    variants.add(`OUT - ${portNum}`);
+    variants.add(`OUT ${portNum}`);
+    if (NUM_TO_COLOR[portNum]) {
+      const colName = NUM_TO_COLOR[portNum];
+      variants.add(`OUT ${portNum} - ${colName}`);
+      variants.add(`OUT-${portNum} - ${colName}`);
+      if (portNum <= 12) {
+        variants.add(colName);
+      }
     }
   }
-  return variants;
+
+  return Array.from(variants);
 }
 
 function getLeadKey(eid, spl, color) {
@@ -1450,7 +1468,7 @@ function initDropdowns(preserveSelection = false) {
   onCenterChange(prevRt, prevOlt);
 }
 
-// Splitter Lead Colour Code dynamically based on Splitter Ratio and Survey Status
+// Splitter Out dynamically based on Splitter Ratio and Survey Status
 function updateSplitterColorOptions() {
   if (!splitterColorSelect) return;
   const olt = oltSelect ? oltSelect.value : '';
@@ -1465,7 +1483,7 @@ function updateSplitterColorOptions() {
 
   const defOpt = document.createElement('option');
   defOpt.value = '';
-  defOpt.innerText = ratio ? `-- Select Out Color (Optional) --` : '-- Select Ratio First --';
+  defOpt.innerText = ratio ? `-- Select Splitter Out (Optional) --` : '-- Select Ratio First --';
   splitterColorSelect.appendChild(defOpt);
 
   if (!ratio) {
@@ -1510,11 +1528,12 @@ function updateSplitterColorOptions() {
   });
 
   // Preserve previous selection only if still valid and not disabled.
-  // NEVER auto-select a lead color: user must explicitly choose a color, or leave empty if 0 connections.
+  // NEVER auto-select a lead: user must explicitly choose an out, or leave empty if 0 connections.
   if (prev) {
-    const optMatch = Array.from(splitterColorSelect.options).find(o => o.value === prev && !o.disabled);
+    const prevVars = getColorVariants(prev);
+    const optMatch = Array.from(splitterColorSelect.options).find(o => prevVars.some(v => getColorVariants(o.value).includes(v)) && !o.disabled);
     if (optMatch) {
-      splitterColorSelect.value = prev;
+      splitterColorSelect.value = optMatch.value;
     } else {
       splitterColorSelect.value = '';
     }
@@ -2712,11 +2731,11 @@ function saveRecord() {
   const adlId = (colorCode && adlSubInput) ? adlSubInput.value.trim() : '';
   const acsId = (colorCode && acsSubInput) ? acsSubInput.value.trim() : '';
 
-  // Mandatory check: Splitter Out Colour Code is strictly required if entering a Subscriber ID
+  // Mandatory check: Splitter Out is strictly required if entering a Subscriber ID
   const rawAdl = adlSubInput ? adlSubInput.value.trim() : '';
   const rawAcs = acsSubInput ? acsSubInput.value.trim() : '';
   if ((rawAdl || rawAcs) && !colorCode) {
-    showToast('⚠️ Splitter Out Colour Code is mandatory to enter a Subscriber ID!', false);
+    showToast('⚠️ Splitter Out is mandatory to enter a Subscriber ID!', false);
     if (splitterColorSelect) {
       splitterColorSelect.scrollIntoView({ behavior: 'smooth', block: 'center' });
       splitterColorSelect.focus();
@@ -2742,7 +2761,7 @@ function saveRecord() {
   if (existingLeadSurvey && !isSupervisor) {
     const surveyor = existingLeadSurvey.surveyor_name || existingLeadSurvey.surveyor_username || 'another surveyor';
     const blockedMsg = colorCode
-      ? `❌ Lead "${colorCode}" of Splitter ${spl} under Enclosure ${eid} was already surveyed by ${surveyor}! Field technicians cannot overwrite existing records.`
+      ? `❌ Splitter Out "${colorCode}" of Splitter ${spl} under Enclosure ${eid} was already surveyed by ${surveyor}! Field technicians cannot overwrite existing records.`
       : `❌ Splitter ${spl} under Enclosure ${eid} was already surveyed by ${surveyor}! Field technicians cannot overwrite existing records.`;
     showToast(blockedMsg, false);
     if (splitterColorSelect) splitterColorSelect.focus();
@@ -2758,7 +2777,7 @@ function saveRecord() {
       const rEid = (r["Enclosure ID"] || r.enclosure_id || '').trim().toUpperCase();
       const rSpl = (r["Splitter ID"] || r.splitter_id || '').trim().toUpperCase();
       if (rEid !== eid.toUpperCase() || rSpl !== spl.toUpperCase()) return false;
-      const rCol = (r["Splitter Lead Colour Code"] || r.splitter_lead_color || '').trim().toUpperCase();
+      const rCol = (r["Splitter Out"] || r["Splitter Lead Colour Code"] || r.splitter_lead_color || '').trim().toUpperCase();
       if (!colorCode && !rCol) return true;
       if (!colorCode || !rCol) return false;
       const colVars = getColorVariants(colorCode);
@@ -2768,7 +2787,7 @@ function saveRecord() {
 
     if (isDuplicateLead) {
       const msg = colorCode
-        ? `❌ Lead "${colorCode}" of Splitter ${spl} is already in your pending records! Duplicate entry not allowed.`
+        ? `❌ Splitter Out "${colorCode}" of Splitter ${spl} is already in your pending records! Duplicate entry not allowed.`
         : `❌ Splitter ${spl} is already in your pending records with zero connections!`;
       showToast(msg, false);
       if (splitterColorSelect) splitterColorSelect.focus();
@@ -2819,6 +2838,7 @@ function saveRecord() {
     "Splitter ID": spl,
     "Splitter Ratio": splitterRatioSelect.value,
     "No: Of Customer Connected": parseInt(custCountInput.value) || 0,
+    "Splitter Out": colorCode,
     "Splitter Lead Colour Code": colorCode,
     "ADL Subscriber ID": adlId,
     "ACS Subscriber ID": acsId,
@@ -2977,8 +2997,8 @@ function showSubmitConfirmModal(entry, isAcsoUpdate = false) {
       <strong style="color:#0284c7; font-family:monospace; font-size:1.05rem;">${encId}</strong>
     </div>
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-      <span style="color:#64748b;">Splitter & Lead:</span>
-      <strong style="color:#334155;">${splitInfo} • ${entry["Splitter Lead Colour Code"] || 'No Lead (0 Connected)'}</strong>
+      <span style="color:#64748b;">Splitter & Out:</span>
+      <strong style="color:#334155;">${splitInfo} • ${entry["Splitter Out"] || entry["Splitter Lead Colour Code"] || 'No Out (0 Connected)'}</strong>
     </div>
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
       <span style="color:#64748b;">Subscriber ID:</span>
@@ -3057,7 +3077,7 @@ function renderSheetTable() {
       : '<span class="gs-tag-pending">⏳ Pending</span>';
 
     const timeDisplay = r["Date & Time"] || r.survey_date_time || (r.timestamp ? r.timestamp.slice(0, 19).replace('T', ' ') : '-');
-    const colorDisplay = r["Splitter Lead Colour Code"] || r.splitter_lead_color || '-';
+    const colorDisplay = r["Splitter Out"] || r["Splitter Lead Colour Code"] || r.splitter_lead_color || '-';
     const adlDisplay = r["ADL Subscriber ID"] || r.adl_subscriber_id || '-';
     const acsDisplay = r["ACS Subscriber ID"] || r.acs_subscriber_id || '-';
 
@@ -3164,7 +3184,7 @@ async function exportToExcel() {
     'Region', 'Center', 'RT Room', 'GPON/FTTH/WDM', 'OLT/Node  Name', 
     'Port Number', 'KSEB Post Number', 'Land Mark', 'Enclosure Number', 
     'Enclosure ID', 'Lat /Long', 'Splitter ID', 'Splitter Ratio', 
-    'No: Of Customer Connected', 'Splitter Lead Colour Code', 
+    'No: Of Customer Connected', 'Splitter Out', 
     'ADL Subscriber ID', 'ACS Subscriber ID', 'Date & Time'
   ];
 
@@ -3189,7 +3209,7 @@ async function exportToExcel() {
       r["Splitter ID"] || "",
       r["Splitter Ratio"] || "",
       r["No: Of Customer Connected"] || 0,
-      r["Splitter Lead Colour Code"] || r["splitter_lead_color"] || "",
+      r["Splitter Out"] || r["Splitter Lead Colour Code"] || r["splitter_lead_color"] || "",
       r["ADL Subscriber ID"] || r["adl_subscriber_id"] || "",
       r["ACS Subscriber ID"] || r["acs_subscriber_id"] || "",
       r["Date & Time"] || r["survey_date_time"] || (r["timestamp"] ? r["timestamp"].slice(0, 19).replace('T', ' ') : "")

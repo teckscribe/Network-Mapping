@@ -698,7 +698,7 @@ def build_excel_workbook(rows, title="Survey_Data") -> openpyxl.Workbook:
         'Region', 'Center', 'RT Room', 'GPON/FTTH/WDM', 'OLT/Node Name',
         'Port Number', 'KSEB Post Number', 'Land Mark', 'Enclosure Number',
         'Enclosure ID', 'Lat /Long', 'Splitter ID', 'Splitter Ratio',
-        'No: Of Customer Connected', 'Splitter Out Colour Code',
+        'No: Of Customer Connected', 'Splitter Out',
         'ADL Subscriber ID', 'ACS Subscriber ID', 'Date & Time', 'Surveyor Name'
     ]
 
@@ -2282,20 +2282,32 @@ def get_color_variants(color: Optional[str]) -> list:
     c = str(color).strip().upper()
     if not c:
         return []
-    variants = [c]
+    variants = {c}
+    fiber_colors = ["BLUE", "ORANGE", "GREEN", "BROWN", "SLATE", "WHITE", "RED", "BLACK", "YELLOW", "VIOLET", "ROSE", "AQUA"]
+    color_to_num = {col: i + 1 for i, col in enumerate(fiber_colors)}
+    num_to_color = {i + 1: col for i, col in enumerate(fiber_colors)}
+
+    port_num = None
     import re
-    m = re.match(r"^OUT\s+(\d+)\s*-\s*(.+)$", c)
+    m = re.match(r"^OUT\s*[- ]\s*(\d+)|^OUT\s*(\d+)", c, re.IGNORECASE)
     if m:
-        port_num = int(m.group(1))
-        col_name = m.group(2).strip()
-        # Only port 1-12 can alias to plain color name (prevents Out 13/25 colliding with Out 1)
-        if port_num <= 12 and col_name not in variants:
-            variants.append(col_name)
-    else:
-        out1 = f"OUT 1 - {c}"
-        if out1 not in variants:
-            variants.append(out1)
-    return variants
+        port_num = int(m.group(1) or m.group(2))
+    elif c in color_to_num:
+        port_num = color_to_num[c]
+
+    if port_num and port_num > 0:
+        variants.add(f"OUT-{port_num}")
+        variants.add(f"OUT -{port_num}")
+        variants.add(f"OUT - {port_num}")
+        variants.add(f"OUT {port_num}")
+        if port_num in num_to_color:
+            col_name = num_to_color[port_num]
+            variants.add(f"OUT {port_num} - {col_name}")
+            variants.add(f"OUT-{port_num} - {col_name}")
+            if port_num <= 12:
+                variants.add(col_name)
+
+    return list(variants)
 
 @app.get("/api/surveyed-points")
 def get_surveyed_points(center: Optional[str] = None, session: dict = Depends(require_any_auth)):
@@ -3060,7 +3072,7 @@ async def upload_survey_excel(file: UploadFile = File(...), session: dict = Depe
                 splitter_id = get_val(row, "splitterid")
                 splitter_ratio = get_val(row, "splitterratio", "ratio")
                 customers_raw = get_val(row, "customersconnected", "cust", "customers", default="0")
-                splitter_color = get_val(row, "splitteroutcolourcode", "splitterleadcolor", "colourcode", "color")
+                splitter_color = get_val(row, "splitterout", "splitteroutcolourcode", "splitterleadcolor", "splitteroutcode", "colourcode", "color")
                 adl_id = get_val(row, "adlsubscriberid", "adlid", "adl")
                 acs_id = get_val(row, "acssubscriberid", "acsid", "acs")
                 survey_dt = get_val(row, "surveydatetime", "surveydate", "datetime", "date", default=now_str[:19].replace('T', ' '))
@@ -3527,7 +3539,7 @@ def admin_dashboard(response: Response):
                 <th>Landmark</th>
                 <th>Lat / Long</th>
                 <th>Cust</th>
-                <th>Out Color</th>
+                <th>Splitter Out</th>
                 <th>ADL ID</th>
                 <th>ACS ID</th>
                 <th>Surveyor</th>
@@ -3964,25 +3976,41 @@ def admin_dashboard(response: Response):
                 </select>
               </div>
               <div>
-                <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">Splitter Out Colour Code</label>
+                <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">Splitter Out</label>
                 <select id="edit-rec-color" style="width:100%;">
                   <option value="">-- None / Select --</option>
-                  <option value="Out 1 - Blue">Out 1 - Blue</option>
-                  <option value="Out 2 - Orange">Out 2 - Orange</option>
-                  <option value="Out 3 - Green">Out 3 - Green</option>
-                  <option value="Out 4 - Brown">Out 4 - Brown</option>
-                  <option value="Out 5 - Slate">Out 5 - Slate</option>
-                  <option value="Out 6 - White">Out 6 - White</option>
-                  <option value="Out 7 - Red">Out 7 - Red</option>
-                  <option value="Out 8 - Black">Out 8 - Black</option>
-                  <option value="Out 9 - Yellow">Out 9 - Yellow</option>
-                  <option value="Out 10 - Violet">Out 10 - Violet</option>
-                  <option value="Out 11 - Rose">Out 11 - Rose</option>
-                  <option value="Out 12 - Aqua">Out 12 - Aqua</option>
-                  <option value="Out 13 - Blue">Out 13 - Blue</option>
-                  <option value="Out 14 - Orange">Out 14 - Orange</option>
-                  <option value="Out 15 - Green">Out 15 - Green</option>
-                  <option value="Out 16 - Brown">Out 16 - Brown</option>
+                  <option value="Out-1">Out-1</option>
+                  <option value="Out-2">Out-2</option>
+                  <option value="Out-3">Out-3</option>
+                  <option value="Out-4">Out-4</option>
+                  <option value="Out-5">Out-5</option>
+                  <option value="Out-6">Out-6</option>
+                  <option value="Out-7">Out-7</option>
+                  <option value="Out-8">Out-8</option>
+                  <option value="Out-9">Out-9</option>
+                  <option value="Out-10">Out-10</option>
+                  <option value="Out-11">Out-11</option>
+                  <option value="Out-12">Out-12</option>
+                  <option value="Out-13">Out-13</option>
+                  <option value="Out-14">Out-14</option>
+                  <option value="Out-15">Out-15</option>
+                  <option value="Out-16">Out-16</option>
+                  <option value="Out-17">Out-17</option>
+                  <option value="Out-18">Out-18</option>
+                  <option value="Out-19">Out-19</option>
+                  <option value="Out-20">Out-20</option>
+                  <option value="Out-21">Out-21</option>
+                  <option value="Out-22">Out-22</option>
+                  <option value="Out-23">Out-23</option>
+                  <option value="Out-24">Out-24</option>
+                  <option value="Out-25">Out-25</option>
+                  <option value="Out-26">Out-26</option>
+                  <option value="Out-27">Out-27</option>
+                  <option value="Out-28">Out-28</option>
+                  <option value="Out-29">Out-29</option>
+                  <option value="Out-30">Out-30</option>
+                  <option value="Out-31">Out-31</option>
+                  <option value="Out-32">Out-32</option>
                 </select>
               </div>
             </div>
@@ -5558,7 +5586,29 @@ def admin_dashboard(response: Response):
           setVal('edit-rec-coords', r.lat_long || '');
           setVal('edit-rec-cust', (r.customers_connected !== undefined) ? r.customers_connected : 0);
           setVal('edit-rec-ratio', r.splitter_ratio || '1:8');
-          setVal('edit-rec-color', r.splitter_lead_color || '');
+          const colEl = document.getElementById('edit-rec-color');
+          if (colEl) {
+            const rawCol = (r.splitter_lead_color || '').trim();
+            let matchedOpt = Array.from(colEl.options).find(o => o.value.toLowerCase() === rawCol.toLowerCase());
+            if (!matchedOpt && rawCol) {
+              const numMatch = rawCol.match(/^OUT\\s*[- ]\\s*(\\d+)/i);
+              if (numMatch) {
+                const targetVal = `Out-${numMatch[1]}`;
+                matchedOpt = Array.from(colEl.options).find(o => o.value.toLowerCase() === targetVal.toLowerCase());
+              }
+            }
+            if (matchedOpt) {
+              colEl.value = matchedOpt.value;
+            } else if (rawCol) {
+              const opt = document.createElement('option');
+              opt.value = rawCol;
+              opt.innerText = rawCol;
+              colEl.appendChild(opt);
+              colEl.value = rawCol;
+            } else {
+              colEl.value = '';
+            }
+          }
           setVal('edit-rec-adl', r.adl_subscriber_id || '');
           setVal('edit-rec-acs', r.acs_subscriber_id || '');
           setVal('edit-rec-port', r.port_number || '');
