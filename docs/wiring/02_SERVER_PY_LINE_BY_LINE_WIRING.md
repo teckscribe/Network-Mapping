@@ -1,7 +1,7 @@
 # Server.py Line-by-Line & Route Wiring Dissection
-*Generated automatically on: 2026-10-13 09:15:54*
+*Generated automatically on: 2026-10-13 09:24:10*
 
-Total lines in `server.py`: **6496** LOC
+Total lines in `server.py`: **6707** LOC
 
 ## 1. Subsystem Functional Blocks (Line-by-Line Breakdown)
 The 6,229 lines of `server.py` are partitioned into 16 mission-critical functional blocks:
@@ -52,24 +52,25 @@ The 6,229 lines of `server.py` are partitioned into 16 mission-critical function
 | `DELETE` | `/api/hierarchy/clear` | L2167-L2169 | `clear_hierarchy()` | `require_super_admin_auth` | REST Endpoint |
 | `DELETE` | `/api/hierarchy/center` | L2172-L2185 | `delete_hierarchy_center()` | `require_super_admin_auth` | REST Endpoint |
 | `GET` | `/api/download-project-ppt` | L2187-L2195 | `download_project_ppt()` | `Public / Session` | REST Endpoint |
-| `GET` | `/api/download-hierarchy-template` | L2198-L2235 | `download_hierarchy_template()` | `Public / Session` | REST Endpoint |
-| `GET` | `/api/health` | L2242-L2248 | `health_check()` | `Public / Session` | REST Endpoint |
-| `GET` | `/api/surveyed-points` | L2272-L2388 | `get_surveyed_points()` | `require_any_auth` | Returns an index map of all surveyed enclosure/splitter points across the network. |
-| `POST` | `/api/sync` | L2391-L2544 | `sync_records()` | `require_any_auth` | REST Endpoint |
-| `GET` | `/api/records` | L2548-L2612 | `get_all_records()` | `require_management_auth` | REST Endpoint |
-| `PUT` | `/api/records/{client_uuid}` | L2615-L2664 | `update_survey_record()` | `require_admin_auth` | REST Endpoint |
-| `DELETE` | `/api/records/{client_uuid}` | L2667-L2707 | `delete_record()` | `require_any_auth` | REST Endpoint |
-| `POST` | `/api/records/bulk-delete` | L2710-L2733 | `bulk_delete_records()` | `require_any_auth` | REST Endpoint |
-| `POST` | `/api/records/clear-center` | L2736-L2755 | `clear_center_records()` | `require_super_admin_auth` | REST Endpoint |
-| `GET` | `/api/export-excel` | L2758-L2796 | `export_server_excel()` | `require_management_auth` | REST Endpoint |
-| `GET` | `/api/export-center-excel` | L2799-L2884 | `export_center_excel()` | `require_export_auth` | Exports and downloads filtered survey Excel file streamed dynamically in-memory. |
-| `GET` | `/api/export-data-zip` | L2887-L2959 | `export_data_zip()` | `require_management_auth` | Generates and downloads a ZIP archive of all region/center Excel files dynamically in-memory. |
-| `POST` | `/api/upload-survey-excel` | L2962-L3107 | `upload_survey_excel()` | `require_admin_auth` | Imports survey records from an Excel (.xlsx/.xls) or CSV file directly into SQLite in-memory. |
-| `GET` | `/api/data-folders-summary` | L3110-L3192 | `get_data_folders_summary()` | `require_management_auth` | Returns structured summary of region and center survey records with dynamic in-memory exports. |
-| `POST` | `/api/resync-data-folders` | L3195-L3203 | `resync_data_folders()` | `require_admin_auth` | Optimizes server storage and recounts SQLite records. |
-| `GET` | `/docs/wiring` | L3208-L3213 | `get_wiring_report()` | `Public / Session` | Serves the interactive architecture wiring and blast-radius report. |
-| `GET` | `/manifest.json` | L3216-L3228 | `get_pwa_manifest()` | `Public / Session` | REST Endpoint |
-| `GET` | `/admin` | L3232-L6488 | `admin_dashboard()` | `Public / Session` | REST Endpoint |
+| `GET` | `/api/backup-status` | L2198-L2226 | `get_backup_status()` | `Public / Session` | Decoupled zero-overhead backup status reporter. |
+| `GET` | `/api/download-hierarchy-template` | L2229-L2266 | `download_hierarchy_template()` | `Public / Session` | REST Endpoint |
+| `GET` | `/api/health` | L2273-L2279 | `health_check()` | `Public / Session` | REST Endpoint |
+| `GET` | `/api/surveyed-points` | L2303-L2419 | `get_surveyed_points()` | `require_any_auth` | Returns an index map of all surveyed enclosure/splitter points across the network. |
+| `POST` | `/api/sync` | L2422-L2575 | `sync_records()` | `require_any_auth` | REST Endpoint |
+| `GET` | `/api/records` | L2579-L2643 | `get_all_records()` | `require_management_auth` | REST Endpoint |
+| `PUT` | `/api/records/{client_uuid}` | L2646-L2695 | `update_survey_record()` | `require_admin_auth` | REST Endpoint |
+| `DELETE` | `/api/records/{client_uuid}` | L2698-L2738 | `delete_record()` | `require_any_auth` | REST Endpoint |
+| `POST` | `/api/records/bulk-delete` | L2741-L2764 | `bulk_delete_records()` | `require_any_auth` | REST Endpoint |
+| `POST` | `/api/records/clear-center` | L2767-L2786 | `clear_center_records()` | `require_super_admin_auth` | REST Endpoint |
+| `GET` | `/api/export-excel` | L2789-L2827 | `export_server_excel()` | `require_management_auth` | REST Endpoint |
+| `GET` | `/api/export-center-excel` | L2830-L2915 | `export_center_excel()` | `require_export_auth` | Exports and downloads filtered survey Excel file streamed dynamically in-memory. |
+| `GET` | `/api/export-data-zip` | L2918-L2990 | `export_data_zip()` | `require_management_auth` | Generates and downloads a ZIP archive of all region/center Excel files dynamically in-memory. |
+| `POST` | `/api/upload-survey-excel` | L2993-L3138 | `upload_survey_excel()` | `require_admin_auth` | Imports survey records from an Excel (.xlsx/.xls) or CSV file directly into SQLite in-memory. |
+| `GET` | `/api/data-folders-summary` | L3141-L3223 | `get_data_folders_summary()` | `require_management_auth` | Returns structured summary of region and center survey records with dynamic in-memory exports. |
+| `POST` | `/api/resync-data-folders` | L3226-L3234 | `resync_data_folders()` | `require_admin_auth` | Optimizes server storage and recounts SQLite records. |
+| `GET` | `/docs/wiring` | L3239-L3244 | `get_wiring_report()` | `Public / Session` | Serves the interactive architecture wiring and blast-radius report. |
+| `GET` | `/manifest.json` | L3247-L3259 | `get_pwa_manifest()` | `Public / Session` | REST Endpoint |
+| `GET` | `/admin` | L3263-L6699 | `admin_dashboard()` | `Public / Session` | REST Endpoint |
 
 ## 3. SQLite Database Query Registry
 | Line | Target Table | SQL Operation Snippet |
@@ -121,10 +122,10 @@ The 6,229 lines of `server.py` are partitioned into 16 mission-critical function
 | L1800 | `users` | `UPDATE users SET password = ? WHERE username = ?` |
 | L1812 | `users` | `SELECT role FROM users WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))` |
 | L1822 | `users` | `DELETE FROM users WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))` |
-| L2531 | `survey_records` | `SELECT COUNT(*) FROM survey_records` |
-| L2618 | `survey_records` | `SELECT client_uuid, olt_name, port_number, enclosure_number, enclosure_id, splitter_id ...` |
-| L2679 | `survey_records` | `DELETE FROM survey_records WHERE client_uuid = ? OR LOWER(client_uuid) = LOWER(?)` |
-| L2745 | `survey_records` | `DELETE FROM survey_records WHERE LOWER(TRIM(center)) = LOWER(TRIM(?)) AND LOWER(TRIM(re...` |
-| L2747 | `survey_records` | `DELETE FROM survey_records WHERE LOWER(TRIM(center)) = LOWER(TRIM(?))` |
-| L3116 | `survey_records` | `SELECT region, center, COUNT(*) FROM survey_records GROUP BY region, center` |
-| L3200 | `survey_records` | `SELECT COUNT(*) FROM survey_records` |
+| L2562 | `survey_records` | `SELECT COUNT(*) FROM survey_records` |
+| L2649 | `survey_records` | `SELECT client_uuid, olt_name, port_number, enclosure_number, enclosure_id, splitter_id ...` |
+| L2710 | `survey_records` | `DELETE FROM survey_records WHERE client_uuid = ? OR LOWER(client_uuid) = LOWER(?)` |
+| L2776 | `survey_records` | `DELETE FROM survey_records WHERE LOWER(TRIM(center)) = LOWER(TRIM(?)) AND LOWER(TRIM(re...` |
+| L2778 | `survey_records` | `DELETE FROM survey_records WHERE LOWER(TRIM(center)) = LOWER(TRIM(?))` |
+| L3147 | `survey_records` | `SELECT region, center, COUNT(*) FROM survey_records GROUP BY region, center` |
+| L3231 | `survey_records` | `SELECT COUNT(*) FROM survey_records` |

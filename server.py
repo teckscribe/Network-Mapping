@@ -2194,6 +2194,37 @@ def download_project_ppt():
         )
     raise HTTPException(status_code=404, detail="Presentation report not found")
 
+@app.get("/api/backup-status")
+def get_backup_status():
+    """
+    Decoupled zero-overhead backup status reporter.
+    Reads backup_status.json created asynchronously by verify_backup_health.py or backup_to_gdrive.sh.
+    Takes <0.2ms and executes ZERO network, rclone, or heavy disk operations.
+    """
+    status_file = os.path.join(BASE_DIR, "backup_status.json")
+    if os.path.exists(status_file):
+        try:
+            with open(status_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return JSONResponse(content=data, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+        except Exception as e:
+            return JSONResponse(
+                content={
+                    "status": "warning",
+                    "message": f"Could not read backup status: {e}",
+                    "last_checked_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                },
+                headers={"Cache-Control": "no-cache"}
+            )
+    return JSONResponse(
+        content={
+            "status": "unknown",
+            "message": "No backup health record found yet. Run verify_backup_health.py --update or wait for scheduled cron backup.",
+            "last_checked_at": None
+        },
+        headers={"Cache-Control": "no-cache"}
+    )
+
 @app.get("/api/download-hierarchy-template")
 def download_hierarchy_template():
     wb = openpyxl.Workbook()
@@ -3350,9 +3381,13 @@ def admin_dashboard(response: Response):
       <!-- Top Header -->
       <div class="header">
         <div>
-          <div style="display:flex; align-items:center; gap:10px;">
+          <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
             <h1 style="margin:0; font-size:1.45rem; color:#0f172a;">📡 Network Mapping</h1>
             <span id="header-user-badge" class="tag" style="background:#6366f1;">Super Admin</span>
+            <span id="header-backup-badge" class="tag" style="background:#f1f5f9; color:#475569; border:1px solid #cbd5e1; font-size:0.75rem; cursor:pointer; display:inline-flex; align-items:center; gap:6px; padding:3px 9px; border-radius:12px; font-weight:600;" title="Click for Google Drive Cloud Backup health" onclick="showBackupDetailsModal()">
+              <span id="backup-status-dot" style="width:7px; height:7px; border-radius:50%; background:#94a3b8; display:inline-block;"></span>
+              <span id="backup-status-text">☁️ GDrive: Checking...</span>
+            </span>
           </div>
           <p style="margin:4px 0 0 0; font-size:0.82rem; color:#64748b;">
             Logged in as: <strong id="header-user-name">Administrator</strong> | <span id="header-user-jurisdiction">Center: <span id="header-user-center">ALL</span></span>
@@ -3973,6 +4008,56 @@ def admin_dashboard(response: Response):
         </div>
       </div>
 
+      <!-- Backup Status Details Modal -->
+      <div id="backup-details-modal" onclick="if(event.target===this)closeBackupDetailsModal()" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(15,23,42,0.65); backdrop-filter:blur(3px); z-index:10001; justify-content:center; align-items:center; padding:16px;">
+        <div style="background:white; border-radius:12px; padding:24px; max-width:520px; width:100%; box-shadow:0 20px 25px -5px rgba(0,0,0,0.25); border:1px solid #cbd5e1;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; border-bottom:1px solid #e2e8f0; padding-bottom:10px;">
+            <h3 style="margin:0; color:#0f172a; font-size:1.15rem; display:flex; align-items:center; gap:8px;">
+              <span>☁️</span> Google Drive Cloud Backup Status
+            </h3>
+            <button type="button" onclick="closeBackupDetailsModal()" style="background:none; border:none; font-size:1.4rem; color:#64748b; cursor:pointer; line-height:1;">&times;</button>
+          </div>
+          <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:12px 14px; margin-bottom:14px; font-size:0.85rem; line-height:1.6; color:#334155;">
+            <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+              <span><strong>Health State:</strong></span>
+              <span id="modal-backup-state" class="tag" style="background:#64748b; font-size:0.75rem;">Checking...</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+              <span><strong>Last Backup Time:</strong></span>
+              <span id="modal-backup-time" style="font-weight:600; color:#0f172a;">-</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+              <span><strong>Latest Archive:</strong></span>
+              <span id="modal-backup-archive" style="font-family:monospace; font-size:0.8rem; color:#0284c7;">-</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+              <span><strong>Archive Size:</strong></span>
+              <span id="modal-backup-size" style="font-weight:600;">-</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+              <span><strong>Cloud Remote:</strong></span>
+              <span id="modal-backup-remote" style="font-family:monospace; font-size:0.8rem;">-</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+              <span><strong>Cloud Connected:</strong></span>
+              <span id="modal-backup-cloud">-</span>
+            </div>
+            <div style="display:flex; justify-content:space-between;">
+              <span><strong>Last Checked At:</strong></span>
+              <span id="modal-backup-checked" style="color:#64748b;">-</span>
+            </div>
+          </div>
+          <p id="modal-backup-msg" style="font-size:0.82rem; color:#475569; margin:0 0 16px 0; background:#f1f5f9; padding:8px 10px; border-radius:6px; border-left:3px solid #0284c7;"></p>
+          <div style="font-size:0.75rem; color:#64748b; line-height:1.4; margin-bottom:16px;">
+            ℹ️ Backups execute via isolated cron script (<code>backup_to_gdrive.sh</code>) and verify via <code>scripts/verify_backup_health.py</code>. Zero load on web server.
+          </div>
+          <div style="display:flex; justify-content:flex-end; gap:10px;">
+            <button type="button" class="btn btn-outline" onclick="checkBackupStatus(true)">🔄 Re-check Status</button>
+            <button type="button" class="btn btn-green" onclick="closeBackupDetailsModal()">Close</button>
+          </div>
+        </div>
+      </div>
+
       <script>
         let currentAdmin = null;
         let cachedRecords = [];
@@ -4070,6 +4155,130 @@ def admin_dashboard(response: Response):
           // Apply Role UI
           applyAdminRoleUI(role);
           return true;
+        }
+
+        // Google Drive Cloud Backup Monitoring (Decoupled, Passive, Non-Blocking)
+        let lastBackupData = null;
+
+        async function checkBackupStatus(forceRefresh = false) {
+          const badgeEl = document.getElementById('header-backup-badge');
+          const dotEl = document.getElementById('backup-status-dot');
+          const textEl = document.getElementById('backup-status-text');
+          if (!badgeEl || !dotEl || !textEl) return;
+
+          try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 3000);
+            const res = await fetch('/api/backup-status', {
+              signal: controller.signal,
+              cache: 'no-store'
+            });
+            clearTimeout(timeoutId);
+
+            if (res.ok) {
+              const data = await res.json();
+              lastBackupData = data;
+              updateBackupBadgeUI(data);
+              renderBackupDetailsModal();
+            }
+          } catch (e) {
+            // Non-blocking silent failure: never disrupts UI or existing button handlers
+            console.warn('[Backup Monitor] Passive check bypassed:', e.message);
+          }
+        }
+
+        function updateBackupBadgeUI(data) {
+          const badgeEl = document.getElementById('header-backup-badge');
+          const dotEl = document.getElementById('backup-status-dot');
+          const textEl = document.getElementById('backup-status-text');
+          if (!badgeEl || !dotEl || !textEl) return;
+
+          const st = (data && data.status) ? data.status.toLowerCase() : 'unknown';
+
+          if (st === 'healthy') {
+            dotEl.style.background = '#10b981';
+            badgeEl.style.background = '#ecfdf5';
+            badgeEl.style.color = '#065f46';
+            badgeEl.style.borderColor = '#a7f3d0';
+            const ageStr = (data.backup_age_hours !== null && data.backup_age_hours !== undefined) 
+              ? `${data.backup_age_hours}h ago` 
+              : 'Synced';
+            textEl.innerText = `☁️ GDrive: OK (${ageStr})`;
+            badgeEl.title = `Google Drive Backup is healthy. Last archive: ${data.archive_name} (${data.archive_size}). Click for details.`;
+          } else if (st === 'warning') {
+            dotEl.style.background = '#f59e0b';
+            badgeEl.style.background = '#fffbeb';
+            badgeEl.style.color = '#92400e';
+            badgeEl.style.borderColor = '#fde68a';
+            textEl.innerText = '☁️ GDrive: Local Only';
+            badgeEl.title = `Local backup exists but cloud sync is pending/not verified. Click for details.`;
+          } else if (st === 'error') {
+            dotEl.style.background = '#ef4444';
+            badgeEl.style.background = '#fef2f2';
+            badgeEl.style.color = '#991b1b';
+            badgeEl.style.borderColor = '#fecaca';
+            textEl.innerText = '☁️ GDrive: Action Needed';
+            badgeEl.title = `Backup check reported an issue: ${data.message || 'Error'}. Click for details.`;
+          } else {
+            dotEl.style.background = '#94a3b8';
+            badgeEl.style.background = '#f8fafc';
+            badgeEl.style.color = '#64748b';
+            badgeEl.style.borderColor = '#e2e8f0';
+            textEl.innerText = '☁️ GDrive: Unknown';
+            badgeEl.title = 'No backup status recorded yet. Click for details.';
+          }
+        }
+
+        function showBackupDetailsModal() {
+          const modal = document.getElementById('backup-details-modal');
+          if (modal) {
+            modal.style.display = 'flex';
+            renderBackupDetailsModal();
+            if (!lastBackupData) {
+              checkBackupStatus();
+            }
+          }
+        }
+
+        function closeBackupDetailsModal() {
+          const modal = document.getElementById('backup-details-modal');
+          if (modal) modal.style.display = 'none';
+        }
+
+        function renderBackupDetailsModal() {
+          if (!lastBackupData) return;
+          const d = lastBackupData;
+          const stateEl = document.getElementById('modal-backup-state');
+          const timeEl = document.getElementById('modal-backup-time');
+          const archEl = document.getElementById('modal-backup-archive');
+          const sizeEl = document.getElementById('modal-backup-size');
+          const remoteEl = document.getElementById('modal-backup-remote');
+          const cloudEl = document.getElementById('modal-backup-cloud');
+          const checkedEl = document.getElementById('modal-backup-checked');
+          const msgEl = document.getElementById('modal-backup-msg');
+
+          if (stateEl) {
+            stateEl.innerText = (d.status || 'unknown').toUpperCase();
+            if (d.status === 'healthy') stateEl.style.background = '#10b981';
+            else if (d.status === 'warning') stateEl.style.background = '#f59e0b';
+            else if (d.status === 'error') stateEl.style.background = '#ef4444';
+            else stateEl.style.background = '#64748b';
+            stateEl.style.color = 'white';
+          }
+          if (timeEl) {
+            const age = (d.backup_age_hours !== null && d.backup_age_hours !== undefined) ? ` (${d.backup_age_hours} hrs ago)` : '';
+            timeEl.innerText = `${d.last_backup_time || 'None'}${age}`;
+          }
+          if (archEl) archEl.innerText = d.archive_name || 'None';
+          if (sizeEl) sizeEl.innerText = d.archive_size || '0 B';
+          if (remoteEl) remoteEl.innerText = d.remote_target || 'gdrive:GPON_Backups';
+          if (cloudEl) {
+            cloudEl.innerHTML = d.cloud_connected 
+              ? '<span style="color:#10b981; font-weight:700;">✅ Connected</span>' 
+              : '<span style="color:#ef4444; font-weight:700;">❌ Disconnected / Not verified</span>';
+          }
+          if (checkedEl) checkedEl.innerText = d.last_checked_at || 'Just now';
+          if (msgEl) msgEl.innerText = d.message || 'No additional status details.';
         }
 
         function toggleAdminPassword() {
@@ -6448,6 +6657,7 @@ def admin_dashboard(response: Response):
 
         async function initAdminData() {
           await fetchHierarchy();
+          checkBackupStatus();
           if (currentAdmin && currentAdmin.role === 'rcsm') {
             const meta = getHierarchyMeta();
             meta.regions.forEach(r => selectedFeedRegions.add(r));
@@ -6481,6 +6691,7 @@ def admin_dashboard(response: Response):
               }
             }
           }
+          checkBackupStatus();
         }, 15000);
       </script>
     </body>

@@ -39,6 +39,7 @@ custom_hierarchy.json
 Node Master/
 data/
 *.bak
+backup_status.json
 
 # OS generated files
 .DS_Store
