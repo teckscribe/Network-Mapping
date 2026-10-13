@@ -19,20 +19,39 @@
 
   <!-- Local Offline Vendor Styles -->
   <link rel="stylesheet" href="vendor/leaflet.css">
-  <link rel="stylesheet" href="style.css?v=49">
+  <link rel="stylesheet" href="style.css?v=50">
+  <style>
+    /* Critical Inline Fallback: Guarantees full-screen modal lock across legacy Android WebViews & IE */
+    .login-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 99999;
+    }
+  </style>
   <script>
     // Synchronous Pre-Render Auth Check: Prevents Flash of Unauthenticated Content (FOUC)
-    // If user is already logged in with a valid session, hide login modal before first paint.
-    // If not logged in, login modal stays strictly visible covering the screen on frame 0.
+    // If user is already logged in with a valid unexpired session, hide login modal before first paint.
+    // If not logged in or expired, login modal stays strictly visible covering the screen on frame 0.
     try {
       var _rawUser = localStorage.getItem('gpon_logged_in_user');
-      if (_rawUser && _rawUser !== 'null' && _rawUser !== 'undefined' && _rawUser !== '{}') {
+      var _expiresAt = parseInt(localStorage.getItem('gpon_session_expires_at') || '0', 10);
+      var _isExpired = (_expiresAt > 0 && Date.now() >= _expiresAt);
+      if (_rawUser && _rawUser !== 'null' && _rawUser !== 'undefined' && _rawUser !== '{}' && !_isExpired) {
         var _parsedUser = JSON.parse(_rawUser);
         if (_parsedUser && _parsedUser.username) {
           document.write('<style id="fouc-prevention">#login-overlay { display: none !important; } #user-bar { display: flex !important; }</style>');
         } else {
           localStorage.removeItem('gpon_logged_in_user');
         }
+      } else if (_isExpired) {
+        localStorage.removeItem('gpon_logged_in_user');
+        localStorage.removeItem('gpon_auth_token');
+        localStorage.removeItem('gpon_session_expires_at');
       }
     } catch (e) {}
   </script>
@@ -297,7 +316,7 @@
   </div>
 
   <!-- Login Modal / Screen Overlay -->
-  <div id="login-overlay" class="login-overlay" style="display: flex;">
+  <div id="login-overlay" class="login-overlay" style="display: flex; position: fixed; top: 0; left: 0; right: 0; bottom: 0; width: 100%; height: 100%; z-index: 99999; background: rgba(32, 33, 36, 0.85); align-items: center; justify-content: center;">
     <div class="login-card">
       <div style="font-size: 2rem; text-align: center; margin-bottom: 6px; color: #0f9d58;">田</div>
       <h2 style="text-align: center; margin: 0 0 4px; font-size: 1.25rem; font-weight: 500;">Field Surveyor Sign In</h2>
@@ -342,7 +361,7 @@
   </div>
 
   <!-- Change / Reset Password Modal Overlay (Email OTP) -->
-  <div id="reset-password-overlay" class="login-overlay" style="display: none; z-index: 99999;">
+  <div id="reset-password-overlay" class="login-overlay" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; width: 100%; height: 100%; z-index: 99999; background: rgba(32, 33, 36, 0.85); align-items: center; justify-content: center;">
     <div class="login-card" style="max-width: 400px;">
       <div style="font-size: 1.8rem; text-align: center; margin-bottom: 6px; color: #0284c7;">🔐</div>
       <h2 style="text-align: center; margin: 0 0 4px; font-size: 1.25rem; font-weight: 700;">Forgot / Reset Password</h2>
@@ -417,7 +436,7 @@
   </div>
 
   <!-- Record Submitted Successfully Confirmation Modal Overlay -->
-  <div id="submit-confirm-modal" class="login-overlay" style="display: none; z-index: 99999;" onclick="if(event.target === this) closeSubmitConfirmModal()">
+  <div id="submit-confirm-modal" class="login-overlay" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; width: 100%; height: 100%; z-index: 99999; background: rgba(32, 33, 36, 0.85); align-items: center; justify-content: center;" onclick="if(event.target === this) closeSubmitConfirmModal()">
     <div class="login-card" style="max-width: 420px; text-align: center; padding: 26px 22px; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2), 0 10px 10px -5px rgba(0, 0, 0, 0.1);">
       <div id="submit-confirm-icon" style="font-size: 3.2rem; line-height: 1; margin-bottom: 8px;">✅</div>
       <h2 id="submit-confirm-title" style="margin: 0 0 4px; font-size: 1.3rem; font-weight: 700; color: #0f9d58;">Record Submitted Successfully</h2>
@@ -434,7 +453,7 @@
   </div>
 
   <!-- Delete Record Confirmation Modal Overlay -->
-  <div id="delete-confirm-modal" class="login-overlay" style="display: none; z-index: 99999;" onclick="if(event.target === this) closeDeleteConfirmModal()">
+  <div id="delete-confirm-modal" class="login-overlay" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; width: 100%; height: 100%; z-index: 99999; background: rgba(32, 33, 36, 0.85); align-items: center; justify-content: center;" onclick="if(event.target === this) closeDeleteConfirmModal()">
     <div class="login-card" style="max-width: 420px; text-align: center; padding: 24px 20px; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.25);">
       <div style="font-size: 3rem; line-height: 1; margin-bottom: 8px;">🗑️</div>
       <h2 style="margin: 0 0 6px; font-size: 1.25rem; font-weight: 700; color: #dc2626;">Delete Survey Record?</h2>
@@ -461,6 +480,6 @@
   <script src="vendor/leaflet.js"></script>
   <script src="vendor/xlsx.full.min.js"></script>
   <script src="preload_data.js?v=71"></script>
-  <script src="app.js?v=74"></script>
+  <script src="app.js?v=75"></script>
 </body>
 </html>

@@ -31,6 +31,45 @@ let isServerReachable = false;
 let serverConnectionChecked = false;
 let lastKnownHierarchyVersion = parseInt(localStorage.getItem('gpon_hierarchy_version') || '0', 10);
 
+// Cross-browser Polyfill for Element.remove() (IE 9-11, legacy Android WebViews)
+if (typeof Element !== 'undefined' && !Element.prototype.remove) {
+  Element.prototype.remove = function() {
+    if (this.parentNode) {
+      this.parentNode.removeChild(this);
+    }
+  };
+}
+
+function removeFoucPrevention() {
+  try {
+    const s = document.getElementById('fouc-prevention');
+    if (s) {
+      if (typeof s.remove === 'function') {
+        s.remove();
+      } else if (s.parentNode) {
+        s.parentNode.removeChild(s);
+      }
+    }
+  } catch (e) {}
+}
+
+function showLoginOverlay() {
+  removeFoucPrevention();
+  const overlay = document.getElementById('login-overlay');
+  if (overlay) {
+    overlay.style.cssText = "display: flex !important; position: fixed !important; top: 0 !important; left: 0 !important; right: 0 !important; bottom: 0 !important; width: 100% !important; height: 100% !important; z-index: 99999 !important; background: rgba(32, 33, 36, 0.85) !important; align-items: center !important; justify-content: center !important;";
+  }
+  const userBar = document.getElementById('user-bar');
+  if (userBar) userBar.style.display = 'none';
+}
+
+function hideLoginOverlay() {
+  const overlay = document.getElementById('login-overlay');
+  if (overlay) {
+    overlay.style.setProperty('display', 'none', 'important');
+  }
+}
+
 // User Session & Authentication
 let midnightTimer = null;
 
@@ -91,11 +130,8 @@ async function handleMidnightSessionReset() {
   clearSessionOnly();
 
   // 3. UI Update
-  const foucStyle = document.getElementById('fouc-prevention');
-  if (foucStyle) foucStyle.remove();
+  showLoginOverlay();
   updateUserBar();
-  const overlay = document.getElementById('login-overlay');
-  if (overlay) overlay.style.setProperty('display', 'flex', 'important');
 
   // Friendly midnight notice on the login card
   const loginErrBox = document.getElementById('login-error-msg');
@@ -713,8 +749,7 @@ function setCurrentUser(user) {
   localStorage.setItem('gpon_session_expires_at', String(nextMidnight));
   scheduleMidnightLogout();
 
-  const overlay = document.getElementById('login-overlay');
-  if (overlay) overlay.style.setProperty('display', 'none', 'important');
+  hideLoginOverlay();
   updateUserBar();
   initDropdowns();
   fetchSurveyedPoints();
@@ -755,11 +790,8 @@ async function logout() {
     } catch (e) {}
 
     clearSessionOnly();
-    const foucStyle = document.getElementById('fouc-prevention');
-    if (foucStyle) foucStyle.remove();
+    showLoginOverlay();
     updateUserBar();
-    const overlay = document.getElementById('login-overlay');
-    if (overlay) overlay.style.setProperty('display', 'flex', 'important');
     showToast('Signed out successfully. Offline records preserved.', true);
   }
 }
@@ -3661,6 +3693,7 @@ async function checkServerConnection() {
 }
 
 async function fetchHierarchyFromServer() {
+  if (!currentUser) return; // Guard: Never fetch hierarchy or populate dropdowns when unauthenticated
   try {
     const token = localStorage.getItem('gpon_auth_token') || '';
     const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
@@ -4007,28 +4040,23 @@ function bootApp() {
   localStorage.removeItem('gpon_remembered_password');
 
   // Check Login State
-  const loginOverlay = document.getElementById('login-overlay');
-  const userBar = document.getElementById('user-bar');
   if (!currentUser) {
-    const foucStyle = document.getElementById('fouc-prevention');
-    if (foucStyle) foucStyle.remove();
-    if (loginOverlay) loginOverlay.style.setProperty('display', 'flex', 'important');
-    if (userBar) userBar.style.display = 'none';
+    showLoginOverlay();
   } else {
-    if (loginOverlay) loginOverlay.style.setProperty('display', 'none', 'important');
+    hideLoginOverlay();
     updateUserBar();
     refreshCurrentUserProfile();
     initDropdowns();
     fetchSurveyedPoints();
     scheduleMidnightLogout();
+    if (!DEFAULT_PRELOAD.hierarchy || Object.keys(DEFAULT_PRELOAD.hierarchy).length === 0) {
+      fetchHierarchyFromServer();
+    }
   }
 
   updateSubscriberInputsState();
   updateRecordsBadge();
   updateSyncUI();
-  if (!DEFAULT_PRELOAD.hierarchy || Object.keys(DEFAULT_PRELOAD.hierarchy).length === 0) {
-    fetchHierarchyFromServer();
-  }
   checkServerConnection();
 }
 
