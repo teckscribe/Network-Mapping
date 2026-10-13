@@ -1,7 +1,7 @@
 # Server.py Line-by-Line & Route Wiring Dissection
-*Generated automatically on: 2026-10-13 14:19:11*
+*Generated automatically on: 2026-10-13 14:35:55*
 
-Total lines in `server.py`: **6704** LOC
+Total lines in `server.py`: **7006** LOC
 
 ## 1. Subsystem Functional Blocks (Line-by-Line Breakdown)
 The 6,229 lines of `server.py` are partitioned into 16 mission-critical functional blocks:
@@ -70,7 +70,7 @@ The 6,229 lines of `server.py` are partitioned into 16 mission-critical function
 | `POST` | `/api/resync-data-folders` | L3223-L3231 | `resync_data_folders()` | `require_admin_auth` | Optimizes server storage and recounts SQLite records. |
 | `GET` | `/docs/wiring` | L3236-L3241 | `get_wiring_report()` | `Public / Session` | Serves the interactive architecture wiring and blast-radius report. |
 | `GET` | `/manifest.json` | L3244-L3256 | `get_pwa_manifest()` | `Public / Session` | REST Endpoint |
-| `GET` | `/admin` | L3260-L6696 | `admin_dashboard()` | `Public / Session` | REST Endpoint |
+| `GET` | `/admin` | L3260-L6998 | `admin_dashboard()` | `Public / Session` | REST Endpoint |
 
 ## 3. SQLite Database Query Registry
 | Line | Target Table | SQL Operation Snippet |

@@ -3570,11 +3570,53 @@ def admin_dashboard(response: Response):
 
         <div id="users-upload-status" style="margin-bottom:15px; font-size:0.85rem; display:none; padding:10px 14px; border-radius:8px;"></div>
 
+        <!-- Filter & Search Toolbar for User Access Management -->
+        <div style="display:flex; justify-content:space-between; align-items:flex-end; flex-wrap:wrap; gap:10px; margin-bottom:14px; background:#f8fafc; padding:12px 14px; border-radius:8px; border:1px solid #e2e8f0;">
+          <div style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; flex:1;">
+            
+            <!-- Search User by Name or Employee Code (Username) -->
+            <div style="flex:1.2; min-width:240px;">
+              <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:4px;">🔍 Search (Name / Emp Code):</label>
+              <input type="search" id="user-filter-search" placeholder="Search by name, employee code (username)..." oninput="filterAndRenderUsers()" onsearch="filterAndRenderUsers()" style="width:100%; padding:7px 10px; font-size:0.82rem; border:1.5px solid #cbd5e1; border-radius:6px; outline:none; background:white;">
+            </div>
+
+            <!-- Region Filter -->
+            <div style="flex:1; min-width:180px;">
+              <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:4px;">🌐 Filter Region:</label>
+              <select id="user-filter-region" onchange="onUserFilterRegionChange()" style="width:100%; padding:7px 10px; font-size:0.82rem; border:1.5px solid #cbd5e1; border-radius:6px; background:white; font-weight:500; outline:none;">
+                <option value="">All Regions</option>
+              </select>
+            </div>
+
+            <!-- Center Filter -->
+            <div style="flex:1; min-width:190px;">
+              <label style="display:block; font-size:0.75rem; font-weight:700; color:#475569; margin-bottom:4px;">🏢 Filter Center:</label>
+              <select id="user-filter-center" onchange="filterAndRenderUsers()" style="width:100%; padding:7px 10px; font-size:0.82rem; border:1.5px solid #cbd5e1; border-radius:6px; background:white; font-weight:500; outline:none;">
+                <option value="">All Centers</option>
+              </select>
+            </div>
+
+            <!-- Reset Button -->
+            <div>
+              <button type="button" onclick="resetUserFilters()" class="btn btn-outline" style="font-size:0.82rem; padding:7px 12px; font-weight:600; white-space:nowrap;" title="Clear search and filter selections">
+                🔄 Clear Filters
+              </button>
+            </div>
+          </div>
+
+          <!-- Counter Badge -->
+          <div>
+            <span id="users-filter-count" style="font-size:0.82rem; color:#0369a1; font-weight:700; background:#e0f2fe; padding:6px 12px; border-radius:6px; border:1px solid #bae6fd; display:inline-block; white-space:nowrap;">
+              Loading users...
+            </span>
+          </div>
+        </div>
+
         <!-- Users Table -->
-        <div style="overflow-x:auto;">
+        <div style="overflow-x:auto; max-height:580px; overflow-y:auto; border:1px solid #cbd5e1; border-radius:8px;">
           <table>
             <thead>
-              <tr>
+              <tr style="position:sticky; top:0; z-index:2; background:#f8fafc;">
                 <th>Username</th>
                 <th>Full Name</th>
                 <th>Phone / Mobile</th>
@@ -5653,111 +5695,371 @@ def admin_dashboard(response: Response):
             const res = await authFetch('/api/users');
             if (!res.ok) {
               const err = await res.json().catch(() => ({}));
-              tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; padding:20px; color:#dc2626; font-weight:600;">⚠️ Failed to load user credentials: ${err.detail || res.statusText} (${res.status}). <button class="btn btn-danger" style="margin-left:10px; padding:4px 10px; font-size:0.75rem;" onclick="adminLogout()">Sign In Again</button></td></tr>`;
+              tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; padding:20px; color:#dc2626; font-weight:600;">⚠️ Failed to load user credentials: ${err.detail || res.statusText} (${res.status}). <button class="btn btn-danger" style="margin-left:10px; padding:4px 10px; font-size:0.75rem;" onclick="adminLogout()">Sign In Again</button></td></tr>`;
               return;
             }
             const data = await res.json();
             cachedUsersList = (data && data.users) ? data.users : [];
-            tbody.innerHTML = '';
+            populateUserFilterDropdowns();
+            filterAndRenderUsers();
+          } catch(e) {
+            console.error('Error in fetchUsers:', e);
+            tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; padding:20px; color:#dc2626;">Error loading user list: ${escapeHtml(e.message)}</td></tr>`;
+          }
+        }
 
-            if (cachedUsersList.length === 0) {
-              tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; padding:20px; color:#64748b;">No users found in database. Click "+ Add User" above to create one.</td></tr>';
-              return;
-            }
+        function getUserFilterMeta() {
+          const meta = (typeof getHierarchyMeta === 'function') ? getHierarchyMeta() : { regions: [], centersByRegion: {}, allCenters: [] };
+          const regionsSet = new Set(meta.regions || []);
+          const centersSet = new Set(meta.allCenters || []);
+          const centersByRegion = {};
 
-            const roleBadges = {
-              'super_admin': '<span class="role-tag-super_admin">👑 Super Admin</span>',
-              'admin': '<span class="role-tag-admin">🛡️ Admin</span>',
-              'rcsm': '<span class="role-tag-rcsm">📊 RCSM</span>',
-              'acso': '<span class="role-tag-acso">📝 ACSO</span>',
-              'field_technician': '<span class="role-tag-field_technician">👷 Field Tech</span>'
-            };
+          if (meta.centersByRegion) {
+            Object.keys(meta.centersByRegion).forEach(r => {
+              centersByRegion[r] = new Set(meta.centersByRegion[r]);
+            });
+          }
 
-            cachedUsersList.forEach((u, idx) => {
-              const tr = document.createElement('tr');
-              const roleClean = normalizeAdminRole(u.role);
-              const badgeHtml = roleBadges[roleClean] || `<span class="tag">${escapeHtml(u.role)}</span>`;
-              const phoneDisplay = u.phone ? `<span style="font-family:monospace; font-size:0.8rem; color:#0f766e; font-weight:600;">📞 ${escapeHtml(u.phone)}</span>` : '<span style="color:#94a3b8; font-style:italic; font-size:0.78rem;">No Phone</span>';
-              const emailDisplay = u.email ? `<span style="font-family:monospace; font-size:0.8rem; color:#0369a1;">${escapeHtml(u.email)}</span>` : '<span style="color:#94a3b8; font-style:italic; font-size:0.78rem;">No Email</span>';
-              const regDisplay = (u.assigned_region && u.assigned_region !== 'Unassigned')
-                ? `<span style="background:#f1f5f9; padding:2px 8px; border-radius:4px; font-weight:600; font-size:0.8rem;">${escapeHtml(u.assigned_region)}</span>`
-                : '<span class="tag" style="background:#f59e0b; color:white; font-size:0.75rem;">⚠️ Unassigned</span>';
+          let hasUnassignedRegion = false;
+          let hasUnassignedCenter = false;
 
-              tr.innerHTML = `
-                <td><strong>${escapeHtml(u.username)}</strong></td>
-                <td>${escapeHtml(u.full_name || u.username)}</td>
-                <td>${phoneDisplay}</td>
-                <td>${emailDisplay}</td>
-                <td>${regDisplay}</td>
-                  <td>
-                    ${(() => {
-                      const rawC = (u.assigned_center || '').trim();
-                      if (!rawC || rawC === 'Unassigned') {
-                        return '<span class="tag" style="background:#f59e0b; color:white; font-size:0.75rem;">⚠️ Unassigned (Pending)</span>';
-                      }
-                      const centers = rawC.split(',').map(s => s.trim()).filter(Boolean);
-                      if (centers.length === 0 || centers.includes('Unassigned')) {
-                        return '<span class="tag" style="background:#f59e0b; color:white; font-size:0.75rem;">⚠️ Unassigned (Pending)</span>';
-                      }
-                      if (centers.includes('ALL')) {
-                        return '<span class="tag" style="background:#059669;">ALL (Network)</span>';
-                      }
-                      if (centers.length === 1) {
-                        return `<span class="tag" style="background:#0284c7;">${escapeHtml(centers[0])}</span>`;
-                      }
-                      if (centers.length <= 2) {
-                        return centers.map(c => `<span class="tag" style="background:#0284c7; margin-right:3px;">${escapeHtml(c)}</span>`).join('');
-                      }
-                      return `<span class="tag" style="background:#0284c7;" title="${escapeHtml(centers.join(', '))}">🏢 ${centers.length} Centers Charge</span>`;
-                    })()}
-                  </td>
-                  <td>${badgeHtml}</td>
-                  <td style="color:#64748b; font-size:0.8rem; font-family:monospace;">${escapeHtml((u.created_at || '').slice(0, 19).replace('T', ' '))}</td>
-                  <td style="text-align:center; white-space:nowrap;">
-                    ${(() => {
-                      const isCallerSuperAdmin = (currentAdmin && currentAdmin.role === 'super_admin');
-                      const isTargetPrivileged = (roleClean === 'super_admin' || roleClean === 'admin');
-                      if (!isCallerSuperAdmin && isTargetPrivileged) {
-                        return '<span style="color:#64748b; font-size:0.75rem; font-weight:600; padding:2px 8px; background:#f1f5f9; border-radius:4px; display:inline-block;" title="Admins cannot edit or delete Admin/Super Admin accounts">🔒 Protected</span>';
-                      }
-                      return `
-                        <button class="btn btn-outline" style="padding:3px 8px; font-size:0.75rem; margin-right:4px;" onclick="editUserByIndex(${idx})">✏️ Edit</button>
-                        ${u.username !== 'admin' ? `<button class="btn btn-danger" style="padding:3px 8px; font-size:0.75rem;" onclick="deleteUserByIndex(${idx})">🗑️</button>` : '<span style="color:#94a3b8; font-size:0.75rem;">Root</span>'}
-                      `;
-                    })()}
-                  </td>
-                `;
-                tbody.appendChild(tr);
+          (cachedUsersList || []).forEach(u => {
+            if (!u.assigned_region || u.assigned_region === 'Unassigned') {
+              hasUnassignedRegion = true;
+            } else {
+              const uRegs = u.assigned_region.split(',').map(s => s.trim()).filter(Boolean);
+              uRegs.forEach(r => {
+                if (r && r.toUpperCase() !== 'ALL') regionsSet.add(r);
               });
-            } catch(e) {
-              console.error('Error in fetchUsers:', e);
-              tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; padding:20px; color:#dc2626;">Error loading user list: ${escapeHtml(e.message)}</td></tr>`;
+            }
+
+            if (!u.assigned_center || u.assigned_center === 'Unassigned') {
+              hasUnassignedCenter = true;
+            } else {
+              const uCents = u.assigned_center.split(',').map(s => s.trim()).filter(Boolean);
+              uCents.forEach(c => {
+                if (c && c.toUpperCase() !== 'ALL') {
+                  centersSet.add(c);
+                  if (u.assigned_region && u.assigned_region !== 'Unassigned') {
+                    const uRegs = u.assigned_region.split(',').map(s => s.trim()).filter(Boolean);
+                    uRegs.forEach(r => {
+                      if (r && r.toUpperCase() !== 'ALL') {
+                        if (!centersByRegion[r]) centersByRegion[r] = new Set();
+                        centersByRegion[r].add(c);
+                      }
+                    });
+                  }
+                }
+              });
+            }
+          });
+
+          return {
+            regions: Array.from(regionsSet).sort(),
+            allCenters: Array.from(centersSet).sort(),
+            centersByRegion: centersByRegion,
+            hasUnassignedRegion: hasUnassignedRegion,
+            hasUnassignedCenter: hasUnassignedCenter
+          };
+        }
+
+        function populateUserFilterDropdowns() {
+          const regSelect = document.getElementById('user-filter-region');
+          if (!regSelect) return;
+
+          const savedRegion = regSelect.value;
+          const meta = getUserFilterMeta();
+
+          regSelect.innerHTML = '<option value="">All Regions</option>';
+
+          const hasAllRegion = (cachedUsersList || []).some(u => {
+            const r = (u.assigned_region || '').toUpperCase();
+            return r === 'ALL' || r.includes('ALL');
+          });
+          if (hasAllRegion) {
+            const optAll = document.createElement('option');
+            optAll.value = 'ALL';
+            optAll.innerText = '👑 ALL (Network-Wide)';
+            regSelect.appendChild(optAll);
+          }
+
+          meta.regions.forEach(r => {
+            const opt = document.createElement('option');
+            opt.value = r;
+            opt.innerText = r;
+            regSelect.appendChild(opt);
+          });
+
+          if (meta.hasUnassignedRegion) {
+            const optUn = document.createElement('option');
+            optUn.value = '__unassigned__';
+            optUn.innerText = '⚠️ Unassigned Region';
+            regSelect.appendChild(optUn);
+          }
+
+          if (savedRegion && Array.from(regSelect.options).some(o => o.value === savedRegion)) {
+            regSelect.value = savedRegion;
+          } else {
+            regSelect.value = '';
+          }
+
+          updateUserCenterFilterOptions();
+        }
+
+        function onUserFilterRegionChange() {
+          updateUserCenterFilterOptions();
+          filterAndRenderUsers();
+        }
+
+        function updateUserCenterFilterOptions() {
+          const regSelect = document.getElementById('user-filter-region');
+          const centSelect = document.getElementById('user-filter-center');
+          if (!centSelect) return;
+
+          const selReg = regSelect ? regSelect.value : '';
+          const savedCenter = centSelect.value;
+          const meta = getUserFilterMeta();
+
+          centSelect.innerHTML = '<option value="">All Centers</option>';
+
+          let centersToShow = [];
+          if (!selReg) {
+            centersToShow = meta.allCenters;
+            const hasAllCenter = (cachedUsersList || []).some(u => {
+              const c = (u.assigned_center || '').toUpperCase();
+              return c === 'ALL' || c.includes('ALL');
+            });
+            if (hasAllCenter) {
+              const optAll = document.createElement('option');
+              optAll.value = 'ALL';
+              optAll.innerText = '🌐 ALL (Network)';
+              centSelect.appendChild(optAll);
+            }
+          } else if (selReg === 'ALL') {
+            const optAll = document.createElement('option');
+            optAll.value = 'ALL';
+            optAll.innerText = '🌐 ALL (Network)';
+            centSelect.appendChild(optAll);
+          } else if (selReg === '__unassigned__') {
+            centersToShow = [];
+          } else {
+            const cSet = meta.centersByRegion[selReg] || new Set();
+            centersToShow = Array.from(cSet).sort();
+          }
+
+          centersToShow.forEach(c => {
+            const opt = document.createElement('option');
+            opt.value = c;
+            opt.innerText = c;
+            centSelect.appendChild(opt);
+          });
+
+          if (meta.hasUnassignedCenter) {
+            const optUn = document.createElement('option');
+            optUn.value = '__unassigned__';
+            optUn.innerText = '⚠️ Unassigned Center';
+            centSelect.appendChild(optUn);
+          }
+
+          if (savedCenter && Array.from(centSelect.options).some(o => o.value === savedCenter)) {
+            centSelect.value = savedCenter;
+          } else {
+            centSelect.value = '';
+          }
+        }
+
+        function resetUserFilters() {
+          const searchInput = document.getElementById('user-filter-search');
+          const regSelect = document.getElementById('user-filter-region');
+          const centSelect = document.getElementById('user-filter-center');
+          if (searchInput) searchInput.value = '';
+          if (regSelect) regSelect.value = '';
+          updateUserCenterFilterOptions();
+          if (centSelect) centSelect.value = '';
+          filterAndRenderUsers();
+        }
+
+        function filterAndRenderUsers() {
+          const tbody = document.getElementById('users-table-body');
+          const countBadge = document.getElementById('users-filter-count');
+          if (!tbody) return;
+
+          tbody.innerHTML = '';
+
+          if (!cachedUsersList || cachedUsersList.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; padding:20px; color:#64748b;">No users found in database. Click "+ Add Single User" above to create one.</td></tr>';
+            if (countBadge) countBadge.innerText = '0 Users';
+            return;
+          }
+
+          const searchInput = document.getElementById('user-filter-search');
+          const regSelect = document.getElementById('user-filter-region');
+          const centSelect = document.getElementById('user-filter-center');
+
+          const q = (searchInput ? searchInput.value : '').trim().toLowerCase();
+          const selRegion = regSelect ? regSelect.value.trim() : '';
+          const selCenter = centSelect ? centSelect.value.trim() : '';
+
+          const roleBadges = {
+            'super_admin': '<span class="role-tag-super_admin">👑 Super Admin</span>',
+            'admin': '<span class="role-tag-admin">🛡️ Admin</span>',
+            'rcsm': '<span class="role-tag-rcsm">📊 RCSM</span>',
+            'acso': '<span class="role-tag-acso">📝 ACSO</span>',
+            'field_technician': '<span class="role-tag-field_technician">👷 Field Tech</span>'
+          };
+
+          const filtered = cachedUsersList.filter(u => {
+            // 1. Search by Name or Employee Code (username), phone, email
+            if (q) {
+              const uName = (u.username || '').toLowerCase();
+              const fName = (u.full_name || '').toLowerCase();
+              const phone = (u.phone || '').toLowerCase();
+              const email = (u.email || '').toLowerCase();
+              const matchesSearch = uName.includes(q) || fName.includes(q) || phone.includes(q) || email.includes(q);
+              if (!matchesSearch) return false;
+            }
+
+            // 2. Region filter
+            if (selRegion) {
+              if (selRegion === '__unassigned__') {
+                if (u.assigned_region && u.assigned_region !== 'Unassigned') return false;
+              } else {
+                const userRegs = (u.assigned_region || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+                if (selRegion.toLowerCase() === 'all') {
+                  if (!userRegs.includes('all')) return false;
+                } else {
+                  if (!userRegs.includes(selRegion.toLowerCase())) return false;
+                }
+              }
+            }
+
+            // 3. Center filter
+            if (selCenter) {
+              if (selCenter === '__unassigned__') {
+                if (u.assigned_center && u.assigned_center !== 'Unassigned') return false;
+              } else {
+                const userCenters = (u.assigned_center || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+                if (selCenter.toLowerCase() === 'all') {
+                  if (!userCenters.includes('all')) return false;
+                } else {
+                  if (!userCenters.includes(selCenter.toLowerCase())) return false;
+                }
+              }
+            }
+
+            return true;
+          });
+
+          // Update Counter Badge
+          if (countBadge) {
+            const isFiltered = q || selRegion || selCenter;
+            if (!isFiltered) {
+              countBadge.innerHTML = `Showing all <strong>${cachedUsersList.length}</strong> users`;
+            } else {
+              countBadge.innerHTML = `Showing <strong>${filtered.length}</strong> of <strong>${cachedUsersList.length}</strong> users <span style="font-size:0.75rem; color:#0f766e; font-weight:normal;">(Filtered)</span>`;
             }
           }
 
-          function editUserByIndex(idx) {
-            const u = cachedUsersList[idx];
-            if (!u) return;
-            const targetRole = normalizeAdminRole(u.role);
-            if (currentAdmin && currentAdmin.role !== 'super_admin' && (targetRole === 'super_admin' || targetRole === 'admin')) {
-              alert('Permission Denied: Admins cannot edit Admin or Super Admin accounts.');
-              return;
-            }
-            const userCenter = (u.assigned_center === 'Unassigned' || !u.assigned_center) ? '' : u.assigned_center;
-            const userRegion = (u.assigned_region === 'Unassigned' || !u.assigned_region) ? '' : u.assigned_region;
-            openEditUserModal(u.username, u.full_name, u.phone || '', u.email || '', userCenter, userRegion, targetRole);
+          if (filtered.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; padding:30px; color:#64748b;">
+              🔍 No users found matching the selected search or filter criteria.<br>
+              <button type="button" class="btn btn-outline" style="margin-top:10px; padding:5px 14px; font-size:0.8rem;" onclick="resetUserFilters()">🔄 Clear Filters</button>
+            </td></tr>`;
+            return;
           }
 
-          function deleteUserByIndex(idx) {
-            const u = cachedUsersList[idx];
-            if (!u) return;
-            const targetRole = normalizeAdminRole(u.role);
-            if (currentAdmin && currentAdmin.role !== 'super_admin' && (targetRole === 'super_admin' || targetRole === 'admin')) {
-              alert('Permission Denied: Admins cannot delete Admin or Super Admin accounts.');
-              return;
-            }
-            deleteUser(u.username);
+          filtered.forEach(u => {
+            const tr = document.createElement('tr');
+            const roleClean = normalizeAdminRole(u.role);
+            const badgeHtml = roleBadges[roleClean] || `<span class="tag">${escapeHtml(u.role)}</span>`;
+            const phoneDisplay = u.phone ? `<span style="font-family:monospace; font-size:0.8rem; color:#0f766e; font-weight:600;">📞 ${escapeHtml(u.phone)}</span>` : '<span style="color:#94a3b8; font-style:italic; font-size:0.78rem;">No Phone</span>';
+            const emailDisplay = u.email ? `<span style="font-family:monospace; font-size:0.8rem; color:#0369a1;">${escapeHtml(u.email)}</span>` : '<span style="color:#94a3b8; font-style:italic; font-size:0.78rem;">No Email</span>';
+            const regDisplay = (u.assigned_region && u.assigned_region !== 'Unassigned')
+              ? `<span style="background:#f1f5f9; padding:2px 8px; border-radius:4px; font-weight:600; font-size:0.8rem;">${escapeHtml(u.assigned_region)}</span>`
+              : '<span class="tag" style="background:#f59e0b; color:white; font-size:0.75rem;">⚠️ Unassigned</span>';
+
+            tr.innerHTML = `
+              <td><strong>${escapeHtml(u.username)}</strong></td>
+              <td>${escapeHtml(u.full_name || u.username)}</td>
+              <td>${phoneDisplay}</td>
+              <td>${emailDisplay}</td>
+              <td>${regDisplay}</td>
+              <td>
+                ${(() => {
+                  const rawC = (u.assigned_center || '').trim();
+                  if (!rawC || rawC === 'Unassigned') {
+                    return '<span class="tag" style="background:#f59e0b; color:white; font-size:0.75rem;">⚠️ Unassigned (Pending)</span>';
+                  }
+                  const centers = rawC.split(',').map(s => s.trim()).filter(Boolean);
+                  if (centers.length === 0 || centers.includes('Unassigned')) {
+                    return '<span class="tag" style="background:#f59e0b; color:white; font-size:0.75rem;">⚠️ Unassigned (Pending)</span>';
+                  }
+                  if (centers.includes('ALL')) {
+                    return '<span class="tag" style="background:#059669;">ALL (Network)</span>';
+                  }
+                  if (centers.length === 1) {
+                    return `<span class="tag" style="background:#0284c7;">${escapeHtml(centers[0])}</span>`;
+                  }
+                  if (centers.length <= 2) {
+                    return centers.map(c => `<span class="tag" style="background:#0284c7; margin-right:3px;">${escapeHtml(c)}</span>`).join('');
+                  }
+                  return `<span class="tag" style="background:#0284c7;" title="${escapeHtml(centers.join(', '))}">🏢 ${centers.length} Centers Charge</span>`;
+                })()}
+              </td>
+              <td>${badgeHtml}</td>
+              <td style="color:#64748b; font-size:0.8rem; font-family:monospace;">${escapeHtml((u.created_at || '').slice(0, 19).replace('T', ' '))}</td>
+              <td style="text-align:center; white-space:nowrap;">
+                ${(() => {
+                  const isCallerSuperAdmin = (currentAdmin && currentAdmin.role === 'super_admin');
+                  const isTargetPrivileged = (roleClean === 'super_admin' || roleClean === 'admin');
+                  if (!isCallerSuperAdmin && isTargetPrivileged) {
+                    return '<span style="color:#64748b; font-size:0.75rem; font-weight:600; padding:2px 8px; background:#f1f5f9; border-radius:4px; display:inline-block;" title="Admins cannot edit or delete Admin/Super Admin accounts">🔒 Protected</span>';
+                  }
+                  const uEsc = encodeURIComponent(u.username);
+                  return `
+                    <button class="btn btn-outline" style="padding:3px 8px; font-size:0.75rem; margin-right:4px;" onclick="editUserByUsername(decodeURIComponent('${uEsc}'))">✏️ Edit</button>
+                    ${u.username !== 'admin' ? `<button class="btn btn-danger" style="padding:3px 8px; font-size:0.75rem;" onclick="deleteUserByUsername(decodeURIComponent('${uEsc}'))">🗑️</button>` : '<span style="color:#94a3b8; font-size:0.75rem;">Root</span>'}
+                  `;
+                })()}
+              </td>
+            `;
+            tbody.appendChild(tr);
+          });
+        }
+
+        function editUserByUsername(uname) {
+          const u = cachedUsersList.find(x => x.username === uname);
+          if (!u) return;
+          const targetRole = normalizeAdminRole(u.role);
+          if (currentAdmin && currentAdmin.role !== 'super_admin' && (targetRole === 'super_admin' || targetRole === 'admin')) {
+            alert('Permission Denied: Admins cannot edit Admin or Super Admin accounts.');
+            return;
           }
+          const userCenter = (u.assigned_center === 'Unassigned' || !u.assigned_center) ? '' : u.assigned_center;
+          const userRegion = (u.assigned_region === 'Unassigned' || !u.assigned_region) ? '' : u.assigned_region;
+          openEditUserModal(u.username, u.full_name, u.phone || '', u.email || '', userCenter, userRegion, targetRole);
+        }
+
+        function deleteUserByUsername(uname) {
+          const u = cachedUsersList.find(x => x.username === uname);
+          if (!u) return;
+          const targetRole = normalizeAdminRole(u.role);
+          if (currentAdmin && currentAdmin.role !== 'super_admin' && (targetRole === 'super_admin' || targetRole === 'admin')) {
+            alert('Permission Denied: Admins cannot delete Admin or Super Admin accounts.');
+            return;
+          }
+          deleteUser(u.username);
+        }
+
+        function editUserByIndex(idx) {
+          const u = cachedUsersList[idx];
+          if (u) editUserByUsername(u.username);
+        }
+
+        function deleteUserByIndex(idx) {
+          const u = cachedUsersList[idx];
+          if (u) deleteUserByUsername(u.username);
+        }
 
         async function downloadUsersBackup() {
           try {
