@@ -171,7 +171,7 @@
     <header>
       <div>
         <h1>⚡ GPON System Architecture & Wiring Portal</h1>
-        <div class="meta">Automated Codebase Wiring Report & Impact Analyzer | Last updated: 2026-10-13 22:31:08</div>
+        <div class="meta">Automated Codebase Wiring Report & Impact Analyzer | Last updated: 2026-10-14 16:34:17</div>
       </div>
       <div style="display:flex; align-items:center; gap:12px;">
         <span id="admin-user-tag" class="badge" style="background:#6366f1; color:white; font-size:0.8rem; padding:4px 10px;">Super Admin</span>
@@ -184,7 +184,7 @@
     <div class="container">
     <div class="stats-grid">
       <div class="stat-card">
-        <div class="val">7152</div>
+        <div class="val">7449</div>
         <div class="label">server.py Lines</div>
       </div>
       <div class="stat-card">
@@ -192,7 +192,7 @@
         <div class="label">app.js Lines</div>
       </div>
       <div class="stat-card">
-        <div class="val">42</div>
+        <div class="val">44</div>
         <div class="label">API Endpoints</div>
       </div>
       <div class="stat-card">
@@ -483,44 +483,58 @@
                 <td><span class='badge badge-info'>require_management_auth</span></td>
               </tr>
               <tr>
+                <td><span class="badge badge-get">GET</span></td>
+                <td><strong class="code-pill">/api/reports/catalog</strong></td>
+                <td><span class="code-pill">L3085-L3087</span></td>
+                <td><code>api_reports_catalog()</code></td>
+                <td><span class='badge badge-info'>require_export_auth</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-get">GET</span></td>
+                <td><strong class="code-pill">/api/reports/download/{report_type}</strong></td>
+                <td><span class="code-pill">L3090-L3137</span></td>
+                <td><code>api_download_report()</code></td>
+                <td><span class='badge badge-info'>require_export_auth</span></td>
+              </tr>
+              <tr>
                 <td><span class="badge badge-post">POST</span></td>
                 <td><strong class="code-pill">/api/upload-survey-excel</strong></td>
-                <td><span class="code-pill">L3074-L3233</span></td>
+                <td><span class="code-pill">L3140-L3299</span></td>
                 <td><code>upload_survey_excel()</code></td>
                 <td><span class='badge badge-info'>require_admin_auth</span></td>
               </tr>
               <tr>
                 <td><span class="badge badge-get">GET</span></td>
                 <td><strong class="code-pill">/api/data-folders-summary</strong></td>
-                <td><span class="code-pill">L3236-L3318</span></td>
+                <td><span class="code-pill">L3302-L3384</span></td>
                 <td><code>get_data_folders_summary()</code></td>
                 <td><span class='badge badge-info'>require_management_auth</span></td>
               </tr>
               <tr>
                 <td><span class="badge badge-post">POST</span></td>
                 <td><strong class="code-pill">/api/resync-data-folders</strong></td>
-                <td><span class="code-pill">L3321-L3329</span></td>
+                <td><span class="code-pill">L3387-L3395</span></td>
                 <td><code>resync_data_folders()</code></td>
                 <td><span class='badge badge-info'>require_admin_auth</span></td>
               </tr>
               <tr>
                 <td><span class="badge badge-get">GET</span></td>
                 <td><strong class="code-pill">/docs/wiring</strong></td>
-                <td><span class="code-pill">L3334-L3339</span></td>
+                <td><span class="code-pill">L3400-L3405</span></td>
                 <td><code>get_wiring_report()</code></td>
                 <td><span class='badge' style='background:#f1f5f9;color:#64748b;'>Public/Session</span></td>
               </tr>
               <tr>
                 <td><span class="badge badge-get">GET</span></td>
                 <td><strong class="code-pill">/manifest.json</strong></td>
-                <td><span class="code-pill">L3342-L3354</span></td>
+                <td><span class="code-pill">L3408-L3420</span></td>
                 <td><code>get_pwa_manifest()</code></td>
                 <td><span class='badge' style='background:#f1f5f9;color:#64748b;'>Public/Session</span></td>
               </tr>
               <tr>
                 <td><span class="badge badge-get">GET</span></td>
                 <td><strong class="code-pill">/admin</strong></td>
-                <td><span class="code-pill">L3358-L7144</span></td>
+                <td><span class="code-pill">L3424-L7441</span></td>
                 <td><code>admin_dashboard()</code></td>
                 <td><span class='badge' style='background:#f1f5f9;color:#64748b;'>Public/Session</span></td>
               </tr>

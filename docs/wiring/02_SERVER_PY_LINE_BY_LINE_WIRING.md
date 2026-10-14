@@ -1,7 +1,7 @@
 # Server.py Line-by-Line & Route Wiring Dissection
-*Generated automatically on: 2026-10-13 22:31:08*
+*Generated automatically on: 2026-10-14 16:34:17*
 
-Total lines in `server.py`: **7152** LOC
+Total lines in `server.py`: **7449** LOC
 
 ## 1. Subsystem Functional Blocks (Line-by-Line Breakdown)
 The 6,229 lines of `server.py` are partitioned into 16 mission-critical functional blocks:
@@ -65,12 +65,14 @@ The 6,229 lines of `server.py` are partitioned into 16 mission-critical function
 | `GET` | `/api/export-excel` | L2870-L2908 | `export_server_excel()` | `require_management_auth` | REST Endpoint |
 | `GET` | `/api/export-center-excel` | L2911-L2996 | `export_center_excel()` | `require_export_auth` | Exports and downloads filtered survey Excel file streamed dynamically in-memory. |
 | `GET` | `/api/export-data-zip` | L2999-L3071 | `export_data_zip()` | `require_management_auth` | Generates and downloads a ZIP archive of all region/center Excel files dynamically in-memory. |
-| `POST` | `/api/upload-survey-excel` | L3074-L3233 | `upload_survey_excel()` | `require_admin_auth` | Imports survey records from an Excel (.xlsx/.xls) or CSV file directly into SQLite in-memory. |
-| `GET` | `/api/data-folders-summary` | L3236-L3318 | `get_data_folders_summary()` | `require_management_auth` | Returns structured summary of region and center survey records with dynamic in-memory exports. |
-| `POST` | `/api/resync-data-folders` | L3321-L3329 | `resync_data_folders()` | `require_admin_auth` | Optimizes server storage and recounts SQLite records. |
-| `GET` | `/docs/wiring` | L3334-L3339 | `get_wiring_report()` | `Public / Session` | Serves the interactive architecture wiring and blast-radius report. |
-| `GET` | `/manifest.json` | L3342-L3354 | `get_pwa_manifest()` | `Public / Session` | REST Endpoint |
-| `GET` | `/admin` | L3358-L7144 | `admin_dashboard()` | `Public / Session` | REST Endpoint |
+| `GET` | `/api/reports/catalog` | L3085-L3087 | `api_reports_catalog()` | `require_export_auth` | Returns the catalog of available reports, their formats, categories, and descriptions. |
+| `GET` | `/api/reports/download/{report_type}` | L3090-L3137 | `api_download_report()` | `require_export_auth` | Generates and downloads any of the enterprise reports: |
+| `POST` | `/api/upload-survey-excel` | L3140-L3299 | `upload_survey_excel()` | `require_admin_auth` | Imports survey records from an Excel (.xlsx/.xls) or CSV file directly into SQLite in-memory. |
+| `GET` | `/api/data-folders-summary` | L3302-L3384 | `get_data_folders_summary()` | `require_management_auth` | Returns structured summary of region and center survey records with dynamic in-memory exports. |
+| `POST` | `/api/resync-data-folders` | L3387-L3395 | `resync_data_folders()` | `require_admin_auth` | Optimizes server storage and recounts SQLite records. |
+| `GET` | `/docs/wiring` | L3400-L3405 | `get_wiring_report()` | `Public / Session` | Serves the interactive architecture wiring and blast-radius report. |
+| `GET` | `/manifest.json` | L3408-L3420 | `get_pwa_manifest()` | `Public / Session` | REST Endpoint |
+| `GET` | `/admin` | L3424-L7441 | `admin_dashboard()` | `Public / Session` | REST Endpoint |
 
 ## 3. SQLite Database Query Registry
 | Line | Target Table | SQL Operation Snippet |
@@ -127,5 +129,5 @@ The 6,229 lines of `server.py` are partitioned into 16 mission-critical function
 | L2791 | `survey_records` | `DELETE FROM survey_records WHERE client_uuid = ? OR LOWER(client_uuid) = LOWER(?)` |
 | L2857 | `survey_records` | `DELETE FROM survey_records WHERE LOWER(TRIM(center)) = LOWER(TRIM(?)) AND LOWER(TRIM(re...` |
 | L2859 | `survey_records` | `DELETE FROM survey_records WHERE LOWER(TRIM(center)) = LOWER(TRIM(?))` |
-| L3242 | `survey_records` | `SELECT region, center, COUNT(*) FROM survey_records GROUP BY region, center` |
-| L3326 | `survey_records` | `SELECT COUNT(*) FROM survey_records` |
+| L3308 | `survey_records` | `SELECT region, center, COUNT(*) FROM survey_records GROUP BY region, center` |
+| L3392 | `survey_records` | `SELECT COUNT(*) FROM survey_records` |

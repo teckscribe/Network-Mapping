@@ -3070,6 +3070,72 @@ def export_data_zip(session: dict = Depends(require_management_auth)):
         }
     )
 
+# ==========================================
+# ENTERPRISE REPORT GENERATOR API ENDPOINTS
+# ==========================================
+from report_generator import ReportGenerator
+
+_report_generator_instance = ReportGenerator(
+    db_path=DB_PATH,
+    hierarchy_path=HIERARCHY_FILE if os.path.exists(HIERARCHY_FILE) else os.path.join(BASE_DIR, "custom_hierarchy.json"),
+    output_dir=os.path.join(BASE_DIR, "reports")
+)
+
+@app.get("/api/reports/catalog")
+def api_reports_catalog(session: dict = Depends(require_export_auth)):
+    """Returns the catalog of available reports, their formats, categories, and descriptions."""
+    return {"status": "success", "catalog": _report_generator_instance.get_catalog()}
+
+@app.get("/api/reports/download/{report_type}")
+def api_download_report(
+    report_type: str,
+    region: Optional[str] = None,
+    center: Optional[str] = None,
+    olt: Optional[str] = None,
+    session: dict = Depends(require_export_auth)
+):
+    """
+    Generates and downloads any of the enterprise reports:
+    - master       : Master field survey dataset (.xlsx)
+    - splitter     : Splitter capacity & saturation audit (.xlsx)
+    - quality      : Field data quality & GNSS hygiene audit (.xlsx)
+    - productivity : Surveyor velocity & activity audit (.xlsx)
+    - coverage     : OLT mapping & hierarchy coverage audit (.xlsx)
+    - summary      : Executive operations summary (.md)
+    - scenarios_ppt: 22-Scenarios technical presentation deck (.pptx)
+    - bundle       : Master ZIP archive containing all reports (.zip)
+    """
+    username = session.get("username", "")
+    jur = get_user_jurisdiction(username)
+    
+    # Enforce regional jurisdiction for non-super-admins
+    if not jur.get("is_super_admin", False):
+        if not jur.get("is_all_regions", False) and region and region.lower() not in jur.get("regions", []):
+            raise HTTPException(status_code=403, detail="Permission Denied: Region outside assigned jurisdiction.")
+        if not jur.get("is_all_centers", False) and center and center.lower() not in jur.get("centers", []):
+            raise HTTPException(status_code=403, detail="Permission Denied: Center outside assigned jurisdiction.")
+
+    try:
+        file_path, media_type, filename = _report_generator_instance.generate_report_by_type(
+            report_type=report_type,
+            region=region,
+            center=center,
+            olt=olt
+        )
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="Generated report file could not be found.")
+
+        return FileResponse(
+            file_path,
+            media_type=media_type,
+            filename=filename,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Report generation error: {str(e)}")
+
 @app.post("/api/upload-survey-excel")
 async def upload_survey_excel(file: UploadFile = File(...), session: dict = Depends(require_admin_auth)):
     """Imports survey records from an Excel (.xlsx/.xls) or CSV file directly into SQLite in-memory."""
@@ -3492,6 +3558,7 @@ def admin_dashboard(response: Response):
           <input type="file" id="top-survey-upload-input" accept=".xlsx, .xls, .csv" style="display:none;" onchange="uploadSurveyExcel(event)">
           <button id="btn-top-import" class="btn" style="background:#0f766e; color:white;" onclick="document.getElementById('top-survey-upload-input').click()">📤 Import Survey Excel</button>
           <button id="btn-top-master-excel" class="btn btn-green" onclick="downloadWithAuth('/api/export-excel')">📊 Master Excel</button>
+          <button id="btn-top-reports" class="btn" style="background:#0284c7; color:white; font-weight:600;" onclick="openReportsModal()">📈 Reports Center</button>
           <button id="btn-top-zip-excel" class="btn" style="background:#2563eb; color:white;" onclick="downloadWithAuth('/api/export-data-zip')">🗂️ All Centers (ZIP)</button>
           <a href="/api/download-project-ppt" class="btn" style="background:#7c3aed; color:white;" title="Download Executive PPT Project Report for Superior Officers">📑 Download PPT Report</a>
           <a href="/" class="btn btn-outline" target="_blank" title="Open Field Survey Web App">📱 Field App</a>
@@ -3843,6 +3910,46 @@ def admin_dashboard(response: Response):
               <button type="submit" id="btn-modal-save-user" class="btn btn-green" style="padding:8px 20px; font-weight:700;">💾 Save User</button>
             </div>
           </form>
+        </div>
+      </div>
+
+      <!-- Enterprise Reports Center Modal -->
+      <div id="reports-modal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(15,23,42,0.65); backdrop-filter:blur(3px); z-index:9999; justify-content:center; align-items:center; padding:16px;">
+        <div style="background:white; border-radius:12px; max-width:920px; width:100%; max-height:90vh; display:flex; flex-direction:column; box-shadow:0 25px 50px -12px rgba(0,0,0,0.25); overflow:hidden;">
+          <!-- Modal Header -->
+          <div style="background:#0f172a; color:#ffffff; padding:16px 24px; display:flex; justify-content:space-between; align-items:center;">
+            <div>
+              <h3 style="margin:0; font-size:1.15rem; font-weight:700; display:flex; align-items:center; gap:8px;">📈 Enterprise Reports & Analytics Center</h3>
+              <p style="margin:4px 0 0 0; font-size:0.8rem; color:#94a3b8;">Generate and download operational reports, capacity audits, and master archives</p>
+            </div>
+            <button type="button" onclick="closeReportsModal()" style="background:none; border:none; color:#cbd5e1; font-size:1.5rem; cursor:pointer; line-height:1; padding:4px 8px;">&times;</button>
+          </div>
+
+          <!-- Filter Toolbar -->
+          <div style="padding:14px 24px; border-bottom:1px solid #e2e8f0; background:#f8fafc; display:flex; gap:16px; align-items:center; flex-wrap:wrap;">
+            <div style="display:flex; flex-direction:column; gap:4px;">
+              <label style="font-size:0.75rem; font-weight:700; color:#475569;">REGION FILTER</label>
+              <select id="report-filter-reg" style="padding:6px 10px; border:1px solid #cbd5e1; border-radius:6px; font-size:0.85rem;" onchange="updateReportCenterOptions()">
+                <option value="">All Operational Regions</option>
+              </select>
+            </div>
+            <div style="display:flex; flex-direction:column; gap:4px;">
+              <label style="font-size:0.75rem; font-weight:700; color:#475569;">CENTER FILTER</label>
+              <select id="report-filter-cent" style="padding:6px 10px; border:1px solid #cbd5e1; border-radius:6px; font-size:0.85rem;">
+                <option value="">All Exchange Centers</option>
+              </select>
+            </div>
+            <div style="margin-left:auto; display:flex; gap:8px;">
+              <button class="btn" style="background:#059669; color:white; font-weight:700; font-size:0.85rem; padding:8px 16px;" onclick="triggerReportDownload('bundle')">
+                📦 Download All (ZIP Bundle)
+              </button>
+            </div>
+          </div>
+
+          <!-- Report Cards Grid -->
+          <div id="reports-cards-grid" style="padding:20px 24px; overflow-y:auto; display:grid; grid-template-columns:repeat(auto-fill, minmax(380px, 1fr)); gap:16px;">
+            <!-- Rendered dynamically by JavaScript -->
+          </div>
         </div>
       </div>
 
@@ -4216,6 +4323,196 @@ def admin_dashboard(response: Response):
         let cachedRecords = [];
         let fullHierarchyRows = [];
         let cachedHierarchy = {};
+
+        // ==========================================
+        // REPORTS CENTER MODAL LOGIC
+        // ==========================================
+        const REPORT_CATALOG_DATA = [
+          {
+            id: 'master',
+            title: 'Master Field Survey Dataset',
+            format: 'XLSX',
+            category: 'Field Operations',
+            badgeBg: '#e0f2fe',
+            badgeColor: '#0369a1',
+            desc: 'Complete survey records with formatted compound IDs (OPM1120LT25P1E1S1), GIS coordinates, customer counts, and KPI summary header.'
+          },
+          {
+            id: 'splitter',
+            title: 'Splitter Utilization & Saturation Audit',
+            format: 'XLSX',
+            category: 'Engineering & Capacity',
+            badgeBg: '#fef3c7',
+            badgeColor: '#b45309',
+            desc: 'Evaluates optical splitter capacity, active connected subscriber counts, available spare ports, and flags saturated vs underutilized splitters.'
+          },
+          {
+            id: 'quality',
+            title: 'Data Quality & GNSS Hygiene Audit',
+            format: 'XLSX',
+            category: 'Quality Assurance',
+            badgeBg: '#fee2e2',
+            badgeColor: '#b91c1c',
+            desc: 'Detects missing or 0,0 GNSS coordinates, utility pole post ID gaps, capacity overflows, and duplicate subscriber IDs with severity ratings.'
+          },
+          {
+            id: 'productivity',
+            title: 'Field Surveyor Velocity & Productivity',
+            format: 'XLSX',
+            category: 'Operations Governance',
+            badgeBg: '#f1f5f9',
+            badgeColor: '#475569',
+            desc: 'Analyzes submission velocity per technician, active field days, centers covered, device tracking, and survey timestamp timelines.'
+          },
+          {
+            id: 'coverage',
+            title: 'OLT Infrastructure & Port Coverage',
+            format: 'XLSX',
+            category: 'Telecom Planning',
+            badgeBg: '#ede9fe',
+            badgeColor: '#6d28d9',
+            desc: 'Cross-references surveyed OLTs and ports against the master planned hierarchy to identify unmapped nodes and coverage gaps.'
+          },
+          {
+            id: 'scenarios_ppt',
+            title: '22 Field Scenarios Engineering Presentation',
+            format: 'PPTX',
+            category: 'System Architecture',
+            badgeBg: '#fae8ff',
+            badgeColor: '#a21caf',
+            desc: '17-slide 16:9 widescreen executive deck detailing all 22 operational field challenges and engineered software/hardware solutions.'
+          },
+          {
+            id: 'summary',
+            title: 'Executive Operations Summary',
+            format: 'MARKDOWN',
+            category: 'Executive Briefing',
+            badgeBg: '#dcfce7',
+            badgeColor: '#15803d',
+            desc: 'High-level KPI digest of total survey points, enclosure density, splitter ratio breakdown, and cloud backup replication health.'
+          },
+          {
+            id: 'bundle',
+            title: 'All-in-One Multi-Report Master Archive',
+            format: 'ZIP BUNDLE',
+            category: 'Complete Bundle',
+            badgeBg: '#d1fae5',
+            badgeColor: '#065f46',
+            desc: 'Packages all 5 Excel reports, Executive Summary, and the 22-Scenarios Presentation Deck into a single timestamped ZIP.'
+          }
+        ];
+
+        function openReportsModal() {
+          const modal = document.getElementById('reports-modal');
+          if (modal) modal.style.display = 'flex';
+          populateReportRegionDropdown();
+          renderReportCards();
+        }
+
+        function closeReportsModal() {
+          const modal = document.getElementById('reports-modal');
+          if (modal) modal.style.display = 'none';
+        }
+
+        function populateReportRegionDropdown() {
+          const regSelect = document.getElementById('report-filter-reg');
+          if (!regSelect) return;
+          regSelect.innerHTML = '<option value="">All Operational Regions</option>';
+          const regions = new Set();
+          if (cachedHierarchy) {
+            for (const [cent, rts] of Object.entries(cachedHierarchy)) {
+              if (rts && typeof rts === 'object') {
+                for (const [rt, olts] of Object.entries(rts)) {
+                  if (olts && typeof olts === 'object') {
+                    for (const [olt, meta] of Object.entries(olts)) {
+                      if (meta && meta.region) regions.add(meta.region);
+                    }
+                  }
+                }
+              }
+            }
+          }
+          Array.from(regions).sort().forEach(r => {
+            const opt = document.createElement('option');
+            opt.value = r;
+            opt.textContent = r;
+            regSelect.appendChild(opt);
+          });
+          updateReportCenterOptions();
+        }
+
+        function updateReportCenterOptions() {
+          const regSelect = document.getElementById('report-filter-reg');
+          const centSelect = document.getElementById('report-filter-cent');
+          if (!centSelect) return;
+          const chosenReg = regSelect ? regSelect.value.toLowerCase() : '';
+          centSelect.innerHTML = '<option value="">All Exchange Centers</option>';
+          const centers = new Set();
+          if (cachedHierarchy) {
+            for (const [cent, rts] of Object.entries(cachedHierarchy)) {
+              let match = true;
+              if (chosenReg && rts && typeof rts === 'object') {
+                let centReg = '';
+                for (const olts of Object.values(rts)) {
+                  if (olts && typeof olts === 'object') {
+                    for (const meta of Object.values(olts)) {
+                      if (meta && meta.region) { centReg = meta.region.toLowerCase(); break; }
+                    }
+                  }
+                  if (centReg) break;
+                }
+                if (centReg && centReg !== chosenReg) match = false;
+              }
+              if (match) centers.add(cent);
+            }
+          }
+          Array.from(centers).sort().forEach(c => {
+            const opt = document.createElement('option');
+            opt.value = c;
+            opt.textContent = c;
+            centSelect.appendChild(opt);
+          });
+        }
+
+        function renderReportCards() {
+          const container = document.getElementById('reports-cards-grid');
+          if (!container) return;
+          container.innerHTML = '';
+          REPORT_CATALOG_DATA.forEach(r => {
+            const card = document.createElement('div');
+            card.style.cssText = 'border:1.5px solid #e2e8f0; border-radius:10px; padding:16px; background:#ffffff; display:flex; flex-direction:column; justify-content:space-between; transition:box-shadow 0.2s;';
+            card.onmouseenter = () => card.style.boxShadow = '0 10px 15px -3px rgba(0,0,0,0.08)';
+            card.onmouseleave = () => card.style.boxShadow = 'none';
+
+            card.innerHTML = `
+              <div>
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                  <span style="font-size:0.7rem; font-weight:700; text-transform:uppercase; color:#64748b;">${escapeHtml(r.category)}</span>
+                  <span style="background:${r.badgeBg}; color:${r.badgeColor}; font-size:0.72rem; font-weight:700; padding:2px 8px; border-radius:6px;">${escapeHtml(r.format)}</span>
+                </div>
+                <h4 style="margin:0 0 6px 0; font-size:0.98rem; font-weight:700; color:#0f172a;">${escapeHtml(r.title)}</h4>
+                <p style="margin:0 0 16px 0; font-size:0.8rem; color:#64748b; line-height:1.4;">${escapeHtml(r.desc)}</p>
+              </div>
+              <button type="button" onclick="triggerReportDownload('${r.id}')" class="btn" style="background:#0284c7; color:white; font-size:0.82rem; font-weight:600; width:100%; padding:8px; display:inline-flex; align-items:center; justify-content:center; gap:6px;">
+                ⬇️ Generate & Download
+              </button>
+            `;
+            container.appendChild(card);
+          });
+        }
+
+        function triggerReportDownload(reportId) {
+          const regSelect = document.getElementById('report-filter-reg');
+          const centSelect = document.getElementById('report-filter-cent');
+          const reg = regSelect ? regSelect.value : '';
+          const cent = centSelect ? centSelect.value : '';
+          let url = '/api/reports/download/' + encodeURIComponent(reportId);
+          const params = [];
+          if (reg) params.push('region=' + encodeURIComponent(reg));
+          if (cent) params.push('center=' + encodeURIComponent(cent));
+          if (params.length > 0) url += '?' + params.join('&');
+          downloadWithAuth(url);
+        }
 
         function escapeHtml(str) {
           if (str === null || str === undefined) return '';
