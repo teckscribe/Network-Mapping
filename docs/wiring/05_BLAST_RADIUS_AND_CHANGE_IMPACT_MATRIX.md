@@ -1,5 +1,5 @@
 # Blast Radius & Change Impact Matrix
-*Generated automatically on: 2026-10-15 12:47:39*
+*Generated automatically on: 2026-10-15 12:49:45*
 
 This document provides a comprehensive causal analysis answering:
 **"What happens in the system when any line or component in the codebase changes?"**

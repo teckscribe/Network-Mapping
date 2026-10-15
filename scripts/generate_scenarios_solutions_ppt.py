@@ -68,7 +68,7 @@ def create_scenarios_deck(output_paths=None):
         ftf = fb.text_frame
         ftf.margin_left = ftf.margin_top = ftf.margin_right = ftf.margin_bottom = 0
         fp = ftf.paragraphs[0]
-        fp.text = "BSNL Kerala GPON Network Mapping • Production Engineering & Scenarios Specification Deck"
+        fp.text = "Enterprise GPON Network Mapping • Production Engineering & Scenarios Specification Deck"
         fp.font.size = Pt(9)
         fp.font.color.rgb = SLATE
 
@@ -216,7 +216,7 @@ def create_scenarios_deck(output_paths=None):
     p_sub.space_before = Pt(14)
 
     p_meta = tf1.add_paragraph()
-    p_meta.text = "BSNL Kerala Telecom Operations • Dual-Zone Architecture (Thrissur & Kottayam) • Production v2.5"
+    p_meta.text = "Enterprise Telecom Optical Operations • Multi-Zone Architecture (Thrissur & Kottayam) • Production v2.5"
     p_meta.font.size = Pt(12)
     p_meta.font.color.rgb = RGBColor(203, 213, 225)
     p_meta.space_before = Pt(28)

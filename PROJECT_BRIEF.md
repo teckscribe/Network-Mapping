@@ -282,7 +282,7 @@ The system enforces 4 non-overlapping operational roles:
   * **Step 1 (OTP Generation & Dispatch)**:
     * Endpoint: `POST /api/request-password-reset-otp` accepting `username_or_email`.
     * System locates user in SQLite, generates a random 6-digit numeric OTP (`f"{random.randint(100000, 999999)}"`), caches it in-memory with a 10-minute expiry (`OTP_EXPIRY_SECONDS = 600`), and dispatches an HTML email via SMTP.
-    * Privacy masking: The client receives a masked email address (e.g. `j***n@bsnl.co.in`) for confirmation.
+    * Privacy masking: The client receives a masked email address (e.g. `j***n@telecom.local`) for confirmation.
   * **Step 2 (OTP Verification & Credential Update)**:
     * Endpoint: `POST /api/verify-password-reset-otp` accepting `username`, `otp`, and `new_password`.
     * Verifies code, expiry, and enforces a brute-force circuit breaker (maximum 5 failed attempts before OTP invalidation).
