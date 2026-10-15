@@ -1240,12 +1240,12 @@ def download_users_template():
         cell.alignment = Alignment(horizontal="center", vertical="center")
 
     sample_rows = [
-        ["anoop_tech", "Anoop P", "9447000001", "anoop@bsnl.co.in", "1234", "Field Technician", "Thrissur", "KORATTY"],
-        ["sujith_acso", "Sujith Kumar", "9447000002", "sujith@bsnl.co.in", "1234", "ACSO", "Thrissur", "KORATTY, CHALAKUDY"],
-        ["rahul_field", "Rahul R", "9447000003", "rahul@bsnl.co.in", "", "Field Technician", "", ""],
-        ["manager_rcsm", "Regional Manager", "9447000004", "rcsm@bsnl.co.in", "1234", "RCSM", "Thrissur", "ALL"],
-        ["admin_ops", "Operations Administrator", "9447000005", "admin_ops@bsnl.co.in", "1234", "Admin", "ALL", "ALL"],
-        ["admin_central", "Central Administrator", "9447000006", "admin@bsnl.co.in", "admin123", "Super Admin", "ALL", "ALL"]
+        ["anoop_tech", "Anoop P", "9447000001", "anoop@telecom.local", "1234", "Field Technician", "Thrissur", "KORATTY"],
+        ["sujith_acso", "Sujith Kumar", "9447000002", "sujith@telecom.local", "1234", "ACSO", "Thrissur", "KORATTY, CHALAKUDY"],
+        ["rahul_field", "Rahul R", "9447000003", "rahul@telecom.local", "", "Field Technician", "", ""],
+        ["manager_rcsm", "Regional Manager", "9447000004", "rcsm@telecom.local", "1234", "RCSM", "Thrissur", "ALL"],
+        ["admin_ops", "Operations Administrator", "9447000005", "admin_ops@telecom.local", "1234", "Admin", "ALL", "ALL"],
+        ["admin_central", "Central Administrator", "9447000006", "admin@telecom.local", "admin123", "Super Admin", "ALL", "ALL"]
     ]
 
     for r_idx, row in enumerate(sample_rows, 2):
@@ -3841,7 +3841,7 @@ def admin_dashboard(response: Response):
                 <label style="display:block; font-size:0.78rem; font-weight:700; color:#334155; margin-bottom:4px;">
                   Email Address <span style="font-size:0.7rem; color:#0284c7; font-weight:normal;">(For OTP password reset)</span>
                 </label>
-                <input type="email" id="modal-new-email" placeholder="e.g. anoop@bsnl.co.in" style="width:100%; border:1.5px solid #cbd5e1; border-radius:6px; padding:8px 10px; font-size:0.85rem;">
+                <input type="email" id="modal-new-email" placeholder="e.g. anoop@telecom.local" style="width:100%; border:1.5px solid #cbd5e1; border-radius:6px; padding:8px 10px; font-size:0.85rem;">
               </div>
               <div>
                 <label style="display:block; font-size:0.78rem; font-weight:700; color:#0369a1; margin-bottom:4px;">👤 Role (Defines Operational User Rights) <span style="color:#ef4444;">*</span></label>
@@ -4059,30 +4059,63 @@ def admin_dashboard(response: Response):
 
       <!-- Add / Edit Node Modal -->
       <div id="olt-modal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); z-index:9999; justify-content:center; align-items:center; padding:16px;">
-        <div style="background:white; border-radius:10px; padding:24px; max-width:520px; width:100%; box-shadow:0 10px 25px rgba(0,0,0,0.2);">
-          <h3 id="olt-modal-title" style="margin-top:0; color:#0284c7;">Add / Edit Node</h3>
+        <div style="background:white; border-radius:10px; padding:24px; max-width:540px; width:100%; box-shadow:0 10px 25px rgba(0,0,0,0.2);">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+            <h3 id="olt-modal-title" style="margin:0; color:#0284c7; font-size:1.15rem; font-weight:700;">Add / Edit Node</h3>
+            <button type="button" onclick="closeOltModal()" style="background:none; border:none; color:#64748b; font-size:1.4rem; cursor:pointer; line-height:1; padding:2px 6px;">&times;</button>
+          </div>
+
           <form onsubmit="saveOltModal(event)">
             <input type="hidden" id="modal-old-center">
             <input type="hidden" id="modal-old-rtroom">
             <input type="hidden" id="modal-old-olt">
+
+            <!-- Mode Selector Segmented Pill -->
+            <div style="display:flex; background:#f1f5f9; padding:3px; border-radius:8px; margin-bottom:14px; border:1px solid #cbd5e1;">
+              <button type="button" id="btn-olt-mode-existing" onclick="setOltModalMode('existing')" style="flex:1; padding:6px 10px; font-size:0.78rem; font-weight:700; border-radius:6px; border:none; cursor:pointer; background:#0284c7; color:white; transition:all 0.15s;">
+                📋 Select Existing RT Room (Safe)
+              </button>
+              <button type="button" id="btn-olt-mode-manual" onclick="setOltModalMode('manual')" style="flex:1; padding:6px 10px; font-size:0.78rem; font-weight:600; border-radius:6px; border:none; cursor:pointer; background:transparent; color:#64748b; transition:all 0.15s;">
+                ✏️ Enter Location Manually
+              </button>
+            </div>
+
+            <!-- Row 1: Region & Center -->
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
               <div>
-                <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">Region</label>
-                <input type="text" id="modal-region" required style="width:100%;" value="Thrissur" placeholder="e.g. Thrissur">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                  <label style="font-size:0.8rem; font-weight:600; color:#334155;">Region <span style="color:#ef4444;">*</span></label>
+                  <button type="button" id="toggle-region-btn" onclick="toggleSingleOltField('region')" style="background:none; border:none; color:#0284c7; font-size:0.72rem; cursor:pointer; text-decoration:underline; padding:0;">✏️ Type New</button>
+                </div>
+                <select id="modal-region-select" onchange="onOltRegionSelectChange()" style="width:100%; padding:7px 10px; border:1px solid #cbd5e1; border-radius:6px; font-size:0.85rem; background:white;"></select>
+                <input type="text" id="modal-region-custom" placeholder="e.g. Thrissur" list="datalist-regions" style="display:none; width:100%; padding:7px 10px; border:1px solid #cbd5e1; border-radius:6px; font-size:0.85rem;">
+                <datalist id="datalist-regions"></datalist>
               </div>
               <div>
-                <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">Center</label>
-                <input type="text" id="modal-center" required style="width:100%;" placeholder="e.g. CHALAKKUDY">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                  <label style="font-size:0.8rem; font-weight:600; color:#334155;">Center <span style="color:#ef4444;">*</span></label>
+                  <button type="button" id="toggle-center-btn" onclick="toggleSingleOltField('center')" style="background:none; border:none; color:#0284c7; font-size:0.72rem; cursor:pointer; text-decoration:underline; padding:0;">✏️ Type New</button>
+                </div>
+                <select id="modal-center-select" onchange="onOltCenterSelectChange()" style="width:100%; padding:7px 10px; border:1px solid #cbd5e1; border-radius:6px; font-size:0.85rem; background:white;"></select>
+                <input type="text" id="modal-center-custom" placeholder="e.g. CHALAKKUDY" list="datalist-centers" style="display:none; width:100%; padding:7px 10px; border:1px solid #cbd5e1; border-radius:6px; font-size:0.85rem;">
+                <datalist id="datalist-centers"></datalist>
               </div>
             </div>
+
+            <!-- Row 2: RT Room & Technology -->
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
               <div>
-                <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">RT Room</label>
-                <input type="text" id="modal-rtroom" required style="width:100%;" placeholder="e.g. Potta">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                  <label style="font-size:0.8rem; font-weight:600; color:#334155;">RT Room <span style="color:#ef4444;">*</span></label>
+                  <button type="button" id="toggle-rtroom-btn" onclick="toggleSingleOltField('rtroom')" style="background:none; border:none; color:#0284c7; font-size:0.72rem; cursor:pointer; text-decoration:underline; padding:0;">✏️ Type New</button>
+                </div>
+                <select id="modal-rtroom-select" onchange="onOltRtRoomSelectChange()" style="width:100%; padding:7px 10px; border:1px solid #cbd5e1; border-radius:6px; font-size:0.85rem; background:white;"></select>
+                <input type="text" id="modal-rtroom-custom" placeholder="e.g. Potta" list="datalist-rtrooms" style="display:none; width:100%; padding:7px 10px; border:1px solid #cbd5e1; border-radius:6px; font-size:0.85rem;">
+                <datalist id="datalist-rtrooms"></datalist>
               </div>
               <div>
-                <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">GPON / FTTH / WDM / EDFA</label>
-                <select id="modal-tech" style="width:100%;">
+                <label style="display:block; font-size:0.8rem; font-weight:600; color:#334155; margin-bottom:4px;">GPON / FTTH / WDM / EDFA</label>
+                <select id="modal-tech" style="width:100%; padding:7px 10px; border:1px solid #cbd5e1; border-radius:6px; font-size:0.85rem; background:white;">
                   <option value="GPON">GPON</option>
                   <option value="FTTH">FTTH</option>
                   <option value="WDM">WDM</option>
@@ -4090,18 +4123,24 @@ def admin_dashboard(response: Response):
                 </select>
               </div>
             </div>
+
+            <!-- Row 3: Node Name -->
             <div style="margin-bottom:12px;">
-              <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">Node Name</label>
-              <input type="text" id="modal-olt" required style="width:100%;" placeholder="e.g. CKY/116/OLT 01/Potta-1">
+              <label style="display:block; font-size:0.8rem; font-weight:600; color:#334155; margin-bottom:4px;">Node Name <span style="color:#ef4444;">*</span></label>
+              <input type="text" id="modal-olt" required style="width:100%; padding:7px 10px; border:1px solid #cbd5e1; border-radius:6px; font-size:0.85rem;" placeholder="e.g. CKY/116/OLT 01/Potta-1">
             </div>
+
+            <!-- Row 4: Number of Ports -->
             <div style="margin-bottom:18px;">
-              <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">Number of Ports</label>
-              <select id="modal-ports" style="width:100%;">
+              <label style="display:block; font-size:0.8rem; font-weight:600; color:#334155; margin-bottom:4px;">Number of Ports</label>
+              <select id="modal-ports" style="width:100%; padding:7px 10px; border:1px solid #cbd5e1; border-radius:6px; font-size:0.85rem; background:white;">
                 <option value="8 P">8 Port</option>
                 <option value="16 P">16 Port</option>
                 <option value="32 P">32 Port</option>
               </select>
             </div>
+
+            <!-- Action Buttons -->
             <div style="display:flex; justify-content:flex-end; gap:8px;">
               <button type="button" class="btn btn-outline" onclick="closeOltModal()">Cancel</button>
               <button type="submit" class="btn btn-green">💾 Save Node</button>
@@ -6938,17 +6977,258 @@ def admin_dashboard(response: Response):
           renderHierarchyTable(filtered);
         }
 
+        // ==========================================
+        // OLT HIERARCHY MODAL: CASCADING & MANUAL LOGIC
+        // ==========================================
+        let oltModalMode = 'existing'; // 'existing' | 'manual'
+        let oltFieldModes = { region: 'select', center: 'select', rtroom: 'select' };
+
+        function setOltModalMode(mode) {
+          oltModalMode = mode;
+          const btnExist = document.getElementById('btn-olt-mode-existing');
+          const btnManual = document.getElementById('btn-olt-mode-manual');
+
+          if (mode === 'manual') {
+            if (btnExist) { btnExist.style.background = 'transparent'; btnExist.style.color = '#64748b'; btnExist.style.fontWeight = '600'; }
+            if (btnManual) { btnManual.style.background = '#0284c7'; btnManual.style.color = 'white'; btnManual.style.fontWeight = '700'; }
+            setFieldInputState('region', 'custom');
+            setFieldInputState('center', 'custom');
+            setFieldInputState('rtroom', 'custom');
+          } else {
+            if (btnExist) { btnExist.style.background = '#0284c7'; btnExist.style.color = 'white'; btnExist.style.fontWeight = '700'; }
+            if (btnManual) { btnManual.style.background = 'transparent'; btnManual.style.color = '#64748b'; btnManual.style.fontWeight = '600'; }
+            setFieldInputState('region', 'select');
+            setFieldInputState('center', 'select');
+            setFieldInputState('rtroom', 'select');
+            populateOltHierarchyDropdowns();
+          }
+        }
+
+        function setFieldInputState(field, state) {
+          oltFieldModes[field] = state;
+          const selEl = document.getElementById(`modal-${field}-select`);
+          const inputEl = document.getElementById(`modal-${field}-custom`);
+          const toggleBtn = document.getElementById(`toggle-${field}-btn`);
+
+          if (state === 'custom') {
+            if (selEl) selEl.style.display = 'none';
+            if (inputEl) inputEl.style.display = 'block';
+            if (toggleBtn) toggleBtn.innerText = '📋 Pick';
+          } else {
+            if (selEl) selEl.style.display = 'block';
+            if (inputEl) inputEl.style.display = 'none';
+            if (toggleBtn) toggleBtn.innerText = '✏️ Type New';
+          }
+        }
+
+        function toggleSingleOltField(field) {
+          const nextState = oltFieldModes[field] === 'select' ? 'custom' : 'select';
+          setFieldInputState(field, nextState);
+          if (nextState === 'custom') {
+            const inputEl = document.getElementById(`modal-${field}-custom`);
+            if (inputEl) {
+              const selEl = document.getElementById(`modal-${field}-select`);
+              if (selEl && selEl.value && selEl.value !== '__new__' && selEl.value !== '__select__') {
+                inputEl.value = selEl.value;
+              }
+              inputEl.focus();
+            }
+          } else {
+            if (field === 'region') populateOltHierarchyDropdowns();
+            else if (field === 'center') onOltRegionSelectChange();
+            else if (field === 'rtroom') onOltCenterSelectChange();
+          }
+        }
+
+        function populateOltHierarchyDropdowns(preselectReg, preselectCent, preselectRt) {
+          const hier = cachedHierarchy || {};
+          const regionsSet = new Set();
+          const allCentersSet = new Set();
+          const allRtRoomsSet = new Set();
+
+          for (const [c, rts] of Object.entries(hier)) {
+            allCentersSet.add(c);
+            if (rts && typeof rts === 'object') {
+              for (const [rt, olts] of Object.entries(rts)) {
+                allRtRoomsSet.add(rt);
+                if (olts && typeof olts === 'object') {
+                  for (const [olt, meta] of Object.entries(olts)) {
+                    if (meta && meta.region) regionsSet.add(meta.region);
+                  }
+                }
+              }
+            }
+          }
+
+          populateDatalist('datalist-regions', Array.from(regionsSet).sort());
+          populateDatalist('datalist-centers', Array.from(allCentersSet).sort());
+          populateDatalist('datalist-rtrooms', Array.from(allRtRoomsSet).sort());
+
+          const regSel = document.getElementById('modal-region-select');
+          if (regSel) {
+            regSel.innerHTML = '';
+            const regions = Array.from(regionsSet).sort();
+            if (regions.length === 0) regions.push('Thrissur');
+
+            regions.forEach(r => {
+              const opt = document.createElement('option');
+              opt.value = r;
+              opt.textContent = r;
+              regSel.appendChild(opt);
+            });
+            const newOpt = document.createElement('option');
+            newOpt.value = '__new__';
+            newOpt.textContent = '➕ [ Enter New Region... ]';
+            regSel.appendChild(newOpt);
+
+            if (preselectReg && regions.includes(preselectReg)) {
+              regSel.value = preselectReg;
+            } else if (regions.length > 0) {
+              regSel.value = regions[0];
+            }
+          }
+
+          onOltRegionSelectChange(preselectCent, preselectRt);
+        }
+
+        function populateDatalist(id, items) {
+          const dl = document.getElementById(id);
+          if (!dl) return;
+          dl.innerHTML = '';
+          items.forEach(it => {
+            const opt = document.createElement('option');
+            opt.value = it;
+            dl.appendChild(opt);
+          });
+        }
+
+        function onOltRegionSelectChange(preselectCent, preselectRt) {
+          const regSel = document.getElementById('modal-region-select');
+          if (!regSel) return;
+          const regVal = regSel.value;
+
+          if (regVal === '__new__') {
+            setFieldInputState('region', 'custom');
+            const inp = document.getElementById('modal-region-custom');
+            if (inp) { inp.value = ''; inp.focus(); }
+            setFieldInputState('center', 'custom');
+            setFieldInputState('rtroom', 'custom');
+            return;
+          }
+
+          const centSel = document.getElementById('modal-center-select');
+          if (!centSel) return;
+          centSel.innerHTML = '';
+
+          const hier = cachedHierarchy || {};
+          const centersForRegion = [];
+
+          for (const [c, rts] of Object.entries(hier)) {
+            let match = false;
+            if (rts && typeof rts === 'object') {
+              for (const olts of Object.values(rts)) {
+                if (olts && typeof olts === 'object') {
+                  for (const meta of Object.values(olts)) {
+                    if (meta && meta.region && meta.region.toLowerCase() === regVal.toLowerCase()) {
+                      match = true;
+                      break;
+                    }
+                  }
+                }
+                if (match) break;
+              }
+            }
+            if (match || (!regVal || regVal.toLowerCase() === 'thrissur')) {
+              centersForRegion.push(c);
+            }
+          }
+
+          const sortedCenters = Array.from(new Set(centersForRegion)).sort();
+
+          sortedCenters.forEach(c => {
+            const opt = document.createElement('option');
+            opt.value = c;
+            opt.textContent = c;
+            centSel.appendChild(opt);
+          });
+          const newCentOpt = document.createElement('option');
+          newCentOpt.value = '__new__';
+          newCentOpt.textContent = '➕ [ Enter New Center... ]';
+          centSel.appendChild(newCentOpt);
+
+          if (preselectCent && sortedCenters.includes(preselectCent)) {
+            centSel.value = preselectCent;
+          } else if (sortedCenters.length > 0) {
+            centSel.value = sortedCenters[0];
+          }
+
+          onOltCenterSelectChange(preselectRt);
+        }
+
+        function onOltCenterSelectChange(preselectRt) {
+          const centSel = document.getElementById('modal-center-select');
+          if (!centSel) return;
+          const centVal = centSel.value;
+
+          if (centVal === '__new__') {
+            setFieldInputState('center', 'custom');
+            const inp = document.getElementById('modal-center-custom');
+            if (inp) { inp.value = ''; inp.focus(); }
+            setFieldInputState('rtroom', 'custom');
+            return;
+          }
+
+          const rtSel = document.getElementById('modal-rtroom-select');
+          if (!rtSel) return;
+          rtSel.innerHTML = '';
+
+          const hier = cachedHierarchy || {};
+          const rtsObj = hier[centVal] || {};
+          const rtList = Object.keys(rtsObj).sort();
+
+          rtList.forEach(rt => {
+            const opt = document.createElement('option');
+            opt.value = rt;
+            opt.textContent = rt;
+            rtSel.appendChild(opt);
+          });
+
+          const newRtOpt = document.createElement('option');
+          newRtOpt.value = '__new__';
+          newRtOpt.textContent = '➕ [ Enter New RT Room... ]';
+          rtSel.appendChild(newRtOpt);
+
+          if (preselectRt && rtList.includes(preselectRt)) {
+            rtSel.value = preselectRt;
+          } else if (rtList.length > 0) {
+            rtSel.value = rtList[0];
+          }
+        }
+
+        function onOltRtRoomSelectChange() {
+          const rtSel = document.getElementById('modal-rtroom-select');
+          if (!rtSel) return;
+          if (rtSel.value === '__new__') {
+            setFieldInputState('rtroom', 'custom');
+            const inp = document.getElementById('modal-rtroom-custom');
+            if (inp) { inp.value = ''; inp.focus(); }
+          }
+        }
+
         function openAddOltModal() {
           document.getElementById('olt-modal-title').innerText = '➕ Add New Node';
           document.getElementById('modal-old-center').value = '';
           document.getElementById('modal-old-rtroom').value = '';
           document.getElementById('modal-old-olt').value = '';
-          document.getElementById('modal-region').value = 'Thrissur';
-          document.getElementById('modal-center').value = '';
-          document.getElementById('modal-rtroom').value = '';
-          document.getElementById('modal-tech').value = 'GPON';
           document.getElementById('modal-olt').value = '';
+          document.getElementById('modal-tech').value = 'GPON';
           document.getElementById('modal-ports').value = '8 P';
+
+          document.getElementById('modal-region-custom').value = '';
+          document.getElementById('modal-center-custom').value = '';
+          document.getElementById('modal-rtroom-custom').value = '';
+
+          setOltModalMode('existing');
           document.getElementById('olt-modal').style.display = 'flex';
         }
 
@@ -6964,12 +7244,24 @@ def admin_dashboard(response: Response):
           document.getElementById('modal-old-center').value = c;
           document.getElementById('modal-old-rtroom').value = rt;
           document.getElementById('modal-old-olt').value = olt;
-          document.getElementById('modal-region').value = reg;
-          document.getElementById('modal-center').value = c;
-          document.getElementById('modal-rtroom').value = rt;
           document.getElementById('modal-tech').value = tech;
           document.getElementById('modal-olt').value = olt;
           document.getElementById('modal-ports').value = oType.includes('16') ? '16 P' : (oType.includes('32') ? '32 P' : '8 P');
+
+          const hier = cachedHierarchy || {};
+          const cExists = !!hier[c];
+          const rtExists = cExists && !!hier[c][rt];
+
+          if (cExists && rtExists) {
+            setOltModalMode('existing');
+            populateOltHierarchyDropdowns(reg, c, rt);
+          } else {
+            setOltModalMode('manual');
+            document.getElementById('modal-region-custom').value = reg;
+            document.getElementById('modal-center-custom').value = c;
+            document.getElementById('modal-rtroom-custom').value = rt;
+          }
+
           document.getElementById('olt-modal').style.display = 'flex';
         }
 
@@ -6979,6 +7271,50 @@ def admin_dashboard(response: Response):
 
         async function saveOltModal(e) {
           e.preventDefault();
+
+          let regionVal = '';
+          if (oltFieldModes.region === 'custom') {
+            regionVal = document.getElementById('modal-region-custom').value.trim();
+          } else {
+            const sel = document.getElementById('modal-region-select');
+            regionVal = (sel && sel.value !== '__new__') ? sel.value : document.getElementById('modal-region-custom').value.trim();
+          }
+
+          let centerVal = '';
+          if (oltFieldModes.center === 'custom') {
+            centerVal = document.getElementById('modal-center-custom').value.trim();
+          } else {
+            const sel = document.getElementById('modal-center-select');
+            centerVal = (sel && sel.value !== '__new__') ? sel.value : document.getElementById('modal-center-custom').value.trim();
+          }
+
+          let rtRoomVal = '';
+          if (oltFieldModes.rtroom === 'custom') {
+            rtRoomVal = document.getElementById('modal-rtroom-custom').value.trim();
+          } else {
+            const sel = document.getElementById('modal-rtroom-select');
+            rtRoomVal = (sel && sel.value !== '__new__') ? sel.value : document.getElementById('modal-rtroom-custom').value.trim();
+          }
+
+          const oltNameVal = document.getElementById('modal-olt').value.trim();
+
+          if (!regionVal) {
+            alert('Please select or enter a valid Region.');
+            return;
+          }
+          if (!centerVal) {
+            alert('Please select or enter a valid Center.');
+            return;
+          }
+          if (!rtRoomVal) {
+            alert('Please select or enter a valid RT Room.');
+            return;
+          }
+          if (!oltNameVal) {
+            alert('Please enter a Node Name.');
+            return;
+          }
+
           const isEdit = !!document.getElementById('modal-old-olt').value.trim();
           const confirmed = await showConfirmModal(
             isEdit ? '✏️ Confirm Save Edit' : '➕ Confirm Add Node',
@@ -6991,11 +7327,11 @@ def admin_dashboard(response: Response):
           const oltTypeVal = document.getElementById('modal-ports').value;
           const portCnt = oltTypeVal.includes('16') ? 16 : (oltTypeVal.includes('32') ? 32 : 8);
           const payload = {
-            region: document.getElementById('modal-region').value.trim() || 'Thrissur',
-            center: document.getElementById('modal-center').value.trim(),
-            rt_room: document.getElementById('modal-rtroom').value.trim(),
+            region: regionVal,
+            center: centerVal,
+            rt_room: rtRoomVal,
             tech: document.getElementById('modal-tech').value.trim() || 'GPON',
-            olt_name: document.getElementById('modal-olt').value.trim(),
+            olt_name: oltNameVal,
             olt_type: oltTypeVal,
             port_count: portCnt,
             old_center: document.getElementById('modal-old-center').value.trim() || null,
