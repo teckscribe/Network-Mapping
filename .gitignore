@@ -40,6 +40,11 @@ Node Master/
 data/
 *.bak
 backup_status.json
+backup_config.json
+backup.log
+gpon_backups/
+backups/
+*.tar.gz
 *.pptx
 *.ppt
 reports/

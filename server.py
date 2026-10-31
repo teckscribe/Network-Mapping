@@ -899,6 +899,15 @@ class VerifyResetOtpPayload(BaseModel):
 class TestSmtpPayload(BaseModel):
     recipient_email: Optional[str] = ""
 
+class BackupConfigPayload(BaseModel):
+    google_user: str
+    google_password: Optional[str] = ""
+    recipient_email: Optional[str] = ""
+    server_label: Optional[str] = ""
+    smtp_host: Optional[str] = "smtp.gmail.com"
+    smtp_port: Optional[int] = 587
+    rclone_conf: Optional[str] = ""
+
 class SurveyRecordModel(BaseModel):
     client_uuid: str
     region: Optional[str] = "Thrissur"
@@ -2228,14 +2237,32 @@ def download_project_ppt():
         )
     raise HTTPException(status_code=404, detail="Presentation report not found")
 
+def _load_backup_engine():
+    """Dynamically loads scripts/verify_backup_health.py module."""
+    import importlib.util
+    script_path = os.path.join(BASE_DIR, "scripts", "verify_backup_health.py")
+    spec = importlib.util.spec_from_file_location("verify_backup_health", script_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
 @app.get("/api/backup-status")
-def get_backup_status():
+def get_backup_status(refresh: Optional[bool] = Query(False)):
     """
     Decoupled zero-overhead backup status reporter.
     Reads backup_status.json created asynchronously by verify_backup_health.py or backup_to_gdrive.sh.
-    Takes <0.2ms and executes ZERO network, rclone, or heavy disk operations.
+    When ?refresh=true is passed by the Admin UI, runs a live health evaluation and updates backup_status.json.
     """
     status_file = os.path.join(BASE_DIR, "backup_status.json")
+    if refresh:
+        try:
+            mod = _load_backup_engine()
+            data = mod.evaluate_backup_health()
+            mod.write_status_file(data)
+            return JSONResponse(content=data, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+        except Exception as e:
+            pass
+
     if os.path.exists(status_file):
         try:
             with open(status_file, "r", encoding="utf-8") as f:
@@ -2253,11 +2280,134 @@ def get_backup_status():
     return JSONResponse(
         content={
             "status": "unknown",
-            "message": "No backup health record found yet. Run verify_backup_health.py --update or wait for scheduled cron backup.",
+            "message": "No backup health record found yet. Click 'Run Backup Now' or configure Google Cloud credentials below.",
             "last_checked_at": None
         },
         headers={"Cache-Control": "no-cache"}
     )
+
+@app.get("/api/backup/config")
+def get_backup_config(session: dict = Depends(require_admin_auth)):
+    """Returns current Google Cloud Backup settings (masked password) and recent backup log entries."""
+    try:
+        mod = _load_backup_engine()
+        conf = mod.load_backup_config()
+        log_info = mod.check_backup_log()
+        return {
+            "status": "success",
+            "google_user": conf["google_user"],
+            "google_user_masked": mod.mask_email(conf["google_user"]),
+            "has_password": bool(conf["google_password"]),
+            "recipient_email": conf["recipient_email"],
+            "server_label": conf["server_label"],
+            "smtp_host": conf["smtp_host"],
+            "smtp_port": conf["smtp_port"],
+            "recent_logs": log_info.get("recent_lines", [])
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read backup config: {str(e)}")
+
+@app.post("/api/backup/config")
+def save_backup_config_endpoint(payload: BackupConfigPayload, session: dict = Depends(require_super_admin_auth)):
+    """Saves Google Cloud Backup credentials to .env, tests TLS login, and updates backup health status."""
+    g_user = (payload.google_user or "").strip()
+    if not g_user or "@" not in g_user:
+        raise HTTPException(status_code=400, detail="Please enter a valid Google Email / Username (e.g., yourname@gmail.com).")
+
+    try:
+        mod = _load_backup_engine()
+        existing_conf = mod.load_backup_config()
+        g_pass = (payload.google_password or "").strip()
+        if not g_pass and not existing_conf.get("google_password"):
+            raise HTTPException(status_code=400, detail="Please enter your Google 16-digit App Password.")
+
+        mod.save_backup_config_to_env(
+            google_user=g_user,
+            google_password=g_pass,
+            recipient_email=(payload.recipient_email or "").strip() or g_user,
+            server_label=(payload.server_label or "").strip(),
+            smtp_host=(payload.smtp_host or "smtp.gmail.com").strip(),
+            smtp_port=int(payload.smtp_port or 587)
+        )
+
+        # Optionally write rclone.conf if provided in advanced settings
+        if payload.rclone_conf and payload.rclone_conf.strip():
+            rclone_dir = os.path.join(os.path.expanduser("~"), ".config", "rclone")
+            os.makedirs(rclone_dir, exist_ok=True)
+            rclone_conf_path = os.path.join(rclone_dir, "rclone.conf")
+            with open(rclone_conf_path, "w", encoding="utf-8") as rf:
+                rf.write(payload.rclone_conf.strip() + "\n")
+
+        # Verify Google login and update status file
+        google_check = mod.check_google_account_connectivity(verify_login=True)
+        health = mod.evaluate_backup_health()
+        mod.write_status_file(health)
+
+        if google_check.get("connected"):
+            mod.log_backup_event(f"Google Cloud Backup credentials configured & verified for {google_check['account']} by {session.get('username')}.")
+            return {
+                "status": "success",
+                "verified": True,
+                "message": f"Connected & verified with Google Account ({google_check['account']})!",
+                "health": health
+            }
+        else:
+            err_detail = google_check.get("error", "Could not verify login with Google.")
+            return {
+                "status": "warning",
+                "verified": False,
+                "message": f"Settings saved, but Google verification reported: {err_detail}",
+                "health": health
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error saving backup configuration: {str(e)}")
+
+@app.post("/api/backup/run-now")
+def run_backup_now_endpoint(session: dict = Depends(require_super_admin_auth)):
+    """Triggers an immediate hot SQLite snapshot + .tar.gz archive + Google Cloud upload."""
+    try:
+        mod = _load_backup_engine()
+        res = mod.run_full_backup_workflow()
+        arch = res["archive"]
+        g_up = res["google_upload"]
+        r_up = res["rclone_upload"]
+
+        if g_up.get("uploaded"):
+            msg = f"Backup '{arch['name']}' ({arch['size']}) created and uploaded to Google Account ({g_up.get('account')})!"
+        elif r_up.get("uploaded"):
+            msg = f"Backup '{arch['name']}' ({arch['size']}) created and uploaded to Google Drive ({r_up.get('remote')})!"
+        else:
+            err_note = g_up.get("error") or g_up.get("message") or "Cloud credentials not verified."
+            msg = f"Local backup '{arch['name']}' ({arch['size']}) created safely! Cloud upload note: {err_note}"
+
+        return {
+            "status": "success",
+            "cloud_uploaded": bool(g_up.get("uploaded") or r_up.get("uploaded")),
+            "message": msg,
+            "archive": arch,
+            "health": res["health"]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Backup execution failed: {str(e)}")
+
+@app.get("/api/backup/download-latest")
+def download_latest_backup_archive(session: dict = Depends(require_admin_auth)):
+    """Downloads the latest gpon_backup_*.tar.gz archive (or creates one on the fly if none exists)."""
+    try:
+        mod = _load_backup_engine()
+        latest = mod.find_latest_local_backup()
+        if not latest or not os.path.isfile(latest["path"]):
+            latest = mod.create_hot_backup_archive()
+        return FileResponse(
+            latest["path"],
+            media_type="application/gzip",
+            filename=latest["name"],
+            headers={"Cache-Control": "no-cache"}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to prepare backup archive: {str(e)}")
 
 @app.get("/api/download-hierarchy-template")
 def download_hierarchy_template():
@@ -4307,37 +4457,39 @@ def admin_dashboard(response: Response):
         </div>
       </div>
 
-      <!-- Backup Status Details Modal -->
+      <!-- Backup Status & Cloud Configuration Modal -->
       <div id="backup-details-modal" onclick="if(event.target===this)closeBackupDetailsModal()" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(15,23,42,0.65); backdrop-filter:blur(3px); z-index:10001; justify-content:center; align-items:center; padding:16px;">
-        <div style="background:white; border-radius:12px; padding:24px; max-width:520px; width:100%; box-shadow:0 20px 25px -5px rgba(0,0,0,0.25); border:1px solid #cbd5e1;">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; border-bottom:1px solid #e2e8f0; padding-bottom:10px;">
+        <div style="background:white; border-radius:12px; padding:22px 24px; max-width:600px; width:100%; max-height:92vh; overflow-y:auto; box-shadow:0 20px 25px -5px rgba(0,0,0,0.25); border:1px solid #cbd5e1;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid #e2e8f0; padding-bottom:10px;">
             <h3 style="margin:0; color:#0f172a; font-size:1.15rem; display:flex; align-items:center; gap:8px;">
-              <span>☁️</span> Google Drive Cloud Backup Status
+              <span>☁️</span> Google Cloud & Drive Backup Control Center
             </h3>
             <button type="button" onclick="closeBackupDetailsModal()" style="background:none; border:none; font-size:1.4rem; color:#64748b; cursor:pointer; line-height:1;">&times;</button>
           </div>
-          <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:12px 14px; margin-bottom:14px; font-size:0.85rem; line-height:1.6; color:#334155;">
-            <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+
+          <!-- Status Summary Card -->
+          <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:12px 14px; margin-bottom:12px; font-size:0.84rem; line-height:1.6; color:#334155;">
+            <div style="display:flex; justify-content:space-between; margin-bottom:5px;">
               <span><strong>Health State:</strong></span>
               <span id="modal-backup-state" class="tag" style="background:#64748b; font-size:0.75rem;">Checking...</span>
             </div>
-            <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+            <div style="display:flex; justify-content:space-between; margin-bottom:5px;">
               <span><strong>Last Backup Time:</strong></span>
               <span id="modal-backup-time" style="font-weight:600; color:#0f172a;">-</span>
             </div>
-            <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+            <div style="display:flex; justify-content:space-between; margin-bottom:5px;">
               <span><strong>Latest Archive:</strong></span>
               <span id="modal-backup-archive" style="font-family:monospace; font-size:0.8rem; color:#0284c7;">-</span>
             </div>
-            <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+            <div style="display:flex; justify-content:space-between; margin-bottom:5px;">
               <span><strong>Archive Size:</strong></span>
               <span id="modal-backup-size" style="font-weight:600;">-</span>
             </div>
-            <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
-              <span><strong>Cloud Remote:</strong></span>
+            <div style="display:flex; justify-content:space-between; margin-bottom:5px;">
+              <span><strong>Cloud Target:</strong></span>
               <span id="modal-backup-remote" style="font-family:monospace; font-size:0.8rem;">-</span>
             </div>
-            <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+            <div style="display:flex; justify-content:space-between; margin-bottom:5px;">
               <span><strong>Cloud Connected:</strong></span>
               <span id="modal-backup-cloud">-</span>
             </div>
@@ -4346,13 +4498,82 @@ def admin_dashboard(response: Response):
               <span id="modal-backup-checked" style="color:#64748b;">-</span>
             </div>
           </div>
-          <p id="modal-backup-msg" style="font-size:0.82rem; color:#475569; margin:0 0 16px 0; background:#f1f5f9; padding:8px 10px; border-radius:6px; border-left:3px solid #0284c7;"></p>
-          <div style="font-size:0.75rem; color:#64748b; line-height:1.4; margin-bottom:16px;">
-            ℹ️ Backups execute via isolated cron script (<code>backup_to_gdrive.sh</code>) and verify via <code>scripts/verify_backup_health.py</code>. Zero load on web server.
+
+          <p id="modal-backup-msg" style="font-size:0.81rem; color:#475569; margin:0 0 12px 0; background:#f1f5f9; padding:8px 10px; border-radius:6px; border-left:3px solid #0284c7;"></p>
+
+          <!-- Instant Action Bar -->
+          <div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px;">
+            <button type="button" id="btn-backup-run-now" class="btn" style="background:#0284c7; color:white; font-size:0.82rem; font-weight:700; padding:8px 14px; flex:1;" onclick="runCloudBackupNow()">
+              🚀 Backup Now (Local + Cloud)
+            </button>
+            <button type="button" id="btn-backup-download-tar" class="btn btn-outline" style="border-color:#059669; color:#059669; font-size:0.82rem; font-weight:600; padding:8px 12px;" onclick="downloadWithAuth('/api/backup/download-latest')">
+              ⬇️ Download Archive (.tar.gz)
+            </button>
+            <button type="button" id="btn-backup-recheck" class="btn btn-outline" style="font-size:0.82rem; padding:8px 12px;" onclick="checkBackupStatus(true)">
+              🔄 Re-check
+            </button>
           </div>
-          <div style="display:flex; justify-content:flex-end; gap:10px;">
-            <button type="button" class="btn btn-outline" onclick="checkBackupStatus(true)">🔄 Re-check Status</button>
-            <button type="button" class="btn btn-green" onclick="closeBackupDetailsModal()">Close</button>
+
+          <!-- Google Account Cloud Configuration Panel (Super Admin) -->
+          <div id="backup-config-panel" style="border:1.5px solid #cbd5e1; border-radius:10px; padding:14px 16px; background:#ffffff; margin-bottom:14px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+              <h4 style="margin:0; font-size:0.92rem; color:#0f172a; display:flex; align-items:center; gap:6px;">
+                🔑 Google Account Cloud Backup Setup
+              </h4>
+              <span id="backup-cfg-badge" style="font-size:0.7rem; background:#e0f2fe; color:#0369a1; font-weight:700; padding:2px 8px; border-radius:10px;">Permanent Sync</span>
+            </div>
+            <p style="margin:0 0 12px 0; font-size:0.76rem; color:#64748b; line-height:1.45;">
+              Enter your <strong>Google Email (Username)</strong> and <strong>16-Digit Google App Password</strong> (<a href="https://myaccount.google.com/apppasswords" target="_blank" style="color:#0284c7; text-decoration:underline;">get App Password here</a>). Unlike temporary OAuth tokens, App Passwords never expire and automatically deliver every hot-backup archive (<code>.tar.gz</code>) to your Google Cloud account.
+            </p>
+
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:10px;">
+              <div>
+                <label style="display:block; font-size:0.76rem; font-weight:700; color:#334155; margin-bottom:3px;">Google Username (Email) <span style="color:#ef4444;">*</span></label>
+                <input type="email" id="backup-cfg-user" placeholder="e.g. yourname@gmail.com" style="width:100%; padding:7px 10px; border:1px solid #cbd5e1; border-radius:6px; font-size:0.83rem;">
+              </div>
+              <div>
+                <label style="display:block; font-size:0.76rem; font-weight:700; color:#334155; margin-bottom:3px;">Google Password / App Password <span style="color:#ef4444;">*</span></label>
+                <div style="position:relative; display:flex; align-items:center;">
+                  <input type="password" id="backup-cfg-pass" placeholder="16-digit App Password" style="width:100%; padding:7px 34px 7px 10px; border:1px solid #cbd5e1; border-radius:6px; font-size:0.83rem;">
+                  <button type="button" id="btn-toggle-backup-pass" onclick="toggleBackupCfgPass()" style="position:absolute; right:6px; background:none; border:none; cursor:pointer; font-size:0.95rem; padding:2px;">👁️</button>
+                </div>
+              </div>
+            </div>
+
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:10px;">
+              <div>
+                <label style="display:block; font-size:0.76rem; font-weight:700; color:#334155; margin-bottom:3px;">Server / Zone Name</label>
+                <input type="text" id="backup-cfg-label" placeholder="e.g. Thrissur or Kottayam SouthZone" style="width:100%; padding:7px 10px; border:1px solid #cbd5e1; border-radius:6px; font-size:0.83rem;">
+              </div>
+              <div>
+                <label style="display:block; font-size:0.76rem; font-weight:700; color:#334155; margin-bottom:3px;">Backup Destination Email</label>
+                <input type="email" id="backup-cfg-recipient" placeholder="Same as Google Username" style="width:100%; padding:7px 10px; border:1px solid #cbd5e1; border-radius:6px; font-size:0.83rem;">
+              </div>
+            </div>
+
+            <details style="margin-bottom:10px; font-size:0.76rem; color:#475569;">
+              <summary style="cursor:pointer; font-weight:600; color:#0284c7; user-select:none;">⚙️ Advanced (Optional): Paste Rclone Google Drive Config (rclone.conf)</summary>
+              <div style="margin-top:6px;">
+                <textarea id="backup-cfg-rclone" rows="3" placeholder="[gdrive]&#10;type = drive&#10;scope = drive&#10;token = {...}" style="width:100%; font-family:monospace; font-size:0.75rem; padding:6px 8px; border:1px solid #cbd5e1; border-radius:6px;"></textarea>
+              </div>
+            </details>
+
+            <div id="backup-cfg-feedback" style="display:none; font-size:0.79rem; padding:8px 10px; border-radius:6px; margin-bottom:10px;"></div>
+
+            <button type="button" id="btn-save-backup-cfg" class="btn btn-green" style="width:100%; padding:8px 14px; font-size:0.84rem; font-weight:700;" onclick="saveBackupConfig()">
+              💾 Save & Verify Google Account
+            </button>
+          </div>
+
+          <!-- Recent Backup Log Viewer -->
+          <details style="margin-bottom:14px; font-size:0.78rem;">
+            <summary style="cursor:pointer; font-weight:600; color:#475569; user-select:none;">📋 View Recent Backup Log (backup.log)</summary>
+            <pre id="modal-backup-logs" style="margin:6px 0 0 0; background:#0f172a; color:#e2e8f0; padding:10px; border-radius:6px; font-size:0.72rem; max-height:130px; overflow-y:auto; white-space:pre-wrap;">Loading logs...</pre>
+          </details>
+
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <span style="font-size:0.73rem; color:#64748b;">ℹ️ Scheduled daily at 11:30 PM + On-Demand</span>
+            <button type="button" class="btn btn-outline" onclick="closeBackupDetailsModal()">Close</button>
           </div>
         </div>
       </div>
@@ -4655,10 +4876,17 @@ def admin_dashboard(response: Response):
           const textEl = document.getElementById('backup-status-text');
           if (!badgeEl || !dotEl || !textEl) return;
 
+          const recheckBtn = document.getElementById('btn-backup-recheck');
+          if (forceRefresh && recheckBtn) {
+            recheckBtn.disabled = true;
+            recheckBtn.innerText = '⏳ Checking...';
+          }
+
           try {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 3000);
-            const res = await fetch('/api/backup-status', {
+            const timeoutId = setTimeout(() => controller.abort(), forceRefresh ? 10000 : 3000);
+            const url = forceRefresh ? '/api/backup-status?refresh=true' : '/api/backup-status';
+            const res = await fetch(url, {
               signal: controller.signal,
               cache: 'no-store'
             });
@@ -4673,6 +4901,11 @@ def admin_dashboard(response: Response):
           } catch (e) {
             // Non-blocking silent failure: never disrupts UI or existing button handlers
             console.warn('[Backup Monitor] Passive check bypassed:', e.message);
+          } finally {
+            if (forceRefresh && recheckBtn) {
+              recheckBtn.disabled = false;
+              recheckBtn.innerText = '🔄 Re-check';
+            }
           }
         }
 
@@ -4693,14 +4926,14 @@ def admin_dashboard(response: Response):
               ? `${data.backup_age_hours}h ago` 
               : 'Synced';
             textEl.innerText = `☁️ GDrive: OK (${ageStr})`;
-            badgeEl.title = `Google Drive Backup is healthy. Last archive: ${data.archive_name} (${data.archive_size}). Click for details.`;
+            badgeEl.title = `Google Cloud Backup is healthy. Last archive: ${data.archive_name} (${data.archive_size}). Click for details.`;
           } else if (st === 'warning') {
             dotEl.style.background = '#f59e0b';
             badgeEl.style.background = '#fffbeb';
             badgeEl.style.color = '#92400e';
             badgeEl.style.borderColor = '#fde68a';
             textEl.innerText = '☁️ GDrive: Local Only';
-            badgeEl.title = `Local backup exists but cloud sync is pending/not verified. Click for details.`;
+            badgeEl.title = `Local backup exists but cloud sync is pending/not verified. Click to configure Google Account.`;
           } else if (st === 'error') {
             dotEl.style.background = '#ef4444';
             badgeEl.style.background = '#fef2f2';
@@ -4722,7 +4955,14 @@ def admin_dashboard(response: Response):
           const modal = document.getElementById('backup-details-modal');
           if (modal) {
             modal.style.display = 'flex';
+            const cfgPanel = document.getElementById('backup-config-panel');
+            const runBtn = document.getElementById('btn-backup-run-now');
+            const isSuper = currentAdmin && normalizeAdminRole(currentAdmin.role) === 'super_admin';
+            if (cfgPanel) cfgPanel.style.display = isSuper ? 'block' : 'none';
+            if (runBtn) runBtn.style.display = isSuper ? 'inline-block' : 'none';
+
             renderBackupDetailsModal();
+            loadBackupConfigModal();
             if (!lastBackupData) {
               checkBackupStatus();
             }
@@ -4745,6 +4985,7 @@ def admin_dashboard(response: Response):
           const cloudEl = document.getElementById('modal-backup-cloud');
           const checkedEl = document.getElementById('modal-backup-checked');
           const msgEl = document.getElementById('modal-backup-msg');
+          const logsEl = document.getElementById('modal-backup-logs');
 
           if (stateEl) {
             stateEl.innerText = (d.status || 'unknown').toUpperCase();
@@ -4763,11 +5004,162 @@ def admin_dashboard(response: Response):
           if (remoteEl) remoteEl.innerText = d.remote_target || 'gdrive:GPON_Backups';
           if (cloudEl) {
             cloudEl.innerHTML = d.cloud_connected 
-              ? '<span style="color:#10b981; font-weight:700;">✅ Connected</span>' 
+              ? `<span style="color:#10b981; font-weight:700;">✅ Connected (${escapeHtml(d.auth_method || 'Cloud')})</span>` 
               : '<span style="color:#ef4444; font-weight:700;">❌ Disconnected / Not verified</span>';
           }
           if (checkedEl) checkedEl.innerText = d.last_checked_at || 'Just now';
           if (msgEl) msgEl.innerText = d.message || 'No additional status details.';
+          if (logsEl && d.recent_logs && d.recent_logs.length > 0) {
+            logsEl.innerText = d.recent_logs.join('\n');
+          }
+        }
+
+        async function loadBackupConfigModal() {
+          try {
+            const res = await authFetch('/api/backup/config');
+            if (!res.ok) return;
+            const data = await res.json();
+            const userInp = document.getElementById('backup-cfg-user');
+            const passInp = document.getElementById('backup-cfg-pass');
+            const labelInp = document.getElementById('backup-cfg-label');
+            const recInp = document.getElementById('backup-cfg-recipient');
+            const logsEl = document.getElementById('modal-backup-logs');
+
+            if (userInp && data.google_user) userInp.value = data.google_user;
+            if (passInp) {
+              passInp.value = '';
+              passInp.placeholder = data.has_password ? '•••••••••••••••• (Saved - type to update)' : '16-digit App Password';
+            }
+            if (labelInp && data.server_label) labelInp.value = data.server_label;
+            if (recInp && data.recipient_email) recInp.value = data.recipient_email;
+            if (logsEl) {
+              logsEl.innerText = (data.recent_logs && data.recent_logs.length > 0)
+                ? data.recent_logs.join('\n')
+                : 'No backup log entries recorded yet.';
+            }
+          } catch (e) {
+            console.warn('[Backup Config] Could not load config:', e);
+          }
+        }
+
+        function toggleBackupCfgPass() {
+          const inp = document.getElementById('backup-cfg-pass');
+          const btn = document.getElementById('btn-toggle-backup-pass');
+          if (!inp) return;
+          if (inp.type === 'password') {
+            inp.type = 'text';
+            if (btn) btn.innerText = '🙈';
+          } else {
+            inp.type = 'password';
+            if (btn) btn.innerText = '👁️';
+          }
+        }
+
+        async function saveBackupConfig() {
+          const userVal = (document.getElementById('backup-cfg-user').value || '').trim();
+          const passVal = (document.getElementById('backup-cfg-pass').value || '').trim();
+          const labelVal = (document.getElementById('backup-cfg-label').value || '').trim();
+          const recVal = (document.getElementById('backup-cfg-recipient').value || '').trim();
+          const rcloneVal = (document.getElementById('backup-cfg-rclone').value || '').trim();
+          const fbEl = document.getElementById('backup-cfg-feedback');
+          const saveBtn = document.getElementById('btn-save-backup-cfg');
+
+          if (!userVal || !userVal.includes('@')) {
+            if (fbEl) {
+              fbEl.style.display = 'block';
+              fbEl.style.background = '#fef2f2';
+              fbEl.style.color = '#991b1b';
+              fbEl.style.border = '1px solid #fecaca';
+              fbEl.innerText = '⚠️ Please enter a valid Google Email / Username.';
+            }
+            return;
+          }
+
+          if (saveBtn) {
+            saveBtn.disabled = true;
+            saveBtn.innerText = '⏳ Verifying with Google...';
+          }
+          if (fbEl) fbEl.style.display = 'none';
+
+          try {
+            const res = await authFetch('/api/backup/config', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                google_user: userVal,
+                google_password: passVal,
+                server_label: labelVal,
+                recipient_email: recVal || userVal,
+                rclone_conf: rcloneVal
+              })
+            });
+            const data = await res.json();
+            if (fbEl) {
+              fbEl.style.display = 'block';
+              if (res.ok && data.verified) {
+                fbEl.style.background = '#ecfdf5';
+                fbEl.style.color = '#065f46';
+                fbEl.style.border = '1px solid #a7f3d0';
+                fbEl.innerText = '✅ ' + data.message;
+              } else {
+                fbEl.style.background = '#fffbeb';
+                fbEl.style.color = '#92400e';
+                fbEl.style.border = '1px solid #fde68a';
+                fbEl.innerText = '⚠️ ' + (data.message || data.detail || 'Could not verify login.');
+              }
+            }
+            if (data.health) {
+              lastBackupData = data.health;
+              updateBackupBadgeUI(data.health);
+              renderBackupDetailsModal();
+            }
+            loadBackupConfigModal();
+          } catch (err) {
+            if (fbEl) {
+              fbEl.style.display = 'block';
+              fbEl.style.background = '#fef2f2';
+              fbEl.style.color = '#991b1b';
+              fbEl.innerText = '❌ Network error: ' + err.message;
+            }
+          } finally {
+            if (saveBtn) {
+              saveBtn.disabled = false;
+              saveBtn.innerText = '💾 Save & Verify Google Account';
+            }
+          }
+        }
+
+        async function runCloudBackupNow() {
+          const btn = document.getElementById('btn-backup-run-now');
+          const msgEl = document.getElementById('modal-backup-msg');
+          if (btn) {
+            btn.disabled = true;
+            btn.innerText = '⏳ Creating Snapshot & Uploading...';
+          }
+          try {
+            const res = await authFetch('/api/backup/run-now', { method: 'POST' });
+            const data = await res.json();
+            if (res.ok) {
+              if (data.health) {
+                lastBackupData = data.health;
+                updateBackupBadgeUI(data.health);
+                renderBackupDetailsModal();
+              }
+              if (msgEl) {
+                msgEl.innerText = (data.cloud_uploaded ? '✅ ' : 'ℹ️ ') + data.message;
+              }
+              loadBackupConfigModal();
+            } else {
+              alert('⚠️ Backup error: ' + (data.detail || 'Could not run backup'));
+            }
+          } catch (err) {
+            alert('❌ Network error running backup: ' + err.message);
+          } finally {
+            if (btn) {
+              btn.disabled = false;
+              btn.innerText = '🚀 Backup Now (Local + Cloud)';
+            }
+          }
         }
 
         function toggleAdminPassword() {

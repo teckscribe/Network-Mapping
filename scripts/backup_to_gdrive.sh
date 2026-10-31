@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Automated Google Drive Backup Script for GPON Network Mapping
-# Uses SQLite Online Backup + Tar Compression + Rclone
+# Automated Google Cloud & Drive Backup Script for GPON Network Mapping
+# Uses SQLite Online Backup + Tar Compression + Google Account Sync / Rclone
 # ==============================================================================
 
-set -euo pipefail
+set -uo pipefail
 
 # Configuration
 APP_DIR="${PROJECT_DIR:-$HOME/Network-Mapping}"
 DB_FILE="$APP_DIR/gpon_survey_data.db"
 USERS_CONFIG="$APP_DIR/users_config.json"
-HIERARCHY_CONFIG="$APP_DIR/custom_hierarchy.json"
+HIERARCHY_CONFIG_MAIN="$APP_DIR/Node Master/custom_hierarchy.json"
+HIERARCHY_CONFIG_ALT="$APP_DIR/custom_hierarchy.json"
 
 BACKUP_LOCAL_DIR="${BACKUP_DIR:-$HOME/gpon_backups}"
 LOG_FILE="$APP_DIR/backup.log"
@@ -56,8 +57,11 @@ if [ -f "$USERS_CONFIG" ]; then
 fi
 
 # Add custom_hierarchy.json if it exists
-if [ -f "$HIERARCHY_CONFIG" ]; then
-    cp "$HIERARCHY_CONFIG" "$BACKUP_LOCAL_DIR/custom_hierarchy.json"
+if [ -f "$HIERARCHY_CONFIG_MAIN" ]; then
+    cp "$HIERARCHY_CONFIG_MAIN" "$BACKUP_LOCAL_DIR/custom_hierarchy.json"
+    TAR_FILES+=("-C" "$BACKUP_LOCAL_DIR" "custom_hierarchy.json")
+elif [ -f "$HIERARCHY_CONFIG_ALT" ]; then
+    cp "$HIERARCHY_CONFIG_ALT" "$BACKUP_LOCAL_DIR/custom_hierarchy.json"
     TAR_FILES+=("-C" "$BACKUP_LOCAL_DIR" "custom_hierarchy.json")
 fi
 
@@ -71,25 +75,25 @@ rm -f "$BACKUP_LOCAL_DIR/custom_hierarchy.json" 2>/dev/null || true
 ARCHIVE_SIZE=$(du -h "$ARCHIVE_PATH" | cut -f1)
 log "Archive created successfully ($ARCHIVE_SIZE)."
 
-# 3. Upload to Google Drive using Rclone
+# 3. Upload to Google Drive using Rclone (non-blocking if not configured)
 if command -v rclone >/dev/null 2>&1; then
-    log "Uploading $ARCHIVE_NAME to Google Drive ($RCLONE_REMOTE)..."
-    rclone copy "$ARCHIVE_PATH" "$RCLONE_REMOTE"
-    log "Upload completed successfully!"
-
-    # 4. Retention policy: clean up Google Drive backups older than 30 days
-    log "Pruning remote backups older than 30 days..."
-    rclone delete --min-age 30d "$RCLONE_REMOTE" || true
-else
-    log "WARNING: rclone not installed or configured. Backup preserved locally at $ARCHIVE_PATH."
+    if rclone listremotes 2>/dev/null | grep -q "^gdrive:"; then
+        log "Uploading $ARCHIVE_NAME to Google Drive ($RCLONE_REMOTE)..."
+        if rclone copy "$ARCHIVE_PATH" "$RCLONE_REMOTE" --contimeout 5s --timeout 30s; then
+            log "Rclone upload completed successfully!"
+            rclone delete --min-age 30d "$RCLONE_REMOTE" 2>/dev/null || true
+        else
+            log "WARNING: Rclone upload failed or token expired. Falling back to Google Account Cloud Sync..."
+        fi
+    fi
 fi
 
-# 5. Local cleanup: keep only last 7 days of local archives
+# 4. Local cleanup: keep only last 7 days of local archives
 find "$BACKUP_LOCAL_DIR" -type f -name "gpon_backup_*.tar.gz" -mtime +7 -delete 2>/dev/null || true
 
-# 6. Update decoupled backup health status for web server (zero overhead)
+# 5. Upload to Google Account Cloud (Email + App Password configured in Web UI) & update backup_status.json
 if [ -f "$APP_DIR/scripts/verify_backup_health.py" ]; then
-    python3 "$APP_DIR/scripts/verify_backup_health.py" --update 2>/dev/null || true
+    python3 "$APP_DIR/scripts/verify_backup_health.py" --cloud-sync --update 2>/dev/null || true
 fi
 
 log "=== Backup Finished Successfully ==="
