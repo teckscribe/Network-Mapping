@@ -5183,7 +5183,7 @@ def admin_dashboard(response: Response):
           if (checkedEl) checkedEl.innerText = d.last_checked_at || 'Just now';
           if (msgEl) msgEl.innerText = d.message || 'No additional status details.';
           if (logsEl && d.recent_logs && d.recent_logs.length > 0) {
-            logsEl.innerText = d.recent_logs.join('\n');
+            logsEl.innerText = d.recent_logs.join('\\n');
           }
         }
 
@@ -5225,7 +5225,7 @@ def admin_dashboard(response: Response):
 
             if (logsEl) {
               logsEl.innerText = (data.recent_logs && data.recent_logs.length > 0)
-                ? data.recent_logs.join('\n')
+                ? data.recent_logs.join('\\n')
                 : 'No backup log entries recorded yet.';
             }
           } catch (e) {
@@ -7351,7 +7351,7 @@ def admin_dashboard(response: Response):
             if (data.status === 'success') {
               alert('✅ ' + data.message);
             } else if (data.status === 'warning') {
-              if (confirm('⚠️ ' + data.message + '\n\nWould you like to open the OTP / Google Email Setup panel now to enter your Google Username & App Password?')) {
+              if (confirm('⚠️ ' + data.message + '\\n\\nWould you like to open the OTP / Google Email Setup panel now to enter your Google Username & App Password?')) {
                 showBackupDetailsModal();
               }
             } else {
