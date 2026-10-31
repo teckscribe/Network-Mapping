@@ -44,16 +44,20 @@ HIERARCHY_FILE = os.path.join(NODE_MASTER_DIR, "custom_hierarchy.json")
 ENV_FILE = os.path.join(BASE_DIR, ".env")
 
 def load_smtp_config():
-    """Dynamically read SMTP settings from .env file or environment variables."""
+    """Dynamically read SMTP settings from .env file or environment variables (unified with Google Cloud Backup credentials)."""
     conf = {
-        "host": os.getenv("SMTP_HOST", ""),
+        "host": os.getenv("SMTP_HOST", "") or os.getenv("BACKUP_SMTP_HOST", ""),
         "port": int(os.getenv("SMTP_PORT", "587")),
-        "user": os.getenv("SMTP_USER", ""),
-        "password": os.getenv("SMTP_PASSWORD", ""),
+        "user": os.getenv("SMTP_USER", "") or os.getenv("BACKUP_GOOGLE_USER", ""),
+        "password": os.getenv("SMTP_PASSWORD", "") or os.getenv("BACKUP_GOOGLE_PASSWORD", ""),
         "from_email": os.getenv("SMTP_FROM", ""),
         "from_name": os.getenv("SMTP_FROM_NAME", "GPON Network Mapping"),
         "tls": os.getenv("SMTP_TLS", "true").lower() in ("true", "1", "yes")
     }
+    backup_user = ""
+    backup_pass = ""
+    backup_host = ""
+    backup_port = None
     if os.path.exists(ENV_FILE):
         try:
             with open(ENV_FILE, "r", encoding="utf-8") as ef:
@@ -72,8 +76,30 @@ def load_smtp_config():
                         elif k == "SMTP_FROM": conf["from_email"] = v
                         elif k == "SMTP_FROM_NAME": conf["from_name"] = v
                         elif k == "SMTP_TLS": conf["tls"] = v.lower() in ("true", "1", "yes")
+                        elif k == "BACKUP_GOOGLE_USER": backup_user = v
+                        elif k == "BACKUP_GOOGLE_PASSWORD": backup_pass = v
+                        elif k == "BACKUP_SMTP_HOST": backup_host = v
+                        elif k == "BACKUP_SMTP_PORT":
+                            try: backup_port = int(v)
+                            except: pass
         except Exception as e:
             print(f"[SMTP Config] Warning reading .env: {e}")
+
+    if not conf["user"] and backup_user:
+        conf["user"] = backup_user
+    if not conf["password"] and backup_pass:
+        conf["password"] = backup_pass
+    if not conf["host"]:
+        if backup_host:
+            conf["host"] = backup_host
+        elif conf["user"] and "@gmail.com" in conf["user"].lower():
+            conf["host"] = "smtp.gmail.com"
+    if backup_port and not conf.get("port"):
+        conf["port"] = backup_port
+
+    if "gmail.com" in (conf["host"] or "").lower() and conf["password"]:
+        conf["password"] = conf["password"].replace(" ", "")
+
     if not conf["from_email"]:
         conf["from_email"] = conf["user"] or "noreply@gpon.local"
     return conf
@@ -907,6 +933,9 @@ class BackupConfigPayload(BaseModel):
     smtp_host: Optional[str] = "smtp.gmail.com"
     smtp_port: Optional[int] = 587
     rclone_conf: Optional[str] = ""
+
+class RestoreLocalBackupPayload(BaseModel):
+    archive_name: Optional[str] = "latest"
 
 class SurveyRecordModel(BaseModel):
     client_uuid: str
@@ -2288,20 +2317,24 @@ def get_backup_status(refresh: Optional[bool] = Query(False)):
 
 @app.get("/api/backup/config")
 def get_backup_config(session: dict = Depends(require_admin_auth)):
-    """Returns current Google Cloud Backup settings (masked password) and recent backup log entries."""
+    """Returns current Google Cloud Backup & Password Reset OTP settings (masked password), available local backups, and recent backup log entries."""
     try:
         mod = _load_backup_engine()
         conf = mod.load_backup_config()
+        smtp_conf = load_smtp_config()
         log_info = mod.check_backup_log()
+        local_backups = mod.list_all_local_backups(limit=25)
         return {
             "status": "success",
-            "google_user": conf["google_user"],
-            "google_user_masked": mod.mask_email(conf["google_user"]),
-            "has_password": bool(conf["google_password"]),
-            "recipient_email": conf["recipient_email"],
+            "google_user": conf["google_user"] or smtp_conf["user"],
+            "google_user_masked": mod.mask_email(conf["google_user"] or smtp_conf["user"]),
+            "has_password": bool(conf["google_password"] or smtp_conf["password"]),
+            "recipient_email": conf["recipient_email"] or conf["google_user"] or smtp_conf["user"],
             "server_label": conf["server_label"],
-            "smtp_host": conf["smtp_host"],
-            "smtp_port": conf["smtp_port"],
+            "smtp_host": conf["smtp_host"] or smtp_conf["host"] or "smtp.gmail.com",
+            "smtp_port": conf["smtp_port"] or smtp_conf["port"] or 587,
+            "smtp_configured": bool((conf["google_user"] or smtp_conf["user"]) and (conf["google_password"] or smtp_conf["password"])),
+            "local_backups": local_backups,
             "recent_logs": log_info.get("recent_lines", [])
         }
     except Exception as e:
@@ -2309,17 +2342,17 @@ def get_backup_config(session: dict = Depends(require_admin_auth)):
 
 @app.post("/api/backup/config")
 def save_backup_config_endpoint(payload: BackupConfigPayload, session: dict = Depends(require_super_admin_auth)):
-    """Saves Google Cloud Backup credentials to .env, tests TLS login, and updates backup health status."""
+    """Saves unified Google Cloud Backup & Password Reset OTP SMTP credentials to .env, tests TLS login, and updates status."""
     g_user = (payload.google_user or "").strip()
     if not g_user or "@" not in g_user:
-        raise HTTPException(status_code=400, detail="Please enter a valid Google Email / Username (e.g., yourname@gmail.com).")
+        raise HTTPException(status_code=400, detail="Please enter a valid Google Email / SMTP Username (e.g., yourname@gmail.com).")
 
     try:
         mod = _load_backup_engine()
         existing_conf = mod.load_backup_config()
         g_pass = (payload.google_password or "").strip()
         if not g_pass and not existing_conf.get("google_password"):
-            raise HTTPException(status_code=400, detail="Please enter your Google 16-digit App Password.")
+            raise HTTPException(status_code=400, detail="Please enter your Google 16-digit App Password (or SMTP password).")
 
         mod.save_backup_config_to_env(
             google_user=g_user,
@@ -2338,25 +2371,25 @@ def save_backup_config_endpoint(payload: BackupConfigPayload, session: dict = De
             with open(rclone_conf_path, "w", encoding="utf-8") as rf:
                 rf.write(payload.rclone_conf.strip() + "\n")
 
-        # Verify Google login and update status file
+        # Verify Google / SMTP login and update status file
         google_check = mod.check_google_account_connectivity(verify_login=True)
         health = mod.evaluate_backup_health()
         mod.write_status_file(health)
 
         if google_check.get("connected"):
-            mod.log_backup_event(f"Google Cloud Backup credentials configured & verified for {google_check['account']} by {session.get('username')}.")
+            mod.log_backup_event(f"Unified Google Cloud Backup & OTP Email server configured & verified for {google_check['account']} by {session.get('username')}.")
             return {
                 "status": "success",
                 "verified": True,
-                "message": f"Connected & verified with Google Account ({google_check['account']})!",
+                "message": f"Connected & verified ({google_check['account']})! Both Cloud Backups and Password Reset OTP Emails are now active.",
                 "health": health
             }
         else:
-            err_detail = google_check.get("error", "Could not verify login with Google.")
+            err_detail = google_check.get("error", "Could not verify login with Google/SMTP.")
             return {
                 "status": "warning",
                 "verified": False,
-                "message": f"Settings saved, but Google verification reported: {err_detail}",
+                "message": f"Settings saved, but verification reported: {err_detail}",
                 "health": health
             }
     except HTTPException:
@@ -2408,6 +2441,88 @@ def download_latest_backup_archive(session: dict = Depends(require_admin_auth)):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to prepare backup archive: {str(e)}")
+
+@app.get("/api/backup/list")
+def list_local_backups_endpoint(session: dict = Depends(require_admin_auth)):
+    """Lists all available local backup snapshots on the server."""
+    try:
+        mod = _load_backup_engine()
+        backups = mod.list_all_local_backups(limit=30)
+        return {"status": "success", "backups": backups}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list backups: {str(e)}")
+
+@app.post("/api/backup/restore-local")
+def restore_local_backup_endpoint(payload: RestoreLocalBackupPayload, session: dict = Depends(require_super_admin_auth)):
+    """Restores survey database, users, and hierarchy from a selected local backup snapshot."""
+    try:
+        mod = _load_backup_engine()
+        backups = mod.list_all_local_backups(limit=50)
+        if not backups:
+            raise HTTPException(status_code=404, detail="No local backup snapshots found on this server.")
+
+        target_name = (payload.archive_name or "latest").strip()
+        selected = None
+        if target_name.lower() == "latest":
+            selected = backups[0]
+        else:
+            for b in backups:
+                if b["name"] == target_name:
+                    selected = b
+                    break
+        if not selected or not os.path.isfile(selected["path"]):
+            raise HTTPException(status_code=404, detail=f"Backup archive '{target_name}' not found on server.")
+
+        result = mod.restore_from_backup_file(selected["path"], take_safety_snapshot=True)
+        # Ensure DB migrations and users_config.json are synchronized after restore
+        init_db()
+        health = mod.evaluate_backup_health()
+        mod.write_status_file(health)
+        result["health"] = health
+        return result
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Restore failed: {str(e)}")
+
+@app.post("/api/backup/restore-upload")
+async def restore_uploaded_backup_endpoint(file: UploadFile = File(...), session: dict = Depends(require_super_admin_auth)):
+    """Restores survey database, users, and hierarchy from an uploaded .tar.gz or .db backup file."""
+    fname = (file.filename or "uploaded_backup.tar.gz").strip()
+    lower_name = fname.lower()
+    if not (lower_name.endswith(".tar.gz") or lower_name.endswith(".tgz") or lower_name.endswith(".db") or lower_name.endswith(".sqlite") or lower_name.endswith(".sqlite3")):
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported file format. Please upload a .tar.gz backup archive or a .db SQLite database file."
+        )
+
+    import tempfile
+    tmp_dir = tempfile.mkdtemp(prefix="gpon_upload_restore_")
+    tmp_path = os.path.join(tmp_dir, os.path.basename(fname))
+    try:
+        content = await file.read()
+        if not content or len(content) < 512:
+            raise HTTPException(status_code=400, detail="Uploaded backup file is empty or corrupted.")
+        with open(tmp_path, "wb") as tf:
+            tf.write(content)
+
+        mod = _load_backup_engine()
+        result = mod.restore_from_backup_file(tmp_path, take_safety_snapshot=True)
+        init_db()
+        health = mod.evaluate_backup_health()
+        mod.write_status_file(health)
+        result["health"] = health
+        return result
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Restore from uploaded file failed: {str(e)}")
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 @app.get("/api/download-hierarchy-template")
 def download_hierarchy_template():
@@ -3876,6 +3991,7 @@ def admin_dashboard(response: Response):
             <input type="file" id="upload-users-excel-file" accept=".xlsx, .xls, .csv" style="display:none;" onchange="uploadUsersExcel(event)">
             <button type="button" onclick="document.getElementById('upload-users-excel-file').click()" class="btn btn-green" style="font-size:0.85rem; padding:8px 16px; font-weight:700; box-shadow:0 1px 3px rgba(0,0,0,0.1);">📂 Browse & Upload Excel</button>
             <button type="button" onclick="openAddUserModal()" class="btn" style="background:#0284c7; color:white; font-size:0.85rem; padding:8px 16px; font-weight:700;">➕ Add Single User</button>
+            <button type="button" id="btn-cfg-otp-smtp" onclick="showBackupDetailsModal()" class="btn btn-outline" style="border-color:#0f766e; color:#0f766e; font-size:0.8rem; padding:7px 12px; font-weight:700;" title="Configure Google Account / SMTP Server for Password Reset OTP & Cloud Backups">⚙️ OTP / Cloud Email Setup</button>
             <button type="button" id="btn-test-smtp" onclick="testSmtpConnection()" class="btn btn-outline" style="border-color:#0284c7; color:#0284c7; font-size:0.8rem; padding:7px 12px; font-weight:600;">📧 Test SMTP</button>
             <button type="button" id="btn-backup-json" onclick="downloadUsersBackup()" class="btn btn-outline" style="font-size:0.8rem; padding:7px 12px;">📥 Backup JSON</button>
             <button type="button" id="btn-restore-json" onclick="document.getElementById('import-users-file').click()" class="btn btn-outline" style="font-size:0.8rem; padding:7px 12px;">📤 Restore JSON</button>
@@ -4457,12 +4573,12 @@ def admin_dashboard(response: Response):
         </div>
       </div>
 
-      <!-- Backup Status & Cloud Configuration Modal -->
+      <!-- Backup Status, Data Restore & Unified Cloud / OTP Email Configuration Modal -->
       <div id="backup-details-modal" onclick="if(event.target===this)closeBackupDetailsModal()" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(15,23,42,0.65); backdrop-filter:blur(3px); z-index:10001; justify-content:center; align-items:center; padding:16px;">
-        <div style="background:white; border-radius:12px; padding:22px 24px; max-width:600px; width:100%; max-height:92vh; overflow-y:auto; box-shadow:0 20px 25px -5px rgba(0,0,0,0.25); border:1px solid #cbd5e1;">
+        <div style="background:white; border-radius:12px; padding:22px 24px; max-width:650px; width:100%; max-height:92vh; overflow-y:auto; box-shadow:0 20px 25px -5px rgba(0,0,0,0.25); border:1px solid #cbd5e1;">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid #e2e8f0; padding-bottom:10px;">
             <h3 style="margin:0; color:#0f172a; font-size:1.15rem; display:flex; align-items:center; gap:8px;">
-              <span>☁️</span> Google Cloud & Drive Backup Control Center
+              <span>☁️</span> Cloud Backup, Data Restore &amp; OTP Email Server
             </h3>
             <button type="button" onclick="closeBackupDetailsModal()" style="background:none; border:none; font-size:1.4rem; color:#64748b; cursor:pointer; line-height:1;">&times;</button>
           </div>
@@ -4486,11 +4602,11 @@ def admin_dashboard(response: Response):
               <span id="modal-backup-size" style="font-weight:600;">-</span>
             </div>
             <div style="display:flex; justify-content:space-between; margin-bottom:5px;">
-              <span><strong>Cloud Target:</strong></span>
+              <span><strong>Cloud / Email Target:</strong></span>
               <span id="modal-backup-remote" style="font-family:monospace; font-size:0.8rem;">-</span>
             </div>
             <div style="display:flex; justify-content:space-between; margin-bottom:5px;">
-              <span><strong>Cloud Connected:</strong></span>
+              <span><strong>Cloud &amp; OTP Server:</strong></span>
               <span id="modal-backup-cloud">-</span>
             </div>
             <div style="display:flex; justify-content:space-between;">
@@ -4507,32 +4623,32 @@ def admin_dashboard(response: Response):
               🚀 Backup Now (Local + Cloud)
             </button>
             <button type="button" id="btn-backup-download-tar" class="btn btn-outline" style="border-color:#059669; color:#059669; font-size:0.82rem; font-weight:600; padding:8px 12px;" onclick="downloadWithAuth('/api/backup/download-latest')">
-              ⬇️ Download Archive (.tar.gz)
+              ⬇️ Download Latest (.tar.gz)
             </button>
             <button type="button" id="btn-backup-recheck" class="btn btn-outline" style="font-size:0.82rem; padding:8px 12px;" onclick="checkBackupStatus(true)">
               🔄 Re-check
             </button>
           </div>
 
-          <!-- Google Account Cloud Configuration Panel (Super Admin) -->
+          <!-- Unified Google Cloud Backup & Password Reset OTP Server Setup (Super Admin) -->
           <div id="backup-config-panel" style="border:1.5px solid #cbd5e1; border-radius:10px; padding:14px 16px; background:#ffffff; margin-bottom:14px;">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:6px;">
               <h4 style="margin:0; font-size:0.92rem; color:#0f172a; display:flex; align-items:center; gap:6px;">
-                🔑 Google Account Cloud Backup Setup
+                🔑 Google Cloud Backup &amp; Password Reset OTP Server Setup
               </h4>
-              <span id="backup-cfg-badge" style="font-size:0.7rem; background:#e0f2fe; color:#0369a1; font-weight:700; padding:2px 8px; border-radius:10px;">Permanent Sync</span>
+              <span id="backup-cfg-badge" style="font-size:0.7rem; background:#e0f2fe; color:#0369a1; font-weight:700; padding:2px 8px; border-radius:10px;">Cloud Backup + 6-Digit OTP</span>
             </div>
             <p style="margin:0 0 12px 0; font-size:0.76rem; color:#64748b; line-height:1.45;">
-              Enter your <strong>Google Email (Username)</strong> and <strong>16-Digit Google App Password</strong> (<a href="https://myaccount.google.com/apppasswords" target="_blank" style="color:#0284c7; text-decoration:underline;">get App Password here</a>). Unlike temporary OAuth tokens, App Passwords never expire and automatically deliver every hot-backup archive (<code>.tar.gz</code>) to your Google Cloud account.
+              Enter your <strong>Google Email (Username)</strong> and <strong>16-Digit Google App Password</strong> (<a href="https://myaccount.google.com/apppasswords" target="_blank" style="color:#0284c7; text-decoration:underline;">get App Password here</a>). Saving once configures <strong>both</strong> automated Google Cloud Backups (<code>.tar.gz</code>) <strong>and</strong> the <strong>Password Reset 6-Digit OTP Email Server</strong> for field users &amp; admins.
             </p>
 
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:10px;">
               <div>
-                <label style="display:block; font-size:0.76rem; font-weight:700; color:#334155; margin-bottom:3px;">Google Username (Email) <span style="color:#ef4444;">*</span></label>
+                <label style="display:block; font-size:0.76rem; font-weight:700; color:#334155; margin-bottom:3px;">Google Username / OTP Sender Email <span style="color:#ef4444;">*</span></label>
                 <input type="email" id="backup-cfg-user" placeholder="e.g. yourname@gmail.com" style="width:100%; padding:7px 10px; border:1px solid #cbd5e1; border-radius:6px; font-size:0.83rem;">
               </div>
               <div>
-                <label style="display:block; font-size:0.76rem; font-weight:700; color:#334155; margin-bottom:3px;">Google Password / App Password <span style="color:#ef4444;">*</span></label>
+                <label style="display:block; font-size:0.76rem; font-weight:700; color:#334155; margin-bottom:3px;">Google 16-Digit App Password <span style="color:#ef4444;">*</span></label>
                 <div style="position:relative; display:flex; align-items:center;">
                   <input type="password" id="backup-cfg-pass" placeholder="16-digit App Password" style="width:100%; padding:7px 34px 7px 10px; border:1px solid #cbd5e1; border-radius:6px; font-size:0.83rem;">
                   <button type="button" id="btn-toggle-backup-pass" onclick="toggleBackupCfgPass()" style="position:absolute; right:6px; background:none; border:none; cursor:pointer; font-size:0.95rem; padding:2px;">👁️</button>
@@ -4546,23 +4662,78 @@ def admin_dashboard(response: Response):
                 <input type="text" id="backup-cfg-label" placeholder="e.g. Thrissur or Kottayam SouthZone" style="width:100%; padding:7px 10px; border:1px solid #cbd5e1; border-radius:6px; font-size:0.83rem;">
               </div>
               <div>
-                <label style="display:block; font-size:0.76rem; font-weight:700; color:#334155; margin-bottom:3px;">Backup Destination Email</label>
+                <label style="display:block; font-size:0.76rem; font-weight:700; color:#334155; margin-bottom:3px;">Cloud Backup Destination Email</label>
                 <input type="email" id="backup-cfg-recipient" placeholder="Same as Google Username" style="width:100%; padding:7px 10px; border:1px solid #cbd5e1; border-radius:6px; font-size:0.83rem;">
               </div>
             </div>
 
             <details style="margin-bottom:10px; font-size:0.76rem; color:#475569;">
-              <summary style="cursor:pointer; font-weight:600; color:#0284c7; user-select:none;">⚙️ Advanced (Optional): Paste Rclone Google Drive Config (rclone.conf)</summary>
-              <div style="margin-top:6px;">
-                <textarea id="backup-cfg-rclone" rows="3" placeholder="[gdrive]&#10;type = drive&#10;scope = drive&#10;token = {...}" style="width:100%; font-family:monospace; font-size:0.75rem; padding:6px 8px; border:1px solid #cbd5e1; border-radius:6px;"></textarea>
+              <summary style="cursor:pointer; font-weight:600; color:#0284c7; user-select:none;">⚙️ Advanced (Optional): Custom SMTP Host / Port or Rclone Config</summary>
+              <div style="margin-top:8px; display:grid; grid-template-columns:2fr 1fr; gap:8px; margin-bottom:8px;">
+                <div>
+                  <label style="display:block; font-size:0.72rem; font-weight:700; color:#334155; margin-bottom:2px;">SMTP Server Host</label>
+                  <input type="text" id="backup-cfg-smtp-host" value="smtp.gmail.com" placeholder="smtp.gmail.com" style="width:100%; padding:6px 8px; border:1px solid #cbd5e1; border-radius:6px; font-size:0.78rem;">
+                </div>
+                <div>
+                  <label style="display:block; font-size:0.72rem; font-weight:700; color:#334155; margin-bottom:2px;">SMTP Port (TLS)</label>
+                  <input type="number" id="backup-cfg-smtp-port" value="587" placeholder="587" style="width:100%; padding:6px 8px; border:1px solid #cbd5e1; border-radius:6px; font-size:0.78rem;">
+                </div>
+              </div>
+              <div>
+                <label style="display:block; font-size:0.72rem; font-weight:700; color:#334155; margin-bottom:2px;">Optional Rclone Config (rclone.conf)</label>
+                <textarea id="backup-cfg-rclone" rows="2" placeholder="[gdrive]&#10;type = drive&#10;scope = drive&#10;token = {...}" style="width:100%; font-family:monospace; font-size:0.74rem; padding:6px 8px; border:1px solid #cbd5e1; border-radius:6px;"></textarea>
               </div>
             </details>
 
             <div id="backup-cfg-feedback" style="display:none; font-size:0.79rem; padding:8px 10px; border-radius:6px; margin-bottom:10px;"></div>
 
-            <button type="button" id="btn-save-backup-cfg" class="btn btn-green" style="width:100%; padding:8px 14px; font-size:0.84rem; font-weight:700;" onclick="saveBackupConfig()">
-              💾 Save & Verify Google Account
-            </button>
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+              <button type="button" id="btn-save-backup-cfg" class="btn btn-green" style="flex:1.4; padding:8px 14px; font-size:0.83rem; font-weight:700;" onclick="saveBackupConfig()">
+                💾 Save &amp; Verify Google / OTP Server
+              </button>
+              <button type="button" id="btn-modal-test-otp" class="btn btn-outline" style="flex:1; border-color:#0284c7; color:#0284c7; padding:8px 12px; font-size:0.82rem; font-weight:700;" onclick="sendTestOtpEmailFromModal()">
+                📩 Send Test OTP Email
+              </button>
+            </div>
+          </div>
+
+          <!-- Data Restore Center (Super Admin) -->
+          <div id="backup-restore-panel" style="border:1.5px solid #cbd5e1; border-radius:10px; padding:14px 16px; background:#fffbeb; margin-bottom:14px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; flex-wrap:wrap; gap:6px;">
+              <h4 style="margin:0; font-size:0.92rem; color:#92400e; display:flex; align-items:center; gap:6px;">
+                ♻️ Restore Data from Latest Backup
+              </h4>
+              <span style="font-size:0.69rem; background:#fef3c7; color:#92400e; border:1px solid #fde68a; font-weight:700; padding:2px 8px; border-radius:10px;">Auto Pre-Restore Safety Snapshot</span>
+            </div>
+            <p style="margin:0 0 10px 0; font-size:0.75rem; color:#78350f; line-height:1.45;">
+              Restore all Survey Records, User Accounts, and Network Hierarchy from the server's latest snapshot or by uploading a <code>.tar.gz</code> / <code>.db</code> backup file downloaded from your Google Cloud email. A safety backup of current data is created automatically before restoring.
+            </p>
+
+            <!-- Option 1: Restore from Local Snapshot Dropdown -->
+            <div style="margin-bottom:10px;">
+              <label style="display:block; font-size:0.75rem; font-weight:700; color:#78350f; margin-bottom:4px;">Option 1: Select Server Backup Snapshot</label>
+              <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                <select id="restore-local-select" style="flex:1; min-width:220px; padding:7px 10px; border:1px solid #fcd34d; border-radius:6px; font-size:0.8rem; background:white;">
+                  <option value="latest">Loading server snapshots...</option>
+                </select>
+                <button type="button" id="btn-restore-local" class="btn" style="background:#d97706; color:white; font-size:0.8rem; font-weight:700; padding:7px 14px; white-space:nowrap;" onclick="restoreSelectedLocalBackup()">
+                  ♻️ Restore Snapshot
+                </button>
+              </div>
+            </div>
+
+            <!-- Option 2: Upload .tar.gz or .db Backup File -->
+            <div style="border-top:1px dashed #fcd34d; padding-top:9px;">
+              <label style="display:block; font-size:0.75rem; font-weight:700; color:#78350f; margin-bottom:4px;">Option 2: Upload Backup Archive (<code>.tar.gz</code> or <code>.db</code> from PC / Google Email)</label>
+              <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                <input type="file" id="restore-upload-file" accept=".tar.gz,.tgz,.db,.sqlite,.sqlite3" style="flex:1; min-width:200px; font-size:0.77rem; padding:5px; background:white; border:1px solid #fcd34d; border-radius:6px;">
+                <button type="button" id="btn-restore-upload" class="btn btn-outline" style="border-color:#b45309; color:#b45309; background:white; font-size:0.8rem; font-weight:700; padding:7px 14px; white-space:nowrap;" onclick="restoreUploadedBackupFile()">
+                  📤 Upload &amp; Restore
+                </button>
+              </div>
+            </div>
+
+            <div id="restore-feedback" style="display:none; margin-top:10px; font-size:0.79rem; padding:8px 10px; border-radius:6px;"></div>
           </div>
 
           <!-- Recent Backup Log Viewer -->
@@ -4956,9 +5127,11 @@ def admin_dashboard(response: Response):
           if (modal) {
             modal.style.display = 'flex';
             const cfgPanel = document.getElementById('backup-config-panel');
+            const restorePanel = document.getElementById('backup-restore-panel');
             const runBtn = document.getElementById('btn-backup-run-now');
             const isSuper = currentAdmin && normalizeAdminRole(currentAdmin.role) === 'super_admin';
             if (cfgPanel) cfgPanel.style.display = isSuper ? 'block' : 'none';
+            if (restorePanel) restorePanel.style.display = isSuper ? 'block' : 'none';
             if (runBtn) runBtn.style.display = isSuper ? 'inline-block' : 'none';
 
             renderBackupDetailsModal();
@@ -5023,6 +5196,9 @@ def admin_dashboard(response: Response):
             const passInp = document.getElementById('backup-cfg-pass');
             const labelInp = document.getElementById('backup-cfg-label');
             const recInp = document.getElementById('backup-cfg-recipient');
+            const hostInp = document.getElementById('backup-cfg-smtp-host');
+            const portInp = document.getElementById('backup-cfg-smtp-port');
+            const selEl = document.getElementById('restore-local-select');
             const logsEl = document.getElementById('modal-backup-logs');
 
             if (userInp && data.google_user) userInp.value = data.google_user;
@@ -5032,6 +5208,21 @@ def admin_dashboard(response: Response):
             }
             if (labelInp && data.server_label) labelInp.value = data.server_label;
             if (recInp && data.recipient_email) recInp.value = data.recipient_email;
+            if (hostInp && data.smtp_host) hostInp.value = data.smtp_host;
+            if (portInp && data.smtp_port) portInp.value = data.smtp_port;
+
+            if (selEl) {
+              const backups = data.local_backups || [];
+              if (backups.length === 0) {
+                selEl.innerHTML = '<option value="">No local snapshots yet (click Backup Now)</option>';
+              } else {
+                selEl.innerHTML = backups.map((b, idx) => {
+                  const tag = idx === 0 ? '[LATEST] ' : '';
+                  return `<option value="${escapeHtml(b.name)}">${tag}${escapeHtml(b.name)} — ${escapeHtml(b.size)} (${escapeHtml(b.timestamp)})</option>`;
+                }).join('');
+              }
+            }
+
             if (logsEl) {
               logsEl.innerText = (data.recent_logs && data.recent_logs.length > 0)
                 ? data.recent_logs.join('\n')
@@ -5060,6 +5251,8 @@ def admin_dashboard(response: Response):
           const passVal = (document.getElementById('backup-cfg-pass').value || '').trim();
           const labelVal = (document.getElementById('backup-cfg-label').value || '').trim();
           const recVal = (document.getElementById('backup-cfg-recipient').value || '').trim();
+          const hostVal = (document.getElementById('backup-cfg-smtp-host') ? document.getElementById('backup-cfg-smtp-host').value : 'smtp.gmail.com').trim();
+          const portVal = parseInt(document.getElementById('backup-cfg-smtp-port') ? document.getElementById('backup-cfg-smtp-port').value : '587', 10) || 587;
           const rcloneVal = (document.getElementById('backup-cfg-rclone').value || '').trim();
           const fbEl = document.getElementById('backup-cfg-feedback');
           const saveBtn = document.getElementById('btn-save-backup-cfg');
@@ -5070,14 +5263,14 @@ def admin_dashboard(response: Response):
               fbEl.style.background = '#fef2f2';
               fbEl.style.color = '#991b1b';
               fbEl.style.border = '1px solid #fecaca';
-              fbEl.innerText = '⚠️ Please enter a valid Google Email / Username.';
+              fbEl.innerText = '⚠️ Please enter a valid Google Email / SMTP Username.';
             }
             return;
           }
 
           if (saveBtn) {
             saveBtn.disabled = true;
-            saveBtn.innerText = '⏳ Verifying with Google...';
+            saveBtn.innerText = '⏳ Verifying Google & OTP Server...';
           }
           if (fbEl) fbEl.style.display = 'none';
 
@@ -5090,6 +5283,8 @@ def admin_dashboard(response: Response):
                 google_password: passVal,
                 server_label: labelVal,
                 recipient_email: recVal || userVal,
+                smtp_host: hostVal || 'smtp.gmail.com',
+                smtp_port: portVal,
                 rclone_conf: rcloneVal
               })
             });
@@ -5124,9 +5319,192 @@ def admin_dashboard(response: Response):
           } finally {
             if (saveBtn) {
               saveBtn.disabled = false;
-              saveBtn.innerText = '💾 Save & Verify Google Account';
+              saveBtn.innerText = '💾 Save & Verify Google / OTP Server';
             }
           }
+        }
+
+        async function sendTestOtpEmailFromModal() {
+          const btn = document.getElementById('btn-modal-test-otp');
+          const fbEl = document.getElementById('backup-cfg-feedback');
+          const defaultRec = (document.getElementById('backup-cfg-recipient').value || document.getElementById('backup-cfg-user').value || (currentAdmin && currentAdmin.email) || '').trim();
+          const targetEmail = prompt('Enter recipient email to test Password Reset OTP / SMTP delivery:', defaultRec);
+          if (targetEmail === null) return;
+
+          if (btn) {
+            btn.disabled = true;
+            btn.innerText = '⏳ Sending Test Email...';
+          }
+          try {
+            const res = await authFetch('/api/test-smtp', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ recipient_email: targetEmail.trim() })
+            });
+            const data = await res.json();
+            if (fbEl) {
+              fbEl.style.display = 'block';
+              if (res.ok && data.status === 'success') {
+                fbEl.style.background = '#ecfdf5';
+                fbEl.style.color = '#065f46';
+                fbEl.style.border = '1px solid #a7f3d0';
+                fbEl.innerText = '✅ ' + data.message;
+              } else {
+                fbEl.style.background = '#fffbeb';
+                fbEl.style.color = '#92400e';
+                fbEl.style.border = '1px solid #fde68a';
+                fbEl.innerText = '⚠️ ' + (data.message || data.detail || 'SMTP test warning.');
+              }
+            }
+          } catch (err) {
+            if (fbEl) {
+              fbEl.style.display = 'block';
+              fbEl.style.background = '#fef2f2';
+              fbEl.style.color = '#991b1b';
+              fbEl.innerText = '❌ Error testing OTP email: ' + err.message;
+            }
+          } finally {
+            if (btn) {
+              btn.disabled = false;
+              btn.innerText = '📩 Send Test OTP Email';
+            }
+          }
+        }
+
+        async function restoreSelectedLocalBackup() {
+          const selEl = document.getElementById('restore-local-select');
+          const fbEl = document.getElementById('restore-feedback');
+          const btn = document.getElementById('btn-restore-local');
+          const archiveName = selEl ? selEl.value : '';
+          if (!archiveName) {
+            alert('⚠️ No local backup snapshot is available to restore.');
+            return;
+          }
+
+          showConfirmModal(
+            '♻️ Restore Data from Server Backup',
+            `Are you sure you want to restore all Survey Records, Users, and Hierarchy from "${archiveName}"? (A safety snapshot of current data will be saved automatically first.)`,
+            '♻️ Yes, Restore Data',
+            async () => {
+              if (btn) {
+                btn.disabled = true;
+                btn.innerText = '⏳ Restoring...';
+              }
+              if (fbEl) fbEl.style.display = 'none';
+              try {
+                const res = await authFetch('/api/backup/restore-local', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ archive_name: archiveName })
+                });
+                const data = await res.json();
+                if (fbEl) {
+                  fbEl.style.display = 'block';
+                  if (res.ok && data.status === 'success') {
+                    fbEl.style.background = '#ecfdf5';
+                    fbEl.style.color = '#065f46';
+                    fbEl.style.border = '1px solid #a7f3d0';
+                    fbEl.innerText = `✅ ${data.message} (Safety backup saved as: ${data.safety_backup || 'created'})`;
+                    if (data.health) {
+                      lastBackupData = data.health;
+                      updateBackupBadgeUI(data.health);
+                      renderBackupDetailsModal();
+                    }
+                    loadBackupConfigModal();
+                    fetchData();
+                    fetchHierarchy();
+                    fetchUsers();
+                  } else {
+                    fbEl.style.background = '#fef2f2';
+                    fbEl.style.color = '#991b1b';
+                    fbEl.style.border = '1px solid #fecaca';
+                    fbEl.innerText = '❌ ' + (data.detail || data.message || 'Restore failed.');
+                  }
+                }
+              } catch (err) {
+                if (fbEl) {
+                  fbEl.style.display = 'block';
+                  fbEl.style.background = '#fef2f2';
+                  fbEl.style.color = '#991b1b';
+                  fbEl.innerText = '❌ Network error during restore: ' + err.message;
+                }
+              } finally {
+                if (btn) {
+                  btn.disabled = false;
+                  btn.innerText = '♻️ Restore Snapshot';
+                }
+              }
+            }
+          );
+        }
+
+        async function restoreUploadedBackupFile() {
+          const fileInp = document.getElementById('restore-upload-file');
+          const fbEl = document.getElementById('restore-feedback');
+          const btn = document.getElementById('btn-restore-upload');
+          if (!fileInp || !fileInp.files || fileInp.files.length === 0) {
+            alert('⚠️ Please choose a .tar.gz or .db backup file to upload first.');
+            return;
+          }
+          const file = fileInp.files[0];
+
+          showConfirmModal(
+            '📤 Upload & Restore Backup File',
+            `Are you sure you want to upload and restore "${file.name}"? (A safety snapshot of current server data will be created automatically before restoring.)`,
+            '📤 Upload & Restore',
+            async () => {
+              if (btn) {
+                btn.disabled = true;
+                btn.innerText = '⏳ Uploading & Restoring...';
+              }
+              if (fbEl) fbEl.style.display = 'none';
+              try {
+                const formData = new FormData();
+                formData.append('file', file);
+                const res = await authFetch('/api/backup/restore-upload', {
+                  method: 'POST',
+                  body: formData
+                });
+                const data = await res.json();
+                if (fbEl) {
+                  fbEl.style.display = 'block';
+                  if (res.ok && data.status === 'success') {
+                    fbEl.style.background = '#ecfdf5';
+                    fbEl.style.color = '#065f46';
+                    fbEl.style.border = '1px solid #a7f3d0';
+                    fbEl.innerText = `✅ ${data.message} (Safety backup saved as: ${data.safety_backup || 'created'})`;
+                    fileInp.value = '';
+                    if (data.health) {
+                      lastBackupData = data.health;
+                      updateBackupBadgeUI(data.health);
+                      renderBackupDetailsModal();
+                    }
+                    loadBackupConfigModal();
+                    fetchData();
+                    fetchHierarchy();
+                    fetchUsers();
+                  } else {
+                    fbEl.style.background = '#fef2f2';
+                    fbEl.style.color = '#991b1b';
+                    fbEl.style.border = '1px solid #fecaca';
+                    fbEl.innerText = '❌ ' + (data.detail || data.message || 'Upload restore failed.');
+                  }
+                }
+              } catch (err) {
+                if (fbEl) {
+                  fbEl.style.display = 'block';
+                  fbEl.style.background = '#fef2f2';
+                  fbEl.style.color = '#991b1b';
+                  fbEl.innerText = '❌ Network error uploading backup: ' + err.message;
+                }
+              } finally {
+                if (btn) {
+                  btn.disabled = false;
+                  btn.innerText = '📤 Upload & Restore';
+                }
+              }
+            }
+          );
         }
 
         async function runCloudBackupNow() {
@@ -5318,6 +5696,7 @@ def admin_dashboard(response: Response):
           const btnFeedDeleteSelected = document.getElementById('btn-feed-delete-selected');
 
           const btnWiring = document.getElementById('btn-admin-wiring');
+          const btnCfgOtp = document.getElementById('btn-cfg-otp-smtp');
           const btnSmtp = document.getElementById('btn-test-smtp');
           const btnBackup = document.getElementById('btn-backup-json');
           const btnRestore = document.getElementById('btn-restore-json');
@@ -5334,6 +5713,7 @@ def admin_dashboard(response: Response):
             if (thFeedSelectAll) thFeedSelectAll.style.display = 'table-cell';
             if (btnOptimize) btnOptimize.style.display = 'inline-flex';
             if (btnWiring) btnWiring.style.display = 'inline-flex';
+            if (btnCfgOtp) btnCfgOtp.style.display = 'inline-flex';
             if (btnSmtp) btnSmtp.style.display = 'inline-flex';
             if (btnBackup) btnBackup.style.display = 'inline-flex';
             if (btnRestore) btnRestore.style.display = 'inline-flex';
@@ -5350,6 +5730,7 @@ def admin_dashboard(response: Response):
             if (btnOptimize) btnOptimize.style.display = 'inline-flex';
             // Security: Strictly hide system security & nuclear actions from Admin
             if (btnWiring) btnWiring.style.display = 'none';
+            if (btnCfgOtp) btnCfgOtp.style.display = 'none';
             if (btnSmtp) btnSmtp.style.display = 'none';
             if (btnBackup) btnBackup.style.display = 'none';
             if (btnRestore) btnRestore.style.display = 'none';
@@ -5369,6 +5750,7 @@ def admin_dashboard(response: Response):
             if (btnFeedDeleteSelected) btnFeedDeleteSelected.style.display = 'none';
             if (btnOptimize) btnOptimize.style.display = 'none';
             if (btnWiring) btnWiring.style.display = 'none';
+            if (btnCfgOtp) btnCfgOtp.style.display = 'none';
             if (btnSmtp) btnSmtp.style.display = 'none';
             if (btnBackup) btnBackup.style.display = 'none';
             if (btnRestore) btnRestore.style.display = 'none';
@@ -6956,7 +7338,7 @@ def admin_dashboard(response: Response):
         }
 
         async function testSmtpConnection() {
-          const testEmail = prompt("Enter an email address to send an SMTP test message to:", "");
+          const testEmail = prompt("Enter an email address to send an SMTP / OTP test message to:", "");
           if (testEmail === null) return;
           const target = testEmail.trim();
           try {
@@ -6969,7 +7351,9 @@ def admin_dashboard(response: Response):
             if (data.status === 'success') {
               alert('✅ ' + data.message);
             } else if (data.status === 'warning') {
-              alert('⚠️ ' + data.message);
+              if (confirm('⚠️ ' + data.message + '\n\nWould you like to open the OTP / Google Email Setup panel now to enter your Google Username & App Password?')) {
+                showBackupDetailsModal();
+              }
             } else {
               alert('❌ ' + (data.message || data.detail || 'SMTP test failed'));
             }

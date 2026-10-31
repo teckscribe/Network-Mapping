@@ -169,13 +169,14 @@ def save_backup_config_to_env(
         except Exception:
             lines = []
 
-    # Also auto-populate SMTP_* if SMTP_USER was not configured yet (so OTP emails work seamlessly too)
-    if not existing_kv.get("SMTP_USER") and final_user and final_pass:
+    # Sync both BACKUP_* and SMTP_* keys in .env so Password Reset OTP emails & Cloud Backups share the active config
+    if final_user and final_pass:
         updates["SMTP_HOST"] = final_host
         updates["SMTP_PORT"] = str(final_port)
         updates["SMTP_USER"] = final_user
         updates["SMTP_PASSWORD"] = final_pass
         updates["SMTP_FROM"] = final_user
+        updates["SMTP_FROM_NAME"] = f"GPON Network Mapping ({final_label})" if final_label else "GPON Network Mapping"
         updates["SMTP_TLS"] = "true"
 
     new_lines = []
@@ -654,6 +655,170 @@ def run_full_backup_workflow() -> dict:
     }
 
 
+def list_all_local_backups(limit: int = 30) -> list:
+    """Returns a sorted list (newest first) of all local backup archives found on the system."""
+    candidate_files = []
+    seen = set()
+    for b_dir in DEFAULT_BACKUP_DIRS:
+        if b_dir and os.path.isdir(b_dir):
+            matches = glob.glob(os.path.join(b_dir, "gpon_backup_*.tar.gz"))
+            matches += glob.glob(os.path.join(b_dir, "*.tar.gz"))
+            for m in matches:
+                abs_m = os.path.abspath(m)
+                if abs_m not in seen and os.path.isfile(abs_m):
+                    seen.add(abs_m)
+                    candidate_files.append(abs_m)
+
+    candidate_files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    results = []
+    now = time.time()
+    for p in candidate_files[:max(1, int(limit or 30))]:
+        mtime = os.path.getmtime(p)
+        size = os.path.getsize(p)
+        dt = datetime.fromtimestamp(mtime)
+        results.append({
+            "name": os.path.basename(p),
+            "path": p,
+            "size": format_size(size),
+            "size_bytes": size,
+            "timestamp": dt.strftime("%Y-%m-%d %H:%M:%S"),
+            "age_hours": round((now - mtime) / 3600.0, 1)
+        })
+    return results
+
+
+def restore_from_backup_file(source_path: str, take_safety_snapshot: bool = True) -> dict:
+    """
+    Safely restores SQLite database (gpon_survey_data.db), users_config.json, and custom_hierarchy.json
+    from a .tar.gz backup archive or .db snapshot file with zero server downtime.
+    """
+    import tempfile
+
+    if source_path == "latest":
+        latest = find_latest_local_backup()
+        if not latest or not os.path.isfile(latest["path"]):
+            raise FileNotFoundError("No local backup archive found on server to restore.")
+        source_path = latest["path"]
+
+    if not os.path.isfile(source_path):
+        raise FileNotFoundError(f"Backup file not found: {source_path}")
+
+    archive_basename = os.path.basename(source_path)
+    log_backup_event(f"=== Starting System Restore from {archive_basename} ===")
+
+    # 1. Create pre-restore safety snapshot of current state
+    safety_name = None
+    if take_safety_snapshot and os.path.isfile(DB_FILE):
+        try:
+            safety_info = create_hot_backup_archive()
+            safety_name = safety_info["name"]
+            log_backup_event(f"Pre-restore safety snapshot saved: {safety_name}")
+        except Exception as e:
+            log_backup_event(f"WARNING: Could not create pre-restore safety snapshot: {e}")
+
+    temp_extract_dir = tempfile.mkdtemp(prefix="gpon_restore_")
+    try:
+        db_candidate = None
+        users_candidate = None
+        hier_candidate = None
+
+        lower_name = archive_basename.lower()
+        if lower_name.endswith(".tar.gz") or lower_name.endswith(".tgz"):
+            with tarfile.open(source_path, "r:gz") as tar:
+                for member in tar.getmembers():
+                    # Security guard against path traversal
+                    member_name = os.path.basename(member.name)
+                    if not member_name or ".." in member.name:
+                        continue
+                    member.name = member_name
+                    tar.extract(member, temp_extract_dir)
+                    extracted_file = os.path.join(temp_extract_dir, member_name)
+                    if member_name.endswith(".db") or member_name.endswith(".sqlite"):
+                        db_candidate = extracted_file
+                    elif member_name == "users_config.json":
+                        users_candidate = extracted_file
+                    elif member_name == "custom_hierarchy.json":
+                        hier_candidate = extracted_file
+        elif lower_name.endswith(".db") or lower_name.endswith(".sqlite") or lower_name.endswith(".sqlite3"):
+            db_candidate = source_path
+        else:
+            raise ValueError("Unsupported backup file format. Please provide a .tar.gz archive or .db SQLite file.")
+
+        if not db_candidate or not os.path.isfile(db_candidate):
+            raise ValueError("No valid SQLite database snapshot (.db) found inside the backup archive.")
+
+        # 2. Validate SQLite integrity before applying
+        src_conn = sqlite3.connect(db_candidate, timeout=30.0)
+        cur = src_conn.cursor()
+        cur.execute("PRAGMA integrity_check")
+        integrity = cur.fetchone()
+        if not integrity or integrity[0].lower() != "ok":
+            src_conn.close()
+            raise ValueError(f"Backup database failed SQLite integrity check: {integrity}")
+
+        # Verify expected tables exist
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = {r[0] for r in cur.fetchall()}
+        if "survey_records" not in tables and "users" not in tables:
+            src_conn.close()
+            raise ValueError("Backup database does not contain GPON 'survey_records' or 'users' tables.")
+
+        # 3. Perform Hot Online SQLite Restore into live DB_FILE
+        dst_conn = sqlite3.connect(DB_FILE, timeout=30.0)
+        src_conn.backup(dst_conn)
+        dst_conn.close()
+        src_conn.close()
+
+        # 4. Restore users_config.json and custom_hierarchy.json if present in archive
+        if users_candidate and os.path.isfile(users_candidate):
+            shutil.copy2(users_candidate, USERS_CONFIG_FILE)
+
+        centers_restored = 0
+        if hier_candidate and os.path.isfile(hier_candidate):
+            os.makedirs(os.path.dirname(HIERARCHY_FILE_MAIN), exist_ok=True)
+            shutil.copy2(hier_candidate, HIERARCHY_FILE_MAIN)
+            try:
+                with open(HIERARCHY_FILE_MAIN, "r", encoding="utf-8") as hf:
+                    h_data = json.load(hf)
+                    if isinstance(h_data, dict):
+                        centers_restored = len(h_data)
+            except Exception:
+                pass
+
+        # 5. Count restored records and users
+        verify_conn = sqlite3.connect(DB_FILE, timeout=10.0)
+        v_cur = verify_conn.cursor()
+        v_cur.execute("SELECT COUNT(*) FROM survey_records")
+        records_restored = v_cur.fetchone()[0]
+        v_cur.execute("SELECT COUNT(*) FROM users")
+        users_restored = v_cur.fetchone()[0]
+        verify_conn.close()
+
+        log_backup_event(
+            f"=== Restore Completed Successfully from {archive_basename}: "
+            f"{records_restored} survey records, {users_restored} users, {centers_restored} centers ==="
+        )
+
+        msg = (
+            f"Restored {records_restored:,} survey records, {users_restored} user accounts, "
+            f"and {centers_restored} centers from '{archive_basename}'!"
+        )
+        return {
+            "status": "success",
+            "message": msg,
+            "restored_from": archive_basename,
+            "safety_backup": safety_name,
+            "records_restored": records_restored,
+            "users_restored": users_restored,
+            "centers_restored": centers_restored,
+            "hierarchy_restored": bool(hier_candidate),
+            "users_json_restored": bool(users_candidate),
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+    finally:
+        shutil.rmtree(temp_extract_dir, ignore_errors=True)
+
+
 def write_status_file(data):
     """Atomically writes status dictionary to backup_status.json."""
     temp_file = STATUS_FILE + ".tmp"
@@ -697,8 +862,14 @@ def main():
     parser.add_argument("--json", action="store_true", help="Output pure JSON to stdout")
     parser.add_argument("--run-backup", action="store_true", help="Create hot backup archive and sync to cloud")
     parser.add_argument("--cloud-sync", action="store_true", help="Upload latest local archive to Google Account")
+    parser.add_argument("--restore", type=str, default="", help="Restore from 'latest' or path to .tar.gz / .db file")
 
     args = parser.parse_args()
+
+    if args.restore:
+        res = restore_from_backup_file(args.restore)
+        print(json.dumps(res, indent=2))
+        return
 
     if args.run_backup:
         res = run_full_backup_workflow()
