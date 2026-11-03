@@ -180,12 +180,8 @@
           <div class="gs-cell-group col-full">
             <label class="gs-cell-label">GPS Coordinates (Lat, Long) <span style="color:#ef4444; font-weight:700;">*</span></label>
             <div class="gs-gps-bar">
-              <input type="text" id="manual-coords-input" class="gs-input" placeholder="e.g. 10.606650, 76.214490 (or paste from Excel/Maps)" autocomplete="off" spellcheck="false" onfocus="this.select()" onchange="onManualCoordsChange(this.value)" oninput="onManualCoordsChange(this.value)">
-              <div class="gs-gps-btns">
-                <button class="btn-gps-action btn-gps-paste" type="button" onclick="pasteCoordinatesFromClipboard()" title="Paste coordinates from clipboard">📋 Paste</button>
-                <button class="btn-gps-action btn-gps-copy" type="button" onclick="copyCoordinatesToClipboard()" title="Copy current coordinates">📄 Copy</button>
-                <button class="btn-gps-sheet" type="button" onclick="captureGPS()" title="Acquire GPS from device sensor">🎯 GPS</button>
-              </div>
+              <input type="text" id="manual-coords-input" class="gs-input" placeholder="e.g. 10.606650, 76.214490 (or paste from Excel / text file)" autocomplete="off" spellcheck="false" onfocus="this.select()" onclick="this.select()" onchange="onManualCoordsChange(this.value)" oninput="onManualCoordsChange(this.value)">
+              <button class="btn-gps-sheet" type="button" onclick="captureGPS()" title="Acquire GPS from device sensor">🎯 GPS</button>
             </div>
             <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px; margin-bottom: 6px; flex-wrap: wrap; gap: 6px;">
               <span id="gps-acc" style="font-size: 0.8rem; color: #5f6368; display: inline-flex; align-items: center; gap: 4px;">Tap 🎯 GPS at pole</span>
@@ -483,6 +479,6 @@
   <script src="vendor/leaflet.js"></script>
   <script src="vendor/xlsx.full.min.js"></script>
   <script src="preload_data.js?v=72"></script>
-  <script src="app.js?v=88"></script>
+  <script src="app.js?v=89"></script>
 </body>
 </html>

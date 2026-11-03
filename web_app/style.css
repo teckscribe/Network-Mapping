@@ -282,69 +282,16 @@ body {
 /* GPS Row in Sheet */
 .gs-gps-bar {
   display: flex;
-  gap: 6px;
+  gap: 8px;
   align-items: center;
   margin-top: 4px;
-  flex-wrap: wrap;
 }
 
 #manual-coords-input {
-  flex: 1 1 180px;
-  min-width: 140px;
+  flex: 1;
   -webkit-user-select: text !important;
   user-select: text !important;
   -webkit-touch-callout: default !important;
-}
-
-.gs-gps-btns {
-  display: flex;
-  gap: 5px;
-  align-items: center;
-  flex-shrink: 0;
-}
-
-.btn-gps-action {
-  background: #ffffff;
-  color: #334155;
-  border: 1px solid #cbd5e1;
-  border-radius: 4px;
-  padding: 8px 10px;
-  font-size: 0.8rem;
-  font-weight: 600;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  white-space: nowrap;
-  transition: all 0.15s ease;
-  user-select: none;
-}
-
-.btn-gps-action:hover {
-  background: #f8fafc;
-  border-color: #94a3b8;
-  color: #0f172a;
-}
-
-.btn-gps-action:active {
-  transform: scale(0.97);
-}
-
-.btn-gps-paste {
-  color: #0369a1;
-  border-color: #bae6fd;
-  background: #f0f9ff;
-}
-.btn-gps-paste:hover {
-  background: #e0f2fe;
-  border-color: #0284c7;
-}
-
-.btn-gps-copy {
-  color: #475569;
-}
-.btn-gps-copy:hover {
-  background: #f1f5f9;
 }
 
 .btn-gps-sheet {
