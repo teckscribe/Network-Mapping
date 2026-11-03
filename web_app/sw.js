@@ -1,4 +1,4 @@
-const CACHE_NAME = 'gpon-survey-v93';
+const CACHE_NAME = 'gpon-survey-v94';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
@@ -54,8 +54,8 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
-  // Always fetch live /api/ requests with zero caching
-  if (event.request.url.includes('/api/')) {
+  // Always fetch live /api/ and /admin requests with zero caching
+  if (event.request.url.includes('/api/') || event.request.url.includes('/admin')) {
     event.respondWith(fetch(event.request));
     return;
   }

@@ -1,4092 +1,4207 @@
-// State Management
-let currentLat = null;
-let currentLon = null;
-let currentAccuracy = null;
-let mapInstance = null;
-let mapMarker = null;
-let accuracyCircle = null;
-let gpsWatchId = null;
-let gpsWatchTimer = null;
-let bestAccuracy = Infinity;
-let currentActiveEnclosure = '';
-
-const STORAGE_KEY = 'gpon_survey_records_v1';
-let records = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
-
-// Device & Server Configuration
-let deviceId = localStorage.getItem('gpon_device_id');
-if (!deviceId) {
-  deviceId = 'DEV-' + Math.random().toString(36).substring(2, 8).toUpperCase();
-  localStorage.setItem('gpon_device_id', deviceId);
-}
-
-let serverUrl = localStorage.getItem('gpon_server_url');
-if (!serverUrl || (window.location.protocol.startsWith('http') && window.location.port !== '5500')) {
-  // If served via web server (e.g. https://network-mapping.online), always use current origin
-  serverUrl = window.location.origin;
-  localStorage.setItem('gpon_server_url', serverUrl);
-}
-
-let isSyncing = false;
-let isServerReachable = false;
-let serverConnectionChecked = false;
-let lastKnownHierarchyVersion = parseInt(localStorage.getItem('gpon_hierarchy_version') || '0', 10);
-
-// Cross-browser Polyfill for Element.remove() (IE 9-11, legacy Android WebViews)
-if (typeof Element !== 'undefined' && !Element.prototype.remove) {
-  Element.prototype.remove = function() {
-    if (this.parentNode) {
-      this.parentNode.removeChild(this);
-    }
-  };
-}
-
-function removeFoucPrevention() {
-  try {
-    const s = document.getElementById('fouc-prevention');
-    if (s) {
-      if (typeof s.remove === 'function') {
-        s.remove();
-      } else if (s.parentNode) {
-        s.parentNode.removeChild(s);
-      }
-    }
-  } catch (e) {}
-}
-
-function showLoginOverlay() {
-  removeFoucPrevention();
-  const overlay = document.getElementById('login-overlay');
-  if (overlay) {
-    overlay.style.cssText = "display: flex !important; position: fixed !important; top: 0 !important; left: 0 !important; right: 0 !important; bottom: 0 !important; width: 100% !important; height: 100% !important; z-index: 99999 !important; background: rgba(32, 33, 36, 0.85) !important; align-items: center !important; justify-content: center !important;";
-  }
-  const userBar = document.getElementById('user-bar');
-  if (userBar) userBar.style.display = 'none';
-}
-
-function hideLoginOverlay() {
-  const overlay = document.getElementById('login-overlay');
-  if (overlay) {
-    overlay.style.setProperty('display', 'none', 'important');
-  }
-}
-
-// User Session & Authentication
-let midnightTimer = null;
-
-function getNextMidnightTimestamp() {
-  const now = new Date();
-  // Next midnight: tomorrow at 00:00:00 local time
-  const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0);
-  return midnight.getTime();
-}
-
-function clearSessionOnly() {
-  currentUser = null;
-  networkSurveyedPoints = {};
-  localStorage.removeItem('gpon_logged_in_user');
-  localStorage.removeItem('gpon_auth_token');
-  localStorage.removeItem('gpon_session_expires_at');
-  localStorage.removeItem('gpon_network_surveyed_points');
-  if (midnightTimer) {
-    clearTimeout(midnightTimer);
-    midnightTimer = null;
-  }
-  // ZERO DATA LOSS INVARIANT:
-  // STORAGE_KEY ('gpon_survey_records_v1') and 'gpon_pending_deletions' are NEVER cleared or modified.
-  // All pending offline survey records are safely preserved on this device.
-}
-
-function scheduleMidnightLogout() {
-  if (midnightTimer) {
-    clearTimeout(midnightTimer);
-    midnightTimer = null;
-  }
-  if (!currentUser) return;
-
-  const nextMidnight = getNextMidnightTimestamp();
-  const msUntilMidnight = Math.max(1000, nextMidnight - Date.now());
-
-  midnightTimer = setTimeout(async () => {
-    console.log('[Auth] 00:00 Midnight reached. Triggering daily session logout.');
-    await handleMidnightSessionReset();
-  }, msUntilMidnight);
-}
-
-async function handleMidnightSessionReset() {
-  if (!currentUser) return;
-
-  // 1. Attempt silent auto-sync of pending records before closing session if connected
-  const pendingCount = (records || []).filter(r => r.sync_status !== 'synced').length;
-  if (pendingCount > 0 && isServerReachable) {
-    try {
-      console.log(`[Auth] Attempting auto-sync of ${pendingCount} pending records prior to midnight logout...`);
-      await syncWithServer(true);
-    } catch (e) {
-      console.warn('[Auth] Pre-midnight sync failed (offline):', e);
-    }
-  }
-
-  // 2. Clear authentication session while keeping all offline records 100% safe
-  clearSessionOnly();
-
-  // 3. UI Update
-  showLoginOverlay();
-  updateUserBar();
-
-  // Friendly midnight notice on the login card
-  const loginErrBox = document.getElementById('login-error-msg');
-  if (loginErrBox) {
-    loginErrBox.style.display = 'block';
-    loginErrBox.style.backgroundColor = '#eff6ff';
-    loginErrBox.style.color = '#1e40af';
-    loginErrBox.style.borderColor = '#bfdbfe';
-    loginErrBox.innerHTML = '🌙 <strong>Daily Midnight Reset:</strong> Session ended at 00:00.<br><span style="font-size: 0.8rem; opacity: 0.95;">Please sign in for today\'s shift. All your pending offline records are safely preserved on this device.</span>';
-  }
-  showToast('🌙 Daily session reset at 00:00. Offline records preserved.', true);
-}
-
-function checkMidnightExpiration() {
-  if (!currentUser) return;
-  const expiresAt = parseInt(localStorage.getItem('gpon_session_expires_at') || '0', 10);
-  if (expiresAt > 0 && Date.now() >= expiresAt) {
-    console.log('[Auth] Session crossed midnight (00:00). Triggering session reset.');
-    handleMidnightSessionReset();
-  }
-}
-
-async function hashOfflineCredential(username, password) {
-  try {
-    if (window.crypto && crypto.subtle) {
-      const enc = new TextEncoder();
-      const data = enc.encode(`gpon_salt_${username.toLowerCase().trim()}_${password}`);
-      const hashBuf = await crypto.subtle.digest('SHA-256', data);
-      return Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
-    }
-  } catch (e) {}
-  return btoa(`${username.toLowerCase().trim()}:${password}`);
-}
-
-function getStoredUser() {
-  try {
-    const raw = localStorage.getItem('gpon_logged_in_user');
-    if (!raw || raw === 'null' || raw === 'undefined' || raw === '{}') return null;
-    const u = JSON.parse(raw);
-    if (u && typeof u === 'object' && u.username && typeof u.username === 'string' && u.username.trim().length > 0) {
-      // Check if session has crossed 00:00 midnight
-      const expiresAt = parseInt(localStorage.getItem('gpon_session_expires_at') || '0', 10);
-      if (expiresAt > 0 && Date.now() >= expiresAt) {
-        console.log('[Auth] Daily session expired past midnight (00:00). Requiring login for today.');
-        clearSessionOnly();
-        return null;
-      }
-      return u;
-    }
-  } catch (e) {
-    console.warn('Invalid user session in localStorage:', e);
-  }
-  localStorage.removeItem('gpon_logged_in_user');
-  return null;
-}
-let currentUser = getStoredUser();
-
-// Network-Wide Surveyed Points Map (for duplicate checking, field locks, and ACSO supervisor updates)
-let networkSurveyedPoints = {};
-let currentAcsoEditingUuid = null;
-
-try {
-  const cachedPoints = localStorage.getItem('gpon_network_surveyed_points');
-  if (cachedPoints) {
-    networkSurveyedPoints = JSON.parse(cachedPoints);
-  }
-} catch (e) {
-  networkSurveyedPoints = {};
-}
-
-const FIBER_COLORS = ["BLUE", "ORANGE", "GREEN", "BROWN", "SLATE", "WHITE", "RED", "BLACK", "YELLOW", "VIOLET", "ROSE", "AQUA"];
-const COLOR_TO_NUM = {};
-const NUM_TO_COLOR = {};
-FIBER_COLORS.forEach((col, idx) => {
-  COLOR_TO_NUM[col] = idx + 1;
-  NUM_TO_COLOR[idx + 1] = col;
-});
-
-function getColorVariants(color) {
-  const c = String(color || '').trim().toUpperCase();
-  if (!c) return [];
-  const variants = new Set([c]);
-
-  let portNum = null;
-  const m = c.match(/^OUT\s*[- ]\s*(\d+)|^OUT\s*(\d+)/i);
-  if (m) {
-    portNum = parseInt(m[1] || m[2], 10);
-  } else if (COLOR_TO_NUM[c]) {
-    portNum = COLOR_TO_NUM[c];
-  }
-
-  if (portNum && !isNaN(portNum) && portNum > 0) {
-    variants.add(`OUT-${portNum}`);
-    variants.add(`OUT -${portNum}`);
-    variants.add(`OUT - ${portNum}`);
-    variants.add(`OUT ${portNum}`);
-    if (NUM_TO_COLOR[portNum]) {
-      const colName = NUM_TO_COLOR[portNum];
-      variants.add(`OUT ${portNum} - ${colName}`);
-      variants.add(`OUT-${portNum} - ${colName}`);
-      if (portNum <= 12) {
-        variants.add(colName);
-      }
-    }
-  }
-
-  return Array.from(variants);
-}
-
-function getLeadKey(eid, spl, color) {
-  if (!eid || !spl) return '';
-  const eidUp = eid.trim().toUpperCase();
-  let splUp = spl.trim().toUpperCase();
-  if (splUp.startsWith(eidUp) && splUp.length > eidUp.length) {
-    splUp = splUp.substring(eidUp.length).trim();
-  }
-  const c = color ? String(color).trim().toUpperCase() : '';
-  return `${eidUp}|${splUp}|${c}`;
-}
-
-function getSplitterKey(eid, spl) {
-  if (!eid || !spl) return '';
-  const eidUp = eid.trim().toUpperCase();
-  let splUp = spl.trim().toUpperCase();
-  if (splUp.startsWith(eidUp) && splUp.length > eidUp.length) {
-    splUp = splUp.substring(eidUp.length).trim();
-  }
-  return `${eidUp}|${splUp}`;
-}
-
-function getLeadSurveyedInfo(eid, spl, color) {
-  if (!eid || !spl) return null;
-  const eidUp = eid.trim().toUpperCase();
-  let splUp = spl.trim().toUpperCase();
-  if (splUp.startsWith(eidUp) && splUp.length > eidUp.length) {
-    splUp = splUp.substring(eidUp.length).trim();
-  }
-  const colVariants = getColorVariants(color);
-
-  // 1. Check in networkSurveyedPoints
-  if (networkSurveyedPoints) {
-    for (const cv of colVariants) {
-      const k = `${eidUp}|${splUp}|${cv}`;
-      if (networkSurveyedPoints[k] && !networkSurveyedPoints[k].is_summary) {
-        return networkSurveyedPoints[k];
-      }
-    }
-    if (colVariants.length === 0) {
-      const kEmpty = `${eidUp}|${splUp}|`;
-      if (networkSurveyedPoints[kEmpty] && !networkSurveyedPoints[kEmpty].is_summary) {
-        return networkSurveyedPoints[kEmpty];
-      }
-    }
-  }
-
-  // 2. Check in local records array
-  const local = records.find(r => {
-    const rEid = (r["Enclosure ID"] || r.enclosure_id || '').trim().toUpperCase();
-    const rSpl = (r["Splitter ID"] || r.splitter_id || '').trim().toUpperCase();
-    if (rEid !== eidUp || rSpl !== splUp) return false;
-    const rCol = (r["Splitter Lead Colour Code"] || r.splitter_lead_color || '').trim().toUpperCase();
-    if (colVariants.length === 0 && !rCol) return true;
-    const rVariants = getColorVariants(rCol);
-    return colVariants.some(v => rVariants.includes(v));
-  });
-
-  if (local) {
-    return {
-      client_uuid: local.client_uuid,
-      enclosure_id: local["Enclosure ID"] || local.enclosure_id,
-      splitter_id: local["Splitter ID"] || local.splitter_id,
-      splitter_ratio: local["Splitter Ratio"] || local.splitter_ratio || '',
-      splitter_lead_color: local["Splitter Lead Colour Code"] || local.splitter_lead_color || '',
-      surveyor_name: local.surveyor_name || local.surveyor_username || 'Local',
-      survey_date_time: local["Date & Time"] || local.survey_date_time || '',
-      kseb_post_number: local["KSEB Post Number"] || local.kseb_post_number || '',
-      landmark: local["Land Mark"] || local.landmark || '',
-      lat_long: local["Lat /Long"] || local.lat_long || '',
-      customers_connected: (local["No: Of Customer Connected"] !== undefined ? local["No: Of Customer Connected"] : local.customers_connected) || 0,
-      adl_subscriber_id: local["ADL Subscriber ID"] || local.adl_subscriber_id || '',
-      acs_subscriber_id: local["ACS Subscriber ID"] || local.acs_subscriber_id || ''
-    };
-  }
-  return null;
-}
-
-function getSplitterSummary(eid, spl) {
-  if (!eid || !spl) return null;
-  const eidUp = eid.trim().toUpperCase();
-  let splUp = spl.trim().toUpperCase();
-  if (splUp.startsWith(eidUp) && splUp.length > eidUp.length) {
-    splUp = splUp.substring(eidUp.length).trim();
-  }
-  const splKey = `${eidUp}|${splUp}`;
-
-  const leadsSet = new Set();
-  let latestInfo = null;
-
-  if (networkSurveyedPoints) {
-    if (networkSurveyedPoints[splKey]) {
-      const s = networkSurveyedPoints[splKey];
-      latestInfo = Object.assign({}, s);
-      if (Array.isArray(s.leads)) {
-        s.leads.forEach(l => leadsSet.add(l.toUpperCase()));
-      }
-    }
-    const prefix = splKey + '|';
-    Object.keys(networkSurveyedPoints).forEach(k => {
-      if (k.startsWith(prefix)) {
-        const item = networkSurveyedPoints[k];
-        if (item && !item.is_summary) {
-          if (!latestInfo) {
-            latestInfo = Object.assign({}, item);
-          } else {
-            // Fill any missing properties from individual lead items
-            if (latestInfo.customers_connected === undefined || latestInfo.customers_connected === null || latestInfo.customers_connected === '') {
-              if (item.customers_connected !== undefined && item.customers_connected !== null && item.customers_connected !== '') {
-                latestInfo.customers_connected = item.customers_connected;
-              }
-            }
-            if (!latestInfo.splitter_ratio && item.splitter_ratio) latestInfo.splitter_ratio = item.splitter_ratio;
-            if (!latestInfo.kseb_post_number && item.kseb_post_number) latestInfo.kseb_post_number = item.kseb_post_number;
-            if (!latestInfo.landmark && item.landmark) latestInfo.landmark = item.landmark;
-            if (!latestInfo.lat_long && item.lat_long) latestInfo.lat_long = item.lat_long;
-          }
-          const col = (item.splitter_lead_color || '').trim().toUpperCase();
-          if (col) leadsSet.add(col);
-        }
-      }
-    });
-  }
-
-  records.forEach(r => {
-    const rEid = (r["Enclosure ID"] || r.enclosure_id || '').trim().toUpperCase();
-    const rSpl = (r["Splitter ID"] || r.splitter_id || '').trim().toUpperCase();
-    if (rEid === eidUp && rSpl === splUp) {
-      const rCust = (r["No: Of Customer Connected"] !== undefined ? r["No: Of Customer Connected"] : r.customers_connected);
-      if (!latestInfo) {
-        latestInfo = {
-          splitter_ratio: r["Splitter Ratio"] || r.splitter_ratio,
-          customers_connected: rCust,
-          kseb_post_number: r["KSEB Post Number"] || r.kseb_post_number,
-          landmark: r["Land Mark"] || r.landmark,
-          lat_long: r["Lat /Long"] || r.lat_long,
-          surveyor_name: r.surveyor_name || r.surveyor_username,
-          survey_date_time: r["Date & Time"] || r.survey_date_time
-        };
-      } else {
-        if (rCust !== undefined && rCust !== null && rCust !== '') {
-          latestInfo.customers_connected = rCust;
-        }
-        if (!latestInfo.splitter_ratio) latestInfo.splitter_ratio = r["Splitter Ratio"] || r.splitter_ratio;
-        if (!latestInfo.kseb_post_number) latestInfo.kseb_post_number = r["KSEB Post Number"] || r.kseb_post_number;
-        if (!latestInfo.landmark) latestInfo.landmark = r["Land Mark"] || r.landmark;
-        if (!latestInfo.lat_long) latestInfo.lat_long = r["Lat /Long"] || r.lat_long;
-      }
-      const col = (r["Splitter Lead Colour Code"] || r.splitter_lead_color || '').trim().toUpperCase();
-      if (col) leadsSet.add(col);
-    }
-  });
-
-  const leadsList = Array.from(leadsSet);
-  if (leadsList.length === 0 && !latestInfo) return null;
-
-  const resolvedCustomers = (latestInfo && (latestInfo.customers_connected !== undefined ? latestInfo.customers_connected : latestInfo["No: Of Customer Connected"]));
-
-  return {
-    count: leadsList.length,
-    leads: leadsList,
-    splitter_ratio: (latestInfo && latestInfo.splitter_ratio) || '',
-    customers_connected: (resolvedCustomers !== undefined && resolvedCustomers !== null && resolvedCustomers !== '') ? resolvedCustomers : '',
-    kseb_post_number: (latestInfo && latestInfo.kseb_post_number) || '',
-    landmark: (latestInfo && latestInfo.landmark) || '',
-    lat_long: (latestInfo && latestInfo.lat_long) || '',
-    surveyor_name: (latestInfo && (latestInfo.surveyor_name || latestInfo.surveyor_username)) || 'Surveyor',
-    survey_date_time: (latestInfo && latestInfo.survey_date_time) || ''
-  };
-}
-
-function getSurveyedSplittersForEnclosure(eid) {
-  const surveyed = new Set();
-  const eidUpper = (eid || '').toUpperCase();
-  if (!eidUpper) return [];
-
-  if (networkSurveyedPoints) {
-    Object.keys(networkSurveyedPoints).forEach(key => {
-      if (key.startsWith(eidUpper + '|')) {
-        const parts = key.split('|');
-        if (parts[1]) surveyed.add(parts[1]);
-      }
-    });
-  }
-
-  records.forEach(r => {
-    const rEid = (r["Enclosure ID"] || r.enclosure_id || '').toUpperCase();
-    const rSpl = (r["Splitter ID"] || r.splitter_id || '').toUpperCase();
-    if (rEid === eidUpper && rSpl) {
-      surveyed.add(rSpl);
-    }
-  });
-
-  return Array.from(surveyed);
-}
-
-// Form Edit State Tracking: Guards against background heartbeats wiping user inputs
-let custCountManuallyEdited = false;
-let currentActiveSplitter = null;
-let currentActiveLeadColor = null;
-
-function isUserInteractingWithForm() {
-  const active = document.activeElement;
-  const formCard = document.getElementById('entry-form-card') || document.querySelector('.gs-card') || document.body;
-  const isInputActive = active && (active.tagName === 'INPUT' || active.tagName === 'SELECT' || active.tagName === 'TEXTAREA') && formCard.contains(active);
-  if (isInputActive) return true;
-  if (custCountManuallyEdited) return true;
-  if (typeof adlSubInput !== 'undefined' && adlSubInput && adlSubInput.value && adlSubInput.value.trim().length > 0) return true;
-  if (typeof acsSubInput !== 'undefined' && acsSubInput && acsSubInput.value && acsSubInput.value.trim().length > 0) return true;
-  return false;
-}
-
-let pendingSurveyRefresh = false;
-let lastConflictWarningKey = '';
-
-// Update Splitter Out option labels / lock state IN PLACE (no rebuild, no value change, no change handlers).
-// Keeps lock status live even while the surveyor is typing, and warns if their selected lead was just taken.
-function softRefreshLeadLabels() {
-  try {
-    if (!splitterColorSelect) return;
-    const olt = oltSelect ? oltSelect.value : '';
-    const port = portSelect ? portSelect.value : '';
-    const enc = enclosureSelect ? enclosureSelect.value : '';
-    const spl = splitterIdSelect ? splitterIdSelect.value : '';
-    if (!olt || !port || !enc || !spl) return;
-    const eid = computeEnclosureId(olt, port, enc);
-    const role = currentUser ? normalizeClientRole(currentUser.role) : 'field_technician';
-    const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'admin' || role === 'super_admin');
-    const selectedCol = splitterColorSelect.value;
-
-    Array.from(splitterColorSelect.options).forEach(opt => {
-      const col = opt.value;
-      if (!col) return;
-      const leadSurvey = getLeadSurveyedInfo(eid, spl, col);
-      if (leadSurvey) {
-        const byWho = leadSurvey.surveyor_name || leadSurvey.surveyor_username || 'Surveyor';
-        if (isSupervisor) {
-          const txt = `${col} — ✏️ Surveyed (${byWho})`;
-          opt.innerText = txt;
-          opt.textContent = txt;
-          opt.style.color = '#0284c7';
-          opt.style.fontWeight = '600';
-        } else {
-          const txt = `${col} — 🔒 Surveyed (${byWho})`;
-          opt.innerText = txt;
-          opt.textContent = txt;
-          opt.style.color = '#94a3b8';
-          opt.style.backgroundColor = '#f1f5f9';
-          // Never disable the currently selected option (that would silently change the value)
-          if (col !== selectedCol) opt.disabled = true;
-        }
-      }
-    });
-
-    // Conflict warning: selected lead was surveyed by someone else while this surveyor was typing
-    if (selectedCol) {
-      const taken = getLeadSurveyedInfo(eid, spl, selectedCol);
-      const isOwnEdit = taken && currentAcsoEditingUuid && taken.client_uuid === currentAcsoEditingUuid;
-      const key = `${eid}|${spl}|${selectedCol}`;
-      if (taken && !isOwnEdit && lastConflictWarningKey !== key) {
-        lastConflictWarningKey = key;
-        const byWho = taken.surveyor_name || taken.surveyor_username || 'another surveyor';
-        showToast(isSupervisor
-          ? `⚠️ ${spl} • ${selectedCol} was just surveyed by ${byWho}. Submitting will OVERWRITE their record.`
-          : `⚠️ ${spl} • ${selectedCol} was just surveyed by ${byWho}. Please choose another Splitter Out.`, false);
-      }
-    }
-  } catch (e) {
-    console.warn('[SoftRefresh] failed:', e);
-  }
-}
-
-// Apply the deferred full dropdown rebuild once the surveyor is no longer editing
-function applyPendingSurveyRefresh() {
-  if (!pendingSurveyRefresh || isUserInteractingWithForm()) return;
-  pendingSurveyRefresh = false;
-  updateAvailableEnclosures();
-}
-
-async function fetchSurveyedPoints(isBackground = false) {
-  try {
-    const center = (centerSelect && centerSelect.value && centerSelect.value !== 'Center') 
-      ? centerSelect.value 
-      : (currentUser && currentUser.assigned_center && currentUser.assigned_center !== 'ALL' ? currentUser.assigned_center : '');
-    
-    const query = center ? `?center=${encodeURIComponent(center)}` : '';
-    const token = localStorage.getItem('gpon_auth_token') || '';
-    const headers = {};
-    if (token) headers['Authorization'] = 'Bearer ' + token;
-
-    const res = await fetch(`${serverUrl}/api/surveyed-points${query}`, { headers });
-    if (res.ok) {
-      const data = await res.json();
-      if (data && data.points) {
-        networkSurveyedPoints = data.points;
-        try {
-          localStorage.setItem('gpon_network_surveyed_points', JSON.stringify(networkSurveyedPoints));
-        } catch (quotaErr) {
-          console.warn('[Storage] Quota exceeded for surveyed points cache, keeping in-memory:', quotaErr);
-        }
-        // If this is a periodic background fetch and user is actively working on the form,
-        // do not rebuild select menus or trigger form cascades to prevent UI flicker or wiping user input.
-        // Instead: soft-update lead lock labels in place, and defer the full rebuild until the surveyor is idle.
-        if (isBackground && isUserInteractingWithForm()) {
-          pendingSurveyRefresh = true;
-          softRefreshLeadLabels();
-          return;
-        }
-        pendingSurveyRefresh = false;
-        updateAvailableEnclosures();
-      }
-    }
-  } catch (err) {
-    console.warn('Could not fetch surveyed points from server (using offline cache):', err);
-  }
-}
-
-function normalizeClientRole(role) {
-  const r = (role || '').trim().toLowerCase();
-  if (r === 'super_admin' || r === 'superadmin') return 'super_admin';
-  if (r === 'admin' || r === 'operations_admin') return 'admin';
-  if (r === 'rcsm') return 'rcsm';
-  if (r === 'acso') return 'acso';
-  return 'field_technician';
-}
-
-
-function updateUserBar() {
-  const userBar = document.getElementById('user-bar');
-  const nameEl = document.getElementById('logged-user-name');
-  const centerEl = document.getElementById('logged-user-center');
-  const roleEl = document.getElementById('logged-user-role');
-  const adminLink = document.getElementById('admin-nav-link');
-  const rcsmBanner = document.getElementById('rcsm-banner');
-  const submitBtn = document.querySelector('.btn-add-row');
-  const excelBtn = document.getElementById('btn-export-excel') || document.querySelector('.btn-gs-excel');
-
-  if (currentUser) {
-    nameEl.innerText = currentUser.full_name || currentUser.username;
-    const assignedStr = currentUser.assigned_center || 'Unassigned';
-    const assignedArr = (currentUser.assigned_centers || assignedStr.split(',')).map(s => s.trim()).filter(Boolean);
-    if (assignedStr === 'Unassigned' || assignedArr.includes('Unassigned') || assignedArr.length === 0) {
-      centerEl.innerText = '⚠️ Unassigned Center';
-      centerEl.style.color = '#f59e0b';
-    } else if (assignedArr.length > 1 && !assignedArr.includes('ALL')) {
-      centerEl.innerText = `🏢 ${assignedArr.length} Centers Charge`;
-      centerEl.title = `Assigned Centers: ${assignedArr.join(', ')}`;
-      centerEl.style.color = '';
-    } else {
-      centerEl.innerText = assignedStr;
-      centerEl.style.color = '';
-    }
-    userBar.style.display = 'flex';
-
-    const role = normalizeClientRole(currentUser.role);
-    currentUser.role = role;
-
-    // 1. Role Badges
-    if (roleEl) {
-      roleEl.className = `gs-role-badge role-${role}`;
-      if (role === 'super_admin') {
-        roleEl.innerText = '👑 Super Admin';
-      } else if (role === 'admin') {
-        roleEl.innerText = '🛡️ Admin';
-      } else if (role === 'rcsm') {
-        roleEl.innerText = '📊 RCSM';
-      } else if (role === 'acso') {
-        roleEl.innerText = '📝 ACSO';
-      } else {
-        roleEl.innerText = '👷 Field Tech';
-      }
-    }
-
-    // 2. Dashboard Link for Super Admin, Admin & RCSM
-    if (adminLink) {
-      if (role === 'super_admin') {
-        adminLink.innerText = '⚙️ Admin Dashboard';
-        adminLink.style.display = 'inline-block';
-      } else if (role === 'admin') {
-        adminLink.innerText = '🛡️ Admin Dashboard';
-        adminLink.style.display = 'inline-block';
-      } else if (role === 'rcsm') {
-        adminLink.innerText = '📊 RCSM Dashboard';
-        adminLink.style.display = 'inline-block';
-      } else {
-        adminLink.style.display = 'none';
-      }
-    }
-
-    // 3. Field Survey Entry: Enabled for all roles (including RCSM, ACSO, Super Admin, and Field Tech)
-    const isEntryAllowed = true;
-    if (rcsmBanner) rcsmBanner.style.display = 'none';
-    if (submitBtn) submitBtn.style.display = 'flex';
-
-    const formInputs = document.querySelectorAll('.gs-card-body input, .gs-card-body select');
-    formInputs.forEach(el => {
-      if (!['tech-select', 'olt-type-select'].includes(el.id)) {
-        el.removeAttribute('disabled');
-      }
-    });
-    if (typeof getUserAvailableRegions === 'function' && regionSelect) {
-      const availRegs = getUserAvailableRegions();
-      regionSelect.disabled = (availRegs.length <= 1);
-    }
-
-    // 4. Field Technician: "Option to enter the field input only no options to download the data"
-    // ACSO & RCSM & Super Admin can download data. Field Technician cannot.
-    const isDownloadAllowed = (role !== 'field_technician');
-    if (excelBtn) excelBtn.style.display = isDownloadAllowed ? 'inline-flex' : 'none';
-
-    updateAvailableEnclosures();
-    updateAvailableSplitters();
-  } else {
-    userBar.style.display = 'none';
-  }
-}
-
-// ==========================================
-// AUTHENTICATION & LOGIN HELPERS
-// ==========================================
-
-function togglePasswordVisibility(inputId, btnId) {
-  const input = document.getElementById(inputId);
-  const btn = document.getElementById(btnId);
-  if (!input) return;
-  if (input.type === 'password') {
-    input.type = 'text';
-    if (btn) {
-      btn.innerText = '🙈';
-      btn.title = 'Hide password';
-      btn.setAttribute('aria-label', 'Hide password');
-    }
-  } else {
-    input.type = 'password';
-    if (btn) {
-      btn.innerText = '👁️';
-      btn.title = 'Show password';
-      btn.setAttribute('aria-label', 'Show password');
-    }
-  }
-}
-
-function setLoginError(htmlMsg) {
-  const errBox = document.getElementById('login-error-msg');
-  if (errBox) {
-    errBox.innerHTML = htmlMsg;
-    errBox.style.display = 'block';
-    errBox.style.backgroundColor = '#fef2f2';
-    errBox.style.color = '#991b1b';
-    errBox.style.borderColor = '#fecaca';
-    errBox.classList.remove('shake-anim');
-    void errBox.offsetWidth; // Force DOM reflow to re-trigger shake animation
-    errBox.classList.add('shake-anim');
-  }
-  // Strip HTML tags for clean toast notification
-  const plainText = htmlMsg.replace(/<[^>]*>?/gm, '');
-  showToast(plainText, false);
-}
-
-function clearLoginError() {
-  const errBox = document.getElementById('login-error-msg');
-  if (errBox) {
-    errBox.style.display = 'none';
-    errBox.innerHTML = '';
-    errBox.style.backgroundColor = '';
-    errBox.style.color = '';
-    errBox.style.borderColor = '';
-  }
-}
-
-async function handleLogin(e) {
-  if (e) e.preventDefault();
-  clearLoginError();
-
-  const uInput = document.getElementById('login-username');
-  const pInput = document.getElementById('login-password');
-  const submitBtn = document.getElementById('btn-login-submit');
-
-  const u = (uInput ? uInput.value : '').trim();
-  const p = (pInput ? pInput.value : '').trim();
-  const rememberCheckbox = document.getElementById('login-remember-me');
-  const remember = rememberCheckbox ? rememberCheckbox.checked : true;
-  
-  if (!u || !p) {
-    setLoginError('⚠️ <strong>Please enter username and password.</strong>');
-    if (!u && uInput) uInput.focus();
-    else if (!p && pInput) pInput.focus();
-    return;
-  }
-
-  // Visual loading indicator on submit button
-  const origBtnHtml = submitBtn ? submitBtn.innerHTML : 'Sign In';
-  if (submitBtn) {
-    submitBtn.disabled = true;
-    submitBtn.innerHTML = '⏳ Signing in...';
-    submitBtn.style.opacity = '0.75';
-    submitBtn.style.cursor = 'not-allowed';
-  }
-
-  let serverContacted = false;
-
-  // 1. Attempt login with Ubuntu server (15-second timeout for mobile networks)
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000);
-    const res = await fetch(`${serverUrl}/api/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: u, password: p }),
-      signal: controller.signal
-    });
-    clearTimeout(timeoutId);
-    serverContacted = true;
-
-    if (res.ok) {
-      const data = await res.json();
-      if (data.token) {
-        localStorage.setItem('gpon_auth_token', data.token);
-      }
-      if (remember) {
-        localStorage.setItem('gpon_remember_creds', 'true');
-        localStorage.setItem('gpon_remembered_username', u);
-      } else {
-        localStorage.removeItem('gpon_remember_creds');
-        localStorage.removeItem('gpon_remembered_username');
-      }
-      // Purge any legacy plaintext passwords stored previously
-      localStorage.removeItem('gpon_remembered_password');
-
-      // Cache credentials securely for offline field re-authentication
-      try {
-        const hash = await hashOfflineCredential(u, p);
-        localStorage.setItem('gpon_offline_user_' + u.toLowerCase().trim(), JSON.stringify({
-          user: data.user,
-          hash: hash
-        }));
-      } catch (e) {}
-
-      setCurrentUser(data.user);
-      showToast(`Welcome, ${data.user.full_name}!`);
-      return;
-    } else {
-      // Server returned an HTTP error
-      const errData = await res.json().catch(() => ({}));
-      if (res.status === 401) {
-        setLoginError('⚠️ <strong>Invalid username or password.</strong><br><span style="font-size: 0.78rem; opacity: 0.95;">Tap the 👁️ eye icon to check your password for typos or phone auto-capitalization.</span>');
-      } else if (res.status === 429) {
-        setLoginError('⏳ <strong>Too many login attempts.</strong><br><span style="font-size: 0.78rem;">Please wait 1 minute before trying again.</span>');
-      } else if (res.status >= 500) {
-        setLoginError(`⚠️ <strong>Server Error (${res.status}).</strong><br><span style="font-size: 0.78rem;">The server is restarting or busy. Please retry in a few moments.</span>`);
-      } else {
-        setLoginError(`⚠️ <strong>${errData.detail || 'Login failed. Please check credentials.'}</strong>`);
-      }
-      return;
-    }
-  } catch (err) {
-    console.log('Server login error / unreachable:', err);
-    if (err.name === 'AbortError') {
-      setLoginError('⚠️ <strong>Connection Timed Out.</strong><br><span style="font-size: 0.78rem;">Server took too long to respond. Please check your mobile signal and retry.</span>');
-      return;
-    }
-  } finally {
-    if (submitBtn) {
-      submitBtn.disabled = false;
-      submitBtn.innerHTML = origBtnHtml;
-      submitBtn.style.opacity = '1';
-      submitBtn.style.cursor = 'pointer';
-    }
-  }
-
-  // 2. Offline fallback credentials for remote emergency field areas
-  if (!serverContacted) {
-    let offlineMatchedUser = null;
-
-    // Check cached offline credentials for this device
-    try {
-      const cachedRaw = localStorage.getItem('gpon_offline_user_' + u.toLowerCase().trim());
-      if (cachedRaw) {
-        const cachedObj = JSON.parse(cachedRaw);
-        const inputHash = await hashOfflineCredential(u, p);
-        if (cachedObj && cachedObj.hash === inputHash) {
-          offlineMatchedUser = cachedObj.user;
-        }
-      }
-    } catch (e) {
-      console.warn('Offline credential verification error:', e);
-    }
-
-    if (!offlineMatchedUser) {
-      const offlineUsers = {
-        'admin': { username: 'admin', full_name: 'Central Super Administrator', email: 'admin@gpon.local', assigned_center: 'ALL', assigned_region: 'ALL', role: 'super_admin' }
-      };
-      if (offlineUsers[u.toLowerCase()] && p === 'admin123') {
-        offlineMatchedUser = offlineUsers[u.toLowerCase()];
-      }
-    }
-
-    if (offlineMatchedUser) {
-      if (remember) {
-        localStorage.setItem('gpon_remember_creds', 'true');
-        localStorage.setItem('gpon_remembered_username', u);
-      }
-      localStorage.removeItem('gpon_remembered_password');
-      setCurrentUser(offlineMatchedUser);
-      showToast(`Offline Login: Welcome, ${offlineMatchedUser.full_name}! (Working Offline)`);
-    } else {
-      setLoginError('⚠️ <strong>Unable to connect to server.</strong><br><span style="font-size: 0.78rem;">Please check your mobile data / Wi-Fi or verify credentials.</span>');
-    }
-  }
-}
-
-function setCurrentUser(user) {
-  currentUser = user;
-  localStorage.setItem('gpon_logged_in_user', JSON.stringify(user));
-
-  // Schedule midnight daily session expiration (00:00 local time)
-  const nextMidnight = getNextMidnightTimestamp();
-  localStorage.setItem('gpon_session_expires_at', String(nextMidnight));
-  scheduleMidnightLogout();
-
-  hideLoginOverlay();
-  updateUserBar();
-  initDropdowns();
-  fetchSurveyedPoints();
-  // Always pull the latest hierarchy after login (no-op re-render if unchanged)
-  fetchHierarchyFromServer();
-}
-
-async function logout() {
-  const pendingCount = (records || []).filter(r => r.sync_status !== 'synced').length;
-
-  // If connected and pending records exist, attempt auto-sync before signing out
-  if (pendingCount > 0 && isServerReachable) {
-    showToast('🔄 Syncing pending records before sign out...', true);
-    try {
-      await syncWithServer(true);
-    } catch (e) {
-      console.warn('Pre-logout sync error:', e);
-    }
-  }
-
-  const remainingPending = (records || []).filter(r => r.sync_status !== 'synced').length;
-  let confirmMsg = 'Log out from survey account?';
-  if (remainingPending > 0) {
-    confirmMsg = `⚠️ You have ${remainingPending} unsynced record(s) on this device.\n\nThey are safely saved in local offline storage and will NOT be lost. When you or another surveyor signs in with internet, they will sync to the server.\n\nDo you want to log out now?`;
-  }
-
-  if (confirm(confirmMsg)) {
-    // If online, notify server of logout
-    try {
-      const token = localStorage.getItem('gpon_auth_token') || '';
-      if (token && isServerReachable) {
-        fetch(`${serverUrl}/api/logout`, {
-          method: 'POST',
-          headers: { 'Authorization': 'Bearer ' + token }
-        }).catch(() => {});
-      }
-    } catch (e) {}
-
-    clearSessionOnly();
-    showLoginOverlay();
-    updateUserBar();
-    showToast('Signed out successfully. Offline records preserved.', true);
-  }
-}
-
-let resetResendTimer = null;
-let resetResendCountdown = 0;
-
-function goToResetStep(step) {
-  const s1 = document.getElementById('reset-step-1');
-  const s2 = document.getElementById('reset-step-2');
-  const err1 = document.getElementById('reset-step1-error');
-  const err2 = document.getElementById('reset-step2-error');
-  const succ2 = document.getElementById('reset-step2-success');
-
-  if (err1) err1.style.display = 'none';
-  if (err2) err2.style.display = 'none';
-  if (succ2) succ2.style.display = 'none';
-
-  if (step === 1) {
-    if (s1) s1.style.display = 'block';
-    if (s2) s2.style.display = 'none';
-    const idField = document.getElementById('reset-identifier');
-    if (idField) setTimeout(() => idField.focus(), 100);
-  } else {
-    if (s1) s1.style.display = 'none';
-    if (s2) s2.style.display = 'block';
-    const otpField = document.getElementById('reset-otp-code');
-    if (otpField) {
-      otpField.value = '';
-      setTimeout(() => otpField.focus(), 100);
-    }
-  }
-}
-
-function openResetPasswordModal(username, email) {
-  const overlay = document.getElementById('reset-password-overlay');
-  if (!overlay) return;
-  const idField = document.getElementById('reset-identifier');
-  const p1 = document.getElementById('reset-new-password');
-  const p2 = document.getElementById('reset-confirm-password');
-
-  if (idField) {
-    idField.value = username || email || (currentUser ? currentUser.username : (document.getElementById('login-username').value || ''));
-  }
-  if (p1) p1.value = '';
-  if (p2) p2.value = '';
-
-  goToResetStep(1);
-  overlay.style.display = 'flex';
-}
-
-function closeResetPasswordModal() {
-  const overlay = document.getElementById('reset-password-overlay');
-  if (overlay) overlay.style.display = 'none';
-  if (resetResendTimer) {
-    clearInterval(resetResendTimer);
-    resetResendTimer = null;
-  }
-}
-
-function startResendCooldown() {
-  const btn = document.getElementById('btn-resend-reset-otp');
-  if (!btn) return;
-  if (resetResendTimer) clearInterval(resetResendTimer);
-  resetResendCountdown = 60;
-  btn.disabled = true;
-  btn.style.opacity = '0.6';
-  btn.innerText = `⏳ Resend in ${resetResendCountdown}s`;
-
-  resetResendTimer = setInterval(() => {
-    resetResendCountdown -= 1;
-    if (resetResendCountdown <= 0) {
-      clearInterval(resetResendTimer);
-      resetResendTimer = null;
-      btn.disabled = false;
-      btn.style.opacity = '1';
-      btn.innerText = '🔄 Resend Code';
-    } else {
-      btn.innerText = `⏳ Resend in ${resetResendCountdown}s`;
-    }
-  }, 1000);
-}
-
-async function handleRequestResetOtp(e) {
-  if (e) e.preventDefault();
-  const idField = document.getElementById('reset-identifier');
-  const btn = document.getElementById('btn-send-reset-otp');
-  const errDiv = document.getElementById('reset-step1-error');
-  if (errDiv) errDiv.style.display = 'none';
-
-  const val = idField ? idField.value.trim() : '';
-  if (!val) {
-    if (errDiv) {
-      errDiv.innerText = 'Please enter your username or registered email address.';
-      errDiv.style.display = 'block';
-    }
-    return;
-  }
-
-  if (btn) {
-    btn.disabled = true;
-    btn.innerText = '⏳ Sending OTP...';
-  }
-
-  try {
-    const res = await fetch(`${serverUrl}/api/request-password-reset-otp`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username_or_email: val })
-    });
-    const data = await res.json();
-    if (res.ok) {
-      document.getElementById('reset-verified-username').value = data.username;
-      const maskedEl = document.getElementById('reset-masked-email');
-      if (maskedEl) maskedEl.innerText = data.masked_email;
-      goToResetStep(2);
-      startResendCooldown();
-    } else {
-      if (errDiv) {
-        errDiv.innerText = data.detail || 'Could not send verification OTP.';
-        errDiv.style.display = 'block';
-      }
-    }
-  } catch (err) {
-    if (errDiv) {
-      errDiv.innerText = 'Cannot reach the server. Please check your network connection.';
-      errDiv.style.display = 'block';
-    }
-  } finally {
-    if (btn) {
-      btn.disabled = false;
-      btn.innerText = '📩 Send Verification OTP';
-    }
-  }
-}
-
-async function resendResetOtp() {
-  const uname = document.getElementById('reset-verified-username').value.trim();
-  if (!uname) {
-    goToResetStep(1);
-    return;
-  }
-  const btn = document.getElementById('btn-resend-reset-otp');
-  if (btn && btn.disabled) return;
-
-  try {
-    const res = await fetch(`${serverUrl}/api/request-password-reset-otp`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username_or_email: uname })
-    });
-    const data = await res.json();
-    if (res.ok) {
-      showToast('New 6-digit OTP sent to your registered email!', true);
-      startResendCooldown();
-    } else {
-      showToast(data.detail || 'Failed to resend code.', false);
-    }
-  } catch (e) {
-    showToast('Cannot connect to server to resend code.', false);
-  }
-}
-
-async function handleVerifyResetOtp(e) {
-  if (e) e.preventDefault();
-  const uname = document.getElementById('reset-verified-username').value.trim();
-  const otp = document.getElementById('reset-otp-code').value.trim();
-  const p1 = document.getElementById('reset-new-password').value.trim();
-  const p2 = document.getElementById('reset-confirm-password').value.trim();
-  const btn = document.getElementById('btn-verify-reset-otp');
-  const errDiv = document.getElementById('reset-step2-error');
-  const succDiv = document.getElementById('reset-step2-success');
-
-  if (errDiv) errDiv.style.display = 'none';
-  if (succDiv) succDiv.style.display = 'none';
-
-  if (!otp || otp.length !== 6) {
-    if (errDiv) {
-      errDiv.innerText = 'Please enter the complete 6-digit verification OTP.';
-      errDiv.style.display = 'block';
-    }
-    return;
-  }
-
-  if (!p1 || p1.length < 4) {
-    if (errDiv) {
-      errDiv.innerText = 'New password must be at least 4 characters long.';
-      errDiv.style.display = 'block';
-    }
-    return;
-  }
-
-  if (p1 !== p2) {
-    if (errDiv) {
-      errDiv.innerText = 'Passwords do not match. Please re-enter.';
-      errDiv.style.display = 'block';
-    }
-    return;
-  }
-
-  if (btn) {
-    btn.disabled = true;
-    btn.innerText = '⏳ Verifying...';
-  }
-
-  try {
-    const res = await fetch(`${serverUrl}/api/verify-password-reset-otp`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: uname,
-        otp: otp,
-        new_password: p1
-      })
-    });
-    const data = await res.json();
-    if (res.ok) {
-      if (succDiv) {
-        succDiv.innerText = data.message || 'Password updated successfully!';
-        succDiv.style.display = 'block';
-      }
-      setTimeout(() => {
-        closeResetPasswordModal();
-        const loginU = document.getElementById('login-username');
-        const loginP = document.getElementById('login-password');
-        if (loginU) loginU.value = uname;
-        if (loginP) loginP.value = p1;
-        showToast('Password updated! You can now log in.', true);
-      }, 1500);
-    } else {
-      if (errDiv) {
-        errDiv.innerText = data.detail || 'Could not verify OTP.';
-        errDiv.style.display = 'block';
-      }
-    }
-  } catch (err) {
-    if (errDiv) {
-      errDiv.innerText = 'Cannot reach the server. Please check your connection.';
-      errDiv.style.display = 'block';
-    }
-  } finally {
-    if (btn) {
-      btn.disabled = false;
-      btn.innerText = '✓ Verify OTP & Set Password';
-    }
-  }
-}
-
-// DOM Elements
-const regionSelect = document.getElementById('region-select');
-const centerSelect = document.getElementById('center-select');
-const rtRoomSelect = document.getElementById('rtroom-select');
-const techSelect = document.getElementById('tech-select');
-const oltSelect = document.getElementById('olt-select');
-const oltTypeSelect = document.getElementById('olt-type-select');
-const portSelect = document.getElementById('port-select');
-const postInput = document.getElementById('post-input');
-const landmarkInput = document.getElementById('landmark-input');
-const enclosureSelect = document.getElementById('enclosure-select');
-const enclosureIdPreview = document.getElementById('enclosure-id-preview');
-const splitterIdPreview = document.getElementById('splitter-id-preview');
-const splitterIdSelect = document.getElementById('splitter-id-select');
-const splitterRatioSelect = document.getElementById('splitter-ratio-select');
-const custCountInput = document.getElementById('cust-count-input');
-const splitterColorSelect = document.getElementById('splitter-color-select');
-const adlSubInput = document.getElementById('adl-sub-input');
-const acsSubInput = document.getElementById('acs-sub-input');
-
-function getFormattedDateTime(d = new Date()) {
-  const pad = (n) => String(n).padStart(2, '0');
-  const year = d.getFullYear();
-  const month = pad(d.getMonth() + 1);
-  const day = pad(d.getDate());
-  const hours = pad(d.getHours());
-  const mins = pad(d.getMinutes());
-  const secs = pad(d.getSeconds());
-  return `${year}-${month}-${day} ${hours}:${mins}:${secs}`;
-}
-
-const manualCoordsInput = document.getElementById('manual-coords-input');
-const gpsAccText = document.getElementById('gps-acc');
-const mapContainer = document.getElementById('map-container');
-const mapToggleBtn = document.getElementById('map-toggle-btn');
-const recordsBadge = document.getElementById('records-count-badge');
-
-function parseCoordinates(val) {
-  if (!val || typeof val !== 'string') return null;
-  const clean = val.trim();
-  if (!clean) return null;
-  // Match two decimal floats in the string (supports commas, tabs from Excel, spaces, semicolons, etc.)
-  const matches = clean.match(/[-+]?[0-9]*\.?[0-9]+/g);
-  if (matches && matches.length >= 2) {
-    const lat = parseFloat(matches[0]);
-    const lon = parseFloat(matches[1]);
-    if (!isNaN(lat) && !isNaN(lon) && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180 && (lat !== 0 || lon !== 0)) {
-      return { lat, lon, formatted: `${lat.toFixed(6)}, ${lon.toFixed(6)}` };
-    }
-  }
-  return null;
-}
-
-function onManualCoordsChange(val) {
-  if (!val) return;
-  const parsed = parseCoordinates(val);
-  if (parsed) {
-    currentLat = parsed.lat;
-    currentLon = parsed.lon;
-    if (manualCoordsInput && manualCoordsInput.value !== parsed.formatted) {
-      manualCoordsInput.value = parsed.formatted;
-    }
-    if (gpsAccText) {
-      gpsAccText.innerHTML = '<span style="color:#0284c7; font-weight:600;">📍 Coordinates Entered Manually / Pasted from Excel</span>';
-    }
-    if (mapInstance) {
-      updateMapPosition(currentLat, currentLon, null);
-    }
-    showToast(`Coordinates updated: ${parsed.formatted}`);
-  }
-}
-
-// Toast Notification
-function showToast(msg, isSuccess = true) {
-  const toast = document.getElementById('toast');
-  toast.innerText = msg;
-  toast.style.background = isSuccess ? '#10b981' : '#ef4444';
-  toast.style.display = 'block';
-  setTimeout(() => {
-    toast.style.display = 'none';
-  }, 2500);
-}
-
-// HTML Escape utility to prevent XSS in record table rendering
-function escapeHtml(str) {
-  if (!str) return '';
-  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
-}
-
-// Update Enclosure ID & Splitter ID Preview
-function updateEnclosureId() {
-  const olt = oltSelect ? oltSelect.value : '';
-  const port = portSelect ? portSelect.value : '';
-  const enc = enclosureSelect ? enclosureSelect.value : '';
-  if (!olt || !port || !enc) {
-    if (enclosureIdPreview) enclosureIdPreview.innerText = '---';
-    if (splitterIdPreview) splitterIdPreview.innerText = '---';
-    return;
-  }
-  const eid = computeEnclosureId(olt, port, enc);
-  if (enclosureIdPreview) enclosureIdPreview.innerText = eid || '---';
-
-  const spl = splitterIdSelect ? splitterIdSelect.value : '';
-  if (splitterIdPreview) {
-    if (eid && spl) {
-      splitterIdPreview.innerText = spl.toUpperCase().startsWith(eid.toUpperCase()) ? spl : `${eid}${spl}`;
-    } else {
-      splitterIdPreview.innerText = '---';
-    }
-  }
-}
-
-function getRegionForCenter(centerName) {
-  if (!centerName) return "";
-  const hier = DEFAULT_PRELOAD && DEFAULT_PRELOAD.hierarchy ? DEFAULT_PRELOAD.hierarchy : {};
-  let cData = hier[centerName];
-  if (!cData) {
-    const cNorm = (centerName || '').trim().toLowerCase();
-    const found = Object.keys(hier).find(k => k.trim().toLowerCase() === cNorm);
-    if (found) cData = hier[found];
-  }
-  if (cData && typeof cData === 'object') {
-    for (const rt of Object.keys(cData)) {
-      const olts = cData[rt];
-      if (olts && typeof olts === 'object') {
-        for (const oltName of Object.keys(olts)) {
-          const entry = olts[oltName];
-          if (entry && typeof entry === 'object' && entry.region) {
-            return String(entry.region).trim();
-          }
-        }
-      }
-    }
-  }
-  return "";
-}
-
-function getRtRoomsForCenter(c) {
-  if (!DEFAULT_PRELOAD || !DEFAULT_PRELOAD.hierarchy) return [];
-  if (DEFAULT_PRELOAD.hierarchy[c]) return Object.keys(DEFAULT_PRELOAD.hierarchy[c]);
-  const cNorm = (c || '').trim().toLowerCase();
-  const foundKey = Object.keys(DEFAULT_PRELOAD.hierarchy).find(k => k.trim().toLowerCase() === cNorm);
-  return (foundKey && DEFAULT_PRELOAD.hierarchy[foundKey]) ? Object.keys(DEFAULT_PRELOAD.hierarchy[foundKey]) : [];
-}
-
-function getOltsForRtRoom(c, rt) {
-  if (!DEFAULT_PRELOAD || !DEFAULT_PRELOAD.hierarchy) return [];
-  if (DEFAULT_PRELOAD.hierarchy[c] && DEFAULT_PRELOAD.hierarchy[c][rt]) {
-    return Object.keys(DEFAULT_PRELOAD.hierarchy[c][rt]);
-  }
-  const cNorm = (c || '').trim().toLowerCase();
-  const cKey = Object.keys(DEFAULT_PRELOAD.hierarchy).find(k => k.trim().toLowerCase() === cNorm);
-  if (!cKey || !DEFAULT_PRELOAD.hierarchy[cKey]) return [];
-  const rtMap = DEFAULT_PRELOAD.hierarchy[cKey];
-  if (rtMap[rt]) return Object.keys(rtMap[rt]);
-  const rtNorm = (rt || '').trim().toLowerCase();
-  const rtKey = Object.keys(rtMap).find(k => k.trim().toLowerCase() === rtNorm);
-  return (rtKey && rtMap[rtKey]) ? Object.keys(rtMap[rtKey]) : [];
-}
-
-function getAllRegions() {
-  const regions = new Set();
-  const hier = DEFAULT_PRELOAD && DEFAULT_PRELOAD.hierarchy ? DEFAULT_PRELOAD.hierarchy : {};
-  for (const c of Object.keys(hier)) {
-    const r = getRegionForCenter(c);
-    if (r) regions.add(r.trim());
-  }
-  if (regions.size === 0 && DEFAULT_PRELOAD && Array.isArray(DEFAULT_PRELOAD.regions)) {
-    DEFAULT_PRELOAD.regions.forEach(r => {
-      if (r && r.trim()) regions.add(r.trim());
-    });
-  }
-  if (regions.size === 0) regions.add("Thrissur");
-  return Array.from(regions).sort();
-}
-
-function getCentersForRegion(regionName) {
-  const hier = DEFAULT_PRELOAD && DEFAULT_PRELOAD.hierarchy ? DEFAULT_PRELOAD.hierarchy : {};
-  const centers = [];
-  const targetLower = (regionName || '').trim().toLowerCase();
-  for (const c of Object.keys(hier)) {
-    const r = getRegionForCenter(c);
-    if (!regionName || targetLower === 'all' || (r && r.toLowerCase() === targetLower)) {
-      centers.push(c);
-    }
-  }
-  return centers.sort();
-}
-
-function getUserAvailableRegions() {
-  const allRegions = getAllRegions();
-  if (!currentUser) return allRegions;
-
-  const role = normalizeClientRole(currentUser.role);
-  if (role === 'super_admin' || role === 'admin') return allRegions;
-
-  // 1. Explicit assigned regions
-  let assignedRegs = [];
-  if (Array.isArray(currentUser.assigned_regions) && currentUser.assigned_regions.length > 0) {
-    assignedRegs = currentUser.assigned_regions;
-  } else if (currentUser.assigned_region) {
-    assignedRegs = currentUser.assigned_region.split(',').map(s => s.trim()).filter(Boolean);
-  }
-  assignedRegs = assignedRegs.filter(r => r.toLowerCase() !== 'unassigned');
-
-  // If user is explicitly assigned 'ALL' regions, they can access all regions
-  if (assignedRegs.some(r => r.toUpperCase() === 'ALL')) {
-    return allRegions;
-  }
-
-  // If specific assigned regions exist, the user's available regions MUST be strictly limited to these!
-  if (assignedRegs.length > 0) {
-    const userRegsLower = assignedRegs.map(r => r.toLowerCase());
-    const matched = allRegions.filter(ar => userRegsLower.includes(ar.toLowerCase()));
-    if (matched.length > 0) {
-      return matched.sort();
-    }
-    return assignedRegs.sort();
-  }
-
-  // 2. Fallback ONLY if NO explicit assigned regions are set: derive from assigned centers
-  let assignedCenters = [];
-  if (Array.isArray(currentUser.assigned_centers) && currentUser.assigned_centers.length > 0) {
-    assignedCenters = currentUser.assigned_centers;
-  } else if (currentUser.assigned_center) {
-    assignedCenters = currentUser.assigned_center.split(',').map(s => s.trim()).filter(Boolean);
-  }
-  assignedCenters = assignedCenters.filter(c => c.toLowerCase() !== 'unassigned');
-
-  // If centers is 'ALL' and NO regions were assigned, grant all regions
-  if (assignedCenters.some(c => c.toUpperCase() === 'ALL')) {
-    return allRegions;
-  }
-
-  if (assignedCenters.length > 0) {
-    const regionSet = new Set();
-    assignedCenters.forEach(c => {
-      const r = getRegionForCenter(c);
-      if (r) regionSet.add(r);
-    });
-    const list = Array.from(regionSet).filter(Boolean);
-    if (list.length > 0) {
-      const matched = allRegions.filter(ar => list.map(x => x.toLowerCase()).includes(ar.toLowerCase()));
-      if (matched.length > 0) return matched.sort();
-      return list.sort();
-    }
-  }
-
-  return allRegions;
-}
-
-function updateCentersForSelectedRegion(selectedReg, prevCenter = '') {
-  centerSelect.innerHTML = '';
-
-  // Guard: User must not access centers in an unpermitted region
-  const allowedRegs = getUserAvailableRegions();
-  const allowedRegsLower = allowedRegs.map(r => r.toLowerCase());
-  if (selectedReg && !allowedRegsLower.includes(selectedReg.toLowerCase())) {
-    centerSelect.innerHTML = '<option value="">⚠️ Region Not Permitted</option>';
-    centerSelect.disabled = true;
-    return;
-  }
-
-  let centers = getCentersForRegion(selectedReg);
-
-  // Filter centers based on logged-in user assignment
-  if (currentUser && currentUser.assigned_center && currentUser.assigned_center.toUpperCase() !== 'ALL') {
-    let assignedList = [];
-    if (Array.isArray(currentUser.assigned_centers) && currentUser.assigned_centers.length > 0) {
-      assignedList = currentUser.assigned_centers;
-    } else if (currentUser.assigned_center) {
-      assignedList = currentUser.assigned_center.split(',').map(s => s.trim()).filter(Boolean);
-    }
-    assignedList = assignedList.filter(a => a.toLowerCase() !== 'unassigned');
-
-    if (assignedList.length === 0) {
-      centerSelect.innerHTML = '<option value="">⚠️ No Center Assigned (Pending Admin)</option>';
-      centerSelect.disabled = true;
-      return;
-    } else if (assignedList.some(a => a.toUpperCase() === 'ALL')) {
-      // User has access to ALL centers in this permitted region
-      centerSelect.disabled = (centers.length <= 1);
-    } else {
-      // User has specific center charges: intersect with centers in this region
-      const userAssignedLower = assignedList.map(s => s.trim().toLowerCase());
-      const filtered = centers.filter(c => userAssignedLower.includes(c.trim().toLowerCase()));
-      if (filtered.length > 0) {
-        centers = filtered;
-      } else if (!selectedReg || selectedReg.toLowerCase() === 'all') {
-        const hierCenters = Object.keys(DEFAULT_PRELOAD.hierarchy || {});
-        centers = hierCenters.filter(c => userAssignedLower.includes(c.trim().toLowerCase()));
-      } else {
-        centers = filtered;
-      }
-      centerSelect.disabled = (centers.length <= 1);
-    }
-  } else {
-    centerSelect.disabled = (centers.length <= 1);
-  }
-
-  if (centers.length === 0) {
-    const opt = document.createElement('option');
-    opt.value = '';
-    opt.innerText = '-- No Centers in Region --';
-    centerSelect.appendChild(opt);
-    centerSelect.disabled = true;
-  } else {
-    centers.forEach(c => {
-      const opt = document.createElement('option');
-      opt.value = c;
-      opt.innerText = c;
-      centerSelect.appendChild(opt);
-    });
-
-    if (prevCenter && centers.includes(prevCenter)) {
-      centerSelect.value = prevCenter;
-    } else {
-      centerSelect.value = centers[0];
-    }
-  }
-}
-
-function onRegionChange() {
-  const selReg = regionSelect ? regionSelect.value : '';
-  updateCentersForSelectedRegion(selReg);
-  if (splitterRatioSelect) splitterRatioSelect.value = '';
-  currentActiveEnclosure = '';
-  resetPoleFields();
-  clearCustomerInputs();
-  onCenterChange();
-  fetchSurveyedPoints();
-}
-
-function initDropdowns(preserveSelection = false) {
-  const prevReg = preserveSelection && regionSelect ? regionSelect.value : '';
-  const prevCenter = preserveSelection && centerSelect ? centerSelect.value : '';
-  const prevRt = preserveSelection && rtRoomSelect ? rtRoomSelect.value : '';
-  const prevOlt = preserveSelection && oltSelect ? oltSelect.value : '';
-
-  // 1. Region Dropdown
-  const availableRegions = getUserAvailableRegions();
-  if (regionSelect) {
-    regionSelect.innerHTML = '';
-    if (availableRegions.length === 0) {
-      const opt = document.createElement('option');
-      opt.value = '';
-      opt.innerText = '-- No Regions Available --';
-      regionSelect.appendChild(opt);
-      regionSelect.disabled = true;
-    } else {
-      availableRegions.forEach(r => {
-        const opt = document.createElement('option');
-        opt.value = r;
-        opt.innerText = r;
-        regionSelect.appendChild(opt);
-      });
-
-      // Default selection logic:
-      if (prevReg && availableRegions.includes(prevReg)) {
-        regionSelect.value = prevReg;
-      } else if (prevCenter) {
-        const rForCenter = getRegionForCenter(prevCenter);
-        if (rForCenter && availableRegions.includes(rForCenter)) {
-          regionSelect.value = rForCenter;
-        } else {
-          regionSelect.value = availableRegions[0];
-        }
-      } else if (currentUser && currentUser.assigned_center && currentUser.assigned_center !== 'ALL' && currentUser.assigned_center !== 'Unassigned') {
-        const firstC = currentUser.assigned_center.split(',')[0].trim();
-        const rForFirstC = getRegionForCenter(firstC);
-        if (rForFirstC && availableRegions.includes(rForFirstC)) {
-          regionSelect.value = rForFirstC;
-        } else {
-          regionSelect.value = availableRegions[0];
-        }
-      } else if (availableRegions.includes("Thrissur")) {
-        regionSelect.value = "Thrissur";
-      } else {
-        regionSelect.value = availableRegions[0];
-      }
-
-      // If user has multiple regions, keep it interactive! If single region, lock it.
-      regionSelect.disabled = (availableRegions.length <= 1);
-    }
-  }
-
-  // 2. Center Dropdown for selected Region
-  const activeReg = regionSelect ? regionSelect.value : '';
-  updateCentersForSelectedRegion(activeReg, prevCenter);
-
-  // 3. Technologies (Read-only, auto-reflected from Node Master Data)
-  techSelect.innerHTML = '';
-  (DEFAULT_PRELOAD.technologies || ["GPON", "FTTH", "WDM", "EDFA"]).forEach(t => {
-    const opt = document.createElement('option');
-    opt.value = t;
-    opt.innerText = t;
-    techSelect.appendChild(opt);
-  });
-  techSelect.disabled = true;
-
-  if (oltTypeSelect) {
-    oltTypeSelect.disabled = true;
-  }
-
-  // Enclosures - placeholder only; cascade via updateAvailableEnclosures() will rebuild
-  enclosureSelect.innerHTML = '';
-  const encDefOpt = document.createElement('option');
-  encDefOpt.value = '';
-  encDefOpt.innerText = '-- Select Enclosure --';
-  enclosureSelect.appendChild(encDefOpt);
-
-  // Splitter Ratio - always rebuild with empty default (no auto-selection)
-  splitterRatioSelect.innerHTML = '';
-  const ratioDefOpt = document.createElement('option');
-  ratioDefOpt.value = '';
-  ratioDefOpt.innerText = '-- Select Splitter Ratio --';
-  splitterRatioSelect.appendChild(ratioDefOpt);
-  DEFAULT_PRELOAD.ratios.forEach(r => {
-    const opt = document.createElement('option');
-    opt.value = r;
-    opt.innerText = r;
-    splitterRatioSelect.appendChild(opt);
-  });
-
-  // Splitter ID - placeholder only; cascade via updateAvailableSplitters() will rebuild
-  splitterIdSelect.innerHTML = '';
-  const sidDefOpt = document.createElement('option');
-  sidDefOpt.value = '';
-  sidDefOpt.innerText = '-- Select Splitter ID --';
-  splitterIdSelect.appendChild(sidDefOpt);
-
-  updateSplitterColorOptions();
-  onCenterChange(prevRt, prevOlt);
-}
-
-// Splitter Out dynamically based on Splitter Ratio and Survey Status
-function updateSplitterColorOptions() {
-  if (!splitterColorSelect) return;
-  const olt = oltSelect ? oltSelect.value : '';
-  const port = portSelect ? portSelect.value : '';
-  const enc = enclosureSelect ? enclosureSelect.value : '';
-  const spl = splitterIdSelect ? splitterIdSelect.value : '';
-  const ratio = splitterRatioSelect ? splitterRatioSelect.value : '';
-  const eid = (olt && port && enc) ? computeEnclosureId(olt, port, enc) : '';
-
-  const prev = splitterColorSelect.value;
-  splitterColorSelect.innerHTML = '';
-
-  const defOpt = document.createElement('option');
-  defOpt.value = '';
-  defOpt.innerText = ratio ? `-- Select Splitter Out (Optional) --` : '-- Select Ratio First --';
-  splitterColorSelect.appendChild(defOpt);
-
-  if (!ratio) {
-    handleColorSelectionChange();
-    return;
-  }
-
-  const colorList = (DEFAULT_PRELOAD.color_codes_by_ratio && DEFAULT_PRELOAD.color_codes_by_ratio[ratio])
-    ? DEFAULT_PRELOAD.color_codes_by_ratio[ratio]
-    : (DEFAULT_PRELOAD.color_codes || []);
-
-  const role = currentUser ? normalizeClientRole(currentUser.role) : 'field_technician';
-  const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'admin' || role === 'super_admin');
-
-  let firstAvailableVal = '';
-
-  colorList.forEach(col => {
-    const opt = document.createElement('option');
-    opt.value = col;
-
-    const leadSurvey = (eid && spl) ? getLeadSurveyedInfo(eid, spl, col) : null;
-    if (leadSurvey) {
-      const byWho = leadSurvey.surveyor_name || leadSurvey.surveyor_username || 'Surveyor';
-      if (isSupervisor) {
-        opt.innerText = `${col} — ✏️ Surveyed (${byWho})`;
-        opt.style.color = '#0284c7';
-        opt.style.fontWeight = '600';
-      } else {
-        opt.innerText = `${col} — 🔒 Surveyed (${byWho})`;
-        opt.disabled = true;
-        opt.style.color = '#94a3b8';
-        opt.style.backgroundColor = '#f1f5f9';
-      }
-    } else {
-      opt.innerText = `${col} — ✅ Available`;
-      opt.style.color = '#15803d';
-      opt.style.fontWeight = '600';
-      if (!firstAvailableVal) firstAvailableVal = col;
-    }
-
-    splitterColorSelect.appendChild(opt);
-  });
-
-  // Preserve previous selection only if still valid and not disabled.
-  // NEVER auto-select a lead: user must explicitly choose an out, or leave empty if 0 connections.
-  if (prev) {
-    const prevVars = getColorVariants(prev);
-    const optMatch = Array.from(splitterColorSelect.options).find(o => prevVars.some(v => getColorVariants(o.value).includes(v)) && !o.disabled);
-    if (optMatch) {
-      splitterColorSelect.value = optMatch.value;
-    } else {
-      splitterColorSelect.value = '';
-    }
-  } else {
-    splitterColorSelect.value = '';
-  }
-
-  handleColorSelectionChange();
-}
-
-// Filter Enclosures to reflect survey status and role rights
-function updateAvailableEnclosures() {
-  const olt = oltSelect ? oltSelect.value : '';
-  const port = portSelect ? portSelect.value : '';
-
-  const prevVal = enclosureSelect.value;
-  enclosureSelect.innerHTML = '';
-
-  // Empty default placeholder
-  const defOpt = document.createElement('option');
-  defOpt.value = '';
-  defOpt.innerText = (olt && port) ? '-- Select Enclosure --' : '-- Select Port First --';
-  enclosureSelect.appendChild(defOpt);
-
-  const role = currentUser ? normalizeClientRole(currentUser.role) : 'field_technician';
-  const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'admin' || role === 'super_admin');
-
-  if (olt && port) {
-    DEFAULT_PRELOAD.enclosures.forEach(e => {
-      const eid = computeEnclosureId(olt, port, e);
-      const surveyedSplitters = getSurveyedSplittersForEnclosure(eid);
-      const hasSurvey = surveyedSplitters.length > 0;
-
-      const opt = document.createElement('option');
-      opt.value = e;
-
-      if (hasSurvey) {
-        if (isSupervisor) {
-          opt.innerText = `${e} (✏️ ${surveyedSplitters.length} Splitter${surveyedSplitters.length > 1 ? 's' : ''} Mapped)`;
-          opt.style.color = '#0284c7';
-        } else {
-          opt.innerText = `${e} (${surveyedSplitters.length} Splitter${surveyedSplitters.length > 1 ? 's' : ''} Mapped)`;
-          opt.style.color = '#0f172a';
-        }
-      } else {
-        opt.innerText = e;
-      }
-
-      enclosureSelect.appendChild(opt);
-    });
-
-    if (prevVal) {
-      const optMatch = Array.from(enclosureSelect.options).find(o => o.value === prevVal && !o.disabled);
-      if (optMatch) {
-        enclosureSelect.value = prevVal;
-      }
-    }
-  }
-
-  updateEnclosureId();
-  updateAvailableSplitters();
-}
-
-// Filter Splitter IDs to enforce Field Tech capacity lock and ACSO update rights
-function updateAvailableSplitters() {
-  const olt = oltSelect ? oltSelect.value : '';
-  const port = portSelect ? portSelect.value : '';
-  const enc = enclosureSelect ? enclosureSelect.value : '';
-
-  const prevVal = splitterIdSelect.value;
-  splitterIdSelect.innerHTML = '';
-
-  // Empty default placeholder
-  const defOpt = document.createElement('option');
-  defOpt.value = '';
-  defOpt.innerText = enc ? '-- Select Splitter ID --' : '-- Select Enclosure First --';
-  splitterIdSelect.appendChild(defOpt);
-
-  const role = currentUser ? normalizeClientRole(currentUser.role) : 'field_technician';
-  const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'admin' || role === 'super_admin');
-
-  if (enc) {
-    const eid = computeEnclosureId(olt, port, enc);
-
-    DEFAULT_PRELOAD.splitters.forEach((s, idx) => {
-      const splSummary = getSplitterSummary(eid, s);
-      const opt = document.createElement('option');
-      opt.value = s;
-
-      const count = splSummary ? splSummary.count : 0;
-      const ratio = (splSummary && splSummary.splitter_ratio) || (splitterRatioSelect ? splitterRatioSelect.value : '');
-      const totalLeads = (ratio && DEFAULT_PRELOAD.color_codes_by_ratio && DEFAULT_PRELOAD.color_codes_by_ratio[ratio])
-        ? DEFAULT_PRELOAD.color_codes_by_ratio[ratio].length
-        : 0;
-
-      if (count > 0) {
-        const capText = totalLeads ? `${count}/${totalLeads} mapped` : `${count} lead${count > 1 ? 's' : ''} mapped`;
-        const isFull = totalLeads > 0 && count >= totalLeads;
-
-        if (isFull) {
-          if (isSupervisor) {
-            opt.innerText = `${s} — ✏️ Full (${capText})`;
-            opt.style.color = '#0284c7';
-            opt.style.fontWeight = '600';
-          } else {
-            opt.innerText = `${s} — 🔒 Full (${capText})`;
-            opt.disabled = true;
-            opt.style.color = '#94a3b8';
-            opt.style.backgroundColor = '#f1f5f9';
-          }
-        } else {
-          // Open leads available! Both tech and supervisor can select!
-          opt.innerText = `${s} (${capText})`;
-          opt.style.color = '#0f172a';
-          opt.style.fontWeight = '500';
-        }
-      } else if (splSummary) {
-        // Splitter surveyed with 0 leads mapped (zero connections recorded)
-        opt.innerText = `${s} (0 mapped)`;
-        opt.style.color = '#0f172a';
-        opt.style.fontWeight = '500';
-      } else {
-        // Brand new splitter with 0 mapped leads
-        // Enforce sequential splitter addition (S2 requires S1, S3 requires S2, etc.)
-        if (idx > 0) {
-          const prevSplitter = DEFAULT_PRELOAD.splitters[idx - 1];
-          const prevSummary = getSplitterSummary(eid, prevSplitter);
-          if (!prevSummary) {
-            opt.innerText = `${s} — 🔒 Add ${prevSplitter} first`;
-            opt.disabled = true;
-            opt.style.color = '#94a3b8';
-            opt.style.backgroundColor = '#f8fafc';
-          } else {
-            opt.innerText = s;
-          }
-        } else {
-          opt.innerText = s;
-        }
-      }
-
-      splitterIdSelect.appendChild(opt);
-    });
-
-    if (prevVal) {
-      const optMatch = Array.from(splitterIdSelect.options).find(o => o.value === prevVal && !o.disabled);
-      if (optMatch) {
-        splitterIdSelect.value = prevVal;
-      } else {
-        const firstAvail = Array.from(splitterIdSelect.options).find(o => o.value && !o.disabled);
-        if (firstAvail) splitterIdSelect.value = firstAvail.value;
-      }
-    } else {
-      const firstAvail = Array.from(splitterIdSelect.options).find(o => o.value && !o.disabled);
-      if (firstAvail) splitterIdSelect.value = firstAvail.value;
-    }
-  }
-
-  handleSplitterSelectionChange();
-}
-
-// Reset customer-specific subscriber inputs and editing state (preserves splitter-level connected customers)
-function clearCustomerInputs() {
-  currentActiveLeadColor = null;
-  if (adlSubInput) adlSubInput.value = '';
-  if (acsSubInput) acsSubInput.value = '';
-  currentAcsoEditingUuid = null;
-  const banner = document.getElementById('acso-update-banner');
-  if (banner) banner.style.display = 'none';
-  const submitBtn = document.getElementById('btn-save-record') || document.querySelector('.btn-add-row');
-  if (submitBtn) {
-    submitBtn.innerHTML = '<span>➕</span> Submit';
-    submitBtn.style.background = '';
-  }
-  updateSubscriberInputsState();
-}
-
-// Toggle customer subscriber inputs editable state: only editable when a Splitter Out Colour Code is selected
-function updateSubscriberInputsState() {
-  const hasColor = !!(splitterColorSelect && splitterColorSelect.value);
-  if (adlSubInput) {
-    adlSubInput.disabled = !hasColor;
-    if (!hasColor) {
-      adlSubInput.value = '';
-      adlSubInput.placeholder = 'Select Splitter Out first';
-      adlSubInput.style.backgroundColor = '#f1f5f9';
-      adlSubInput.style.cursor = 'not-allowed';
-    } else {
-      adlSubInput.placeholder = 'e.g. ADL10234';
-      adlSubInput.style.backgroundColor = '';
-      adlSubInput.style.cursor = '';
-    }
-  }
-  if (acsSubInput) {
-    acsSubInput.disabled = !hasColor;
-    if (!hasColor) {
-      acsSubInput.value = '';
-      acsSubInput.placeholder = 'Select Splitter Out first';
-      acsSubInput.style.backgroundColor = '#f1f5f9';
-      acsSubInput.style.cursor = 'not-allowed';
-    } else {
-      acsSubInput.placeholder = 'e.g. ACS56789';
-      acsSubInput.style.backgroundColor = '';
-      acsSubInput.style.cursor = '';
-    }
-  }
-}
-
-// Reset pole-specific fields when changing equipment locations
-function resetPoleFields(force = true) {
-  if (!force && postInput && postInput.value.trim()) {
-    // Preserve user-entered KSEB pole number and GPS coordinates
-    return;
-  }
-  custCountManuallyEdited = false;
-  currentActiveSplitter = null;
-  currentActiveLeadColor = null;
-  if (postInput) postInput.value = '';
-  if (landmarkInput) landmarkInput.value = '';
-  if (custCountInput) custCountInput.value = '0';
-  currentLat = null;
-  currentLon = null;
-  currentAccuracy = null;
-  bestAccuracy = Infinity;
-  if (manualCoordsInput) {
-    manualCoordsInput.value = '';
-    manualCoordsInput.placeholder = 'e.g. 10.606650, 76.214490 (Mandatory)';
-  }
-  if (gpsAccText) {
-    gpsAccText.innerHTML = '<span style="color:#d97706; font-weight:600;">⚠️ Tap 🎯 GPS at pole</span>';
-  }
-  if (mapMarker && mapInstance) {
-    mapInstance.removeLayer(mapMarker);
-    mapMarker = null;
-  }
-  if (accuracyCircle && mapInstance) {
-    mapInstance.removeLayer(accuracyCircle);
-    accuracyCircle = null;
-  }
-}
-
-// Retrieve pole info (coordinates, post number, landmark) for an enclosure if already surveyed
-function getEnclosurePoleInfo(eid) {
-  if (!eid) return null;
-  const eidUp = eid.trim().toUpperCase();
-
-  // 1. Search in local records (latest survey first)
-  for (let i = records.length - 1; i >= 0; i--) {
-    const r = records[i];
-    const rEid = (r["Enclosure ID"] || r.enclosure_id || '').trim().toUpperCase();
-    if (rEid === eidUp) {
-      const latLong = r["Lat /Long"] || r.lat_long || '';
-      const kseb = r["KSEB Post Number"] || r.kseb_post_number || '';
-      const lmark = r["Land Mark"] || r.landmark || '';
-      if (latLong || kseb || lmark) {
-        return { lat_long: latLong, kseb_post_number: kseb, landmark: lmark };
-      }
-    }
-  }
-
-  // 2. Search in networkSurveyedPoints
-  if (networkSurveyedPoints) {
-    const matchingKey = Object.keys(networkSurveyedPoints).find(k => k.toUpperCase().startsWith(eidUp + '|'));
-    if (matchingKey && networkSurveyedPoints[matchingKey]) {
-      const pt = networkSurveyedPoints[matchingKey];
-      return {
-        lat_long: pt.lat_long || '',
-        kseb_post_number: pt.kseb_post_number || '',
-        landmark: pt.landmark || ''
-      };
-    }
-  }
-
-  return null;
-}
-
-// Handle Enclosure Selection Change: Loads surveyed pole data if enclosure was surveyed, or resets pole fields for new site
-function handleEnclosureChange() {
-  const olt = oltSelect ? oltSelect.value : '';
-  const port = portSelect ? portSelect.value : '';
-  const newEnc = enclosureSelect ? enclosureSelect.value : '';
-  const prevEnc = currentActiveEnclosure;
-
-  custCountManuallyEdited = false;
-  clearCustomerInputs();
-
-  // Reset Splitter Ratio to null / empty default when changing enclosure
-  if (splitterRatioSelect) {
-    splitterRatioSelect.value = '';
-  }
-
-  if (newEnc && olt && port) {
-    const eid = computeEnclosureId(olt, port, newEnc);
-    const poleInfo = getEnclosurePoleInfo(eid);
-    if (poleInfo && (poleInfo.lat_long || poleInfo.kseb_post_number || poleInfo.landmark)) {
-      if (postInput) postInput.value = poleInfo.kseb_post_number || '';
-      if (landmarkInput) landmarkInput.value = poleInfo.landmark || '';
-      if (poleInfo.lat_long && poleInfo.lat_long.includes(',')) {
-        if (manualCoordsInput) manualCoordsInput.value = poleInfo.lat_long;
-        const parts = poleInfo.lat_long.split(',').map(s => parseFloat(s.trim()));
-        if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
-          currentLat = parts[0];
-          currentLon = parts[1];
-          if (gpsAccText) {
-            gpsAccText.innerHTML = `<span style="color:#0284c7; font-weight:600;">📍 Existing Survey Coords (${poleInfo.lat_long})</span>`;
-          }
-          if (mapInstance && typeof L !== 'undefined') {
-            updateMapPosition(currentLat, currentLon, 10);
-          }
-        }
-      }
-    } else {
-      // New / unmapped enclosure:
-      // If surveyor switched from an existing enclosure (e.g. E1 -> E2), clear pole fields to null
-      // so E1's pole number and GPS do not contaminate E2.
-      // But if this is the first enclosure selection for this site (prevEnc is empty),
-      // preserve user-entered KSEB pole number and GPS coordinates!
-      if (prevEnc && prevEnc !== newEnc) {
-        resetPoleFields(true);
-      }
-    }
-    currentActiveEnclosure = newEnc;
-  } else {
-    // No enclosure selected: Reset pole fields to empty
-    currentActiveEnclosure = '';
-    resetPoleFields(true);
-  }
-
-  updateEnclosureId();
-  updateAvailableSplitters();
-  handleSplitterSelectionChange();
-}
-
-// Handle Splitter Selection: Auto-fills splitter metadata & triggers color updates
-function handleSplitterSelectionChange() {
-  updateEnclosureId();
-  const olt = oltSelect ? oltSelect.value : '';
-  const port = portSelect ? portSelect.value : '';
-  const enc = enclosureSelect ? enclosureSelect.value : '';
-  const spl = splitterIdSelect ? splitterIdSelect.value : '';
-
-  if (!olt || !port || !enc || !spl) {
-    currentActiveSplitter = null;
-    updateSplitterColorOptions();
-    return;
-  }
-
-  const eid = computeEnclosureId(olt, port, enc);
-  // Key by Enclosure ID + Splitter ID so E1/S1 -> E2/S1 counts as a different splitter
-  const splKey = `${eid}|${spl}`.toUpperCase();
-  const isSplitterChanged = (currentActiveSplitter !== splKey);
-  currentActiveSplitter = splKey;
-
-  if (isSplitterChanged) {
-    custCountManuallyEdited = false;
-  }
-
-  const splSummary = getSplitterSummary(eid, spl);
-
-  if (splSummary) {
-    // If splitter already has surveyed leads, pre-fill common splitter ratio and pole details
-    if (splSummary.splitter_ratio && splitterRatioSelect) {
-      splitterRatioSelect.value = splSummary.splitter_ratio;
-    }
-    // Pre-fill existing connected customers count for this splitter if already surveyed
-    // GUARD: Never overwrite if user is actively editing this field or manually changed it
-    if (custCountInput && splSummary.customers_connected !== undefined && splSummary.customers_connected !== null && splSummary.customers_connected !== '') {
-      if (!custCountManuallyEdited && document.activeElement !== custCountInput) {
-        custCountInput.value = splSummary.customers_connected;
-      }
-    }
-    if (postInput && (!postInput.value.trim() || isSplitterChanged)) {
-      if (splSummary.kseb_post_number && document.activeElement !== postInput) {
-        postInput.value = splSummary.kseb_post_number;
-      }
-    }
-    if (landmarkInput && (!landmarkInput.value.trim() || isSplitterChanged)) {
-      if (splSummary.landmark && document.activeElement !== landmarkInput) {
-        landmarkInput.value = splSummary.landmark;
-      }
-    }
-    if (splSummary.lat_long && splSummary.lat_long.includes(',')) {
-      if (isSplitterChanged || !manualCoordsInput || !manualCoordsInput.value.trim()) {
-        if (manualCoordsInput && document.activeElement !== manualCoordsInput) {
-          manualCoordsInput.value = splSummary.lat_long;
-        }
-        const parts = splSummary.lat_long.split(',').map(s => parseFloat(s.trim()));
-        if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
-          currentLat = parts[0];
-          currentLon = parts[1];
-          if (gpsAccText) {
-            gpsAccText.innerHTML = `<span style="color:#0284c7; font-weight:600;">📍 Existing Survey Coords (${splSummary.lat_long})</span>`;
-          }
-          if (mapInstance && typeof L !== 'undefined') {
-            updateMapPosition(currentLat, currentLon, 10);
-          }
-        }
-      }
-    }
-  } else if (isSplitterChanged) {
-    // Brand new splitter: default customer count to 0 unless manually changed
-    if (custCountInput && !custCountManuallyEdited && document.activeElement !== custCountInput) {
-      custCountInput.value = '0';
-    }
-  }
-
-  updateSplitterColorOptions();
-}
-
-// Handle Lead Color Selection: Toggles ACSO Update Banner & Pre-fills Existing Lead Survey Data
-function handleColorSelectionChange(forceReset = false) {
-  const banner = document.getElementById('acso-update-banner');
-  const descEl = document.getElementById('acso-update-desc');
-  const submitBtn = document.getElementById('btn-save-record') || document.querySelector('.btn-add-row');
-
-  const olt = oltSelect ? oltSelect.value : '';
-  const port = portSelect ? portSelect.value : '';
-  const enc = enclosureSelect ? enclosureSelect.value : '';
-  const spl = splitterIdSelect ? splitterIdSelect.value : '';
-  const col = splitterColorSelect ? splitterColorSelect.value : '';
-
-  const role = currentUser ? normalizeClientRole(currentUser.role) : 'field_technician';
-  const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'admin' || role === 'super_admin');
-
-  if (!olt || !port || !enc || !spl || !col) {
-    currentActiveLeadColor = null;
-    if (banner) banner.style.display = 'none';
-    if (submitBtn) {
-      submitBtn.innerHTML = '<span>➕</span> Submit';
-      submitBtn.style.background = '';
-    }
-    currentAcsoEditingUuid = null;
-    updateSubscriberInputsState();
-    return;
-  }
-
-  const eid = computeEnclosureId(olt, port, enc);
-  const leadKey = `${eid}|${spl}|${col}`.toUpperCase();
-  const isColorChanged = (currentActiveLeadColor !== leadKey);
-  currentActiveLeadColor = leadKey;
-  if (isColorChanged) lastConflictWarningKey = '';
-
-  const leadSurvey = getLeadSurveyedInfo(eid, spl, col);
-
-  if (leadSurvey && isSupervisor) {
-    // Supervisor Update Mode for THIS specific lead!
-    currentAcsoEditingUuid = leadSurvey.client_uuid;
-    const by = leadSurvey.surveyor_name || leadSurvey.surveyor_username || 'another surveyor';
-    const dt = leadSurvey.survey_date_time || leadSurvey["Date & Time"] || 'previous survey';
-
-    if (banner && descEl) {
-      descEl.innerHTML = `Editing customer on <strong>${eid} (${spl} - ${col})</strong>, originally surveyed by <strong>${by}</strong> (${dt}). Submitting will overwrite this record.`;
-      banner.style.display = 'block';
-    }
-    if (submitBtn) {
-      submitBtn.innerHTML = '<span>✏️</span> Update Master Record';
-      submitBtn.style.background = '#0284c7';
-    }
-
-    // Pre-populate subscriber inputs from existing record only if switched color or forced
-    if (isColorChanged || forceReset) {
-      if (adlSubInput && document.activeElement !== adlSubInput) {
-        adlSubInput.value = leadSurvey.adl_subscriber_id || leadSurvey["ADL Subscriber ID"] || '';
-      }
-      if (acsSubInput && document.activeElement !== acsSubInput) {
-        acsSubInput.value = leadSurvey.acs_subscriber_id || leadSurvey["ACS Subscriber ID"] || '';
-      }
-    }
-  } else {
-    // Normal / Brand-New Lead Entry Mode!
-    currentAcsoEditingUuid = null;
-    if (banner) banner.style.display = 'none';
-    if (submitBtn) {
-      submitBtn.innerHTML = '<span>➕</span> Submit';
-      submitBtn.style.background = '';
-    }
-    // CRITICAL: Only wipe subscriber inputs if the user switched to a DIFFERENT lead color!
-    // NEVER wipe them during background refreshes or when user is on the same lead!
-    if (isColorChanged || forceReset) {
-      if (adlSubInput && document.activeElement !== adlSubInput) adlSubInput.value = '';
-      if (acsSubInput && document.activeElement !== acsSubInput) acsSubInput.value = '';
-    }
-  }
-
-  // Splitter Out is selected: enable subscriber inputs
-  updateSubscriberInputsState();
-
-  // Only auto-focus ADL input if the surveyor explicitly switched color, not during background polling.
-  // Small delay lets Android/iOS native pickers close first, then focus moves to ADL input.
-  if (isColorChanged && adlSubInput && !adlSubInput.disabled) {
-    setTimeout(() => {
-      const active = document.activeElement;
-      const okToFocus = !active || active === document.body || active === splitterColorSelect;
-      if (okToFocus && adlSubInput && !adlSubInput.disabled) {
-        try { adlSubInput.focus(); } catch (e) {}
-      }
-    }, 150);
-  }
-}
-
-
-function onCenterChange(targetRt = null, targetOlt = null) {
-  const c = centerSelect.value;
-  if (regionSelect && c) {
-    const reg = getRegionForCenter(c);
-    if (reg && regionSelect.value !== reg) {
-      const avail = (typeof getUserAvailableRegions === 'function') ? getUserAvailableRegions() : [];
-      if (avail.includes(reg)) {
-        regionSelect.value = reg;
-      }
-    }
-  }
-  rtRoomSelect.innerHTML = '';
-  const rtRooms = getRtRoomsForCenter(c);
-
-  // Empty default placeholder
-  const rtDefOpt = document.createElement('option');
-  rtDefOpt.value = '';
-  rtDefOpt.innerText = '-- Select RT Room --';
-  rtRoomSelect.appendChild(rtDefOpt);
-
-  rtRooms.forEach(rt => {
-    const opt = document.createElement('option');
-    opt.value = rt;
-    opt.innerText = rt;
-    rtRoomSelect.appendChild(opt);
-  });
-  if (targetRt && rtRooms.includes(targetRt)) {
-    rtRoomSelect.value = targetRt;
-  } else {
-    rtRoomSelect.value = '';
-  }
-  onRTRoomChange(targetOlt);
-}
-
-function onRTRoomChange(targetOlt = null) {
-  const c = centerSelect ? centerSelect.value : '';
-  const rt = rtRoomSelect ? rtRoomSelect.value : '';
-  oltSelect.innerHTML = '';
-  const olts = getOltsForRtRoom(c, rt);
-
-  // Empty default placeholder
-  const oltDefOpt = document.createElement('option');
-  oltDefOpt.value = '';
-  oltDefOpt.innerText = rt ? '-- Select Node Name --' : '-- Select RT Room First --';
-  oltSelect.appendChild(oltDefOpt);
-
-  olts.forEach(o => {
-    const opt = document.createElement('option');
-    opt.value = o;
-    opt.innerText = o;
-    oltSelect.appendChild(opt);
-  });
-  if (targetOlt && olts.includes(targetOlt)) {
-    oltSelect.value = targetOlt;
-  } else {
-    oltSelect.value = '';
-  }
-  onOLTChange();
-}
-
-function findNodeEntry(c, rt, olt) {
-  if (!DEFAULT_PRELOAD || !DEFAULT_PRELOAD.hierarchy) return null;
-  // 1. Direct key match
-  if (DEFAULT_PRELOAD.hierarchy[c] && DEFAULT_PRELOAD.hierarchy[c][rt] && DEFAULT_PRELOAD.hierarchy[c][rt][olt]) {
-    return DEFAULT_PRELOAD.hierarchy[c][rt][olt];
-  }
-  // 2. Case-insensitive & trimmed fallback
-  const cNorm = (c || '').trim().toLowerCase();
-  const cKey = Object.keys(DEFAULT_PRELOAD.hierarchy).find(k => k.trim().toLowerCase() === cNorm);
-  if (!cKey) return null;
-
-  const rtMap = DEFAULT_PRELOAD.hierarchy[cKey];
-  if (!rtMap) return null;
-  const rtNorm = (rt || '').trim().toLowerCase();
-  const rtKey = Object.keys(rtMap).find(k => k.trim().toLowerCase() === rtNorm);
-  if (!rtKey) return null;
-
-  const oltMap = rtMap[rtKey];
-  if (!oltMap) return null;
-  const oltNorm = (olt || '').trim().toLowerCase();
-  const oltKey = Object.keys(oltMap).find(k => k.trim().toLowerCase() === oltNorm);
-  if (!oltKey) return null;
-
-  return oltMap[oltKey];
-}
-
-function onOLTChange() {
-  const c = centerSelect ? centerSelect.value : '';
-  const rt = rtRoomSelect ? rtRoomSelect.value : '';
-  const olt = oltSelect ? oltSelect.value : '';
-
-  const entry = findNodeEntry(c, rt, olt);
-  if (entry) {
-    if (entry.region && regionSelect) {
-      regionSelect.value = entry.region;
-    }
-
-    // 1. Reflect Technology from Node Master Data & lock as read-only
-    if (techSelect) {
-      const tVal = (entry.tech || 'GPON').trim();
-      let matched = false;
-      for (let i = 0; i < techSelect.options.length; i++) {
-        if (techSelect.options[i].value.toLowerCase() === tVal.toLowerCase()) {
-          techSelect.selectedIndex = i;
-          matched = true;
-          break;
-        }
-      }
-      if (!matched && tVal) {
-        const opt = document.createElement('option');
-        opt.value = tVal;
-        opt.innerText = tVal;
-        techSelect.appendChild(opt);
-        techSelect.value = tVal;
-      }
-      techSelect.disabled = true; // Read-only mode
-    }
-
-    // 2. Reflect Number of Ports from Node Master Data & lock as read-only
-    if (oltTypeSelect) {
-      let portCount = 8;
-      if (entry.olt_type) {
-        const clean = String(entry.olt_type).replace(/\s+/g, '');
-        if (clean.includes('32')) portCount = 32;
-        else if (clean.includes('16')) portCount = 16;
-        else portCount = 8;
-      } else if (Array.isArray(entry.ports) && entry.ports.length > 0) {
-        portCount = entry.ports.length;
-      } else if (Array.isArray(entry) && entry.length > 0) {
-        portCount = entry.length;
-      }
-      oltTypeSelect.value = (portCount >= 32 ? '32P' : (portCount >= 16 ? '16P' : '8P'));
-      oltTypeSelect.disabled = true; // Read-only mode
-    }
-  } else {
-    if (techSelect) techSelect.disabled = true;
-    if (oltTypeSelect) oltTypeSelect.disabled = true;
-  }
-
-  onOLTTypeChange();
-}
-
-// --- Multi-Port Checkbox Selection Management ---
-let currentAvailablePorts = [];
-
-function togglePortDropdown(e) {
-  if (e) {
-    e.stopPropagation();
-    e.preventDefault();
-  }
-  const panel = document.getElementById('port-dropdown-panel');
-  const trigger = document.getElementById('btn-port-picker');
-  if (!panel) return;
-  
-  const olt = oltSelect ? oltSelect.value : '';
-  if (!olt) {
-    showToast('⚠️ Please select a Node Name first!', false);
-    if (oltSelect) oltSelect.focus();
-    return;
-  }
-
-  const isHidden = (panel.style.display === 'none' || panel.style.display === '');
-  if (isHidden) {
-    panel.style.display = 'block';
-    if (trigger) trigger.classList.add('active');
-  } else {
-    panel.style.display = 'none';
-    if (trigger) trigger.classList.remove('active');
-  }
-}
-
-function closePortDropdown() {
-  const panel = document.getElementById('port-dropdown-panel');
-  const trigger = document.getElementById('btn-port-picker');
-  if (panel) panel.style.display = 'none';
-  if (trigger) trigger.classList.remove('active');
-}
-
-function renderPortCheckboxes(ports, selectedPorts = []) {
-  currentAvailablePorts = Array.isArray(ports) ? ports : [];
-  const grid = document.getElementById('port-checkbox-grid');
-  if (!grid) return;
-
-  grid.innerHTML = '';
-
-  if (!currentAvailablePorts.length) {
-    grid.innerHTML = '<div style="text-align:center; color:#94a3b8; font-size:0.85rem; padding:12px;">Select Node to view ports</div>';
-    syncPortSelection([]);
-    return;
-  }
-
-  // 1. Top default option: -- Select Port -- (matches Enclosure's -- Select Enclosure --)
-  const isNoneSelected = (!selectedPorts || selectedPorts.length === 0);
-  const resetTile = document.createElement('div');
-  resetTile.className = 'port-checkbox-tile port-reset-tile' + (isNoneSelected ? ' checked' : '');
-  resetTile.innerHTML = `<span style="color:#64748b; font-style:italic;">-- Select Port --</span>`;
-  resetTile.addEventListener('click', (e) => selectSinglePort('', e));
-  grid.appendChild(resetTile);
-
-  // 2. Continuous one-by-one port list with tick box
-  currentAvailablePorts.forEach(p => {
-    const isChecked = selectedPorts.includes(p);
-    const tile = document.createElement('div');
-    tile.className = 'port-checkbox-tile' + (isChecked ? ' checked' : '');
-    tile.dataset.port = p;
-    tile.innerHTML = `
-      <input type="checkbox" value="${escapeHtml(p)}" ${isChecked ? 'checked' : ''} tabindex="-1" style="pointer-events:none;">
-      <span>${escapeHtml(p)}</span>
-    `;
-    tile.addEventListener('click', (e) => selectSinglePort(p, e));
-    grid.appendChild(tile);
-  });
-
-  syncPortSelection(selectedPorts);
-}
-
-function selectSinglePort(portValue, event) {
-  if (event) {
-    event.stopPropagation();
-    event.preventDefault();
-  }
-
-  const grid = document.getElementById('port-checkbox-grid');
-  if (grid) {
-    grid.querySelectorAll('.port-checkbox-tile').forEach(tile => {
-      const cb = tile.querySelector('input[type="checkbox"]');
-      const isTarget = (tile.dataset.port === portValue && portValue !== '');
-      if (cb) cb.checked = isTarget;
-      if (isTarget || (!portValue && tile.classList.contains('port-reset-tile'))) {
-        tile.classList.add('checked');
-      } else {
-        tile.classList.remove('checked');
-      }
-    });
-  }
-
-  const selectedArray = portValue ? [portValue] : [];
-  if (enclosureSelect) enclosureSelect.value = '';
-  if (splitterRatioSelect) splitterRatioSelect.value = '';
-  currentActiveEnclosure = '';
-  resetPoleFields(true);
-  clearCustomerInputs();
-  syncPortSelection(selectedArray);
-
-  // Automatically close dropdown window immediately upon selection (matching Enclosure behavior)
-  setTimeout(closePortDropdown, 120);
-}
-
-function syncPortSelection(selected) {
-  const labelEl = document.getElementById('port-picker-label');
-  const badgeEl = document.getElementById('selected-ports-count-badge');
-  const hiddenInput = document.getElementById('port-select');
-
-  const commaStr = (Array.isArray(selected) ? selected : []).join(', ');
-
-  if (hiddenInput) {
-    hiddenInput.value = commaStr;
-  }
-
-  if (!selected || selected.length === 0) {
-    if (labelEl) {
-      const olt = oltSelect ? oltSelect.value : '';
-      labelEl.innerText = olt ? '-- Select Port --' : '-- Select Node First --';
-      labelEl.className = 'port-picker-placeholder';
-    }
-    if (badgeEl) badgeEl.style.display = 'none';
-  } else if (selected.length === 1) {
-    if (labelEl) {
-      labelEl.innerText = selected[0];
-      labelEl.className = 'port-picker-selected';
-    }
-    if (badgeEl) badgeEl.style.display = 'none';
-  } else {
-    if (labelEl) {
-      labelEl.innerText = commaStr;
-      labelEl.className = 'port-picker-selected';
-    }
-    if (badgeEl) badgeEl.style.display = 'none';
-  }
-
-  // Trigger cascade updates
-  updateAvailableEnclosures();
-  updateAvailableSplitters();
-  updateEnclosureId();
-}
-
-function onOLTTypeChange() {
-  const c = centerSelect ? centerSelect.value : '';
-  const rt = rtRoomSelect ? rtRoomSelect.value : '';
-  const olt = oltSelect ? oltSelect.value : '';
-
-  // Get current selected ports if any, to keep if valid for the new node
-  const prevVal = portSelect ? portSelect.value : '';
-  const prevSelected = prevVal ? prevVal.split(',').map(s => s.trim()).filter(Boolean) : [];
-
-  if (olt) {
-    const entry = findNodeEntry(c, rt, olt);
-    let ports = null;
-    if (entry && Array.isArray(entry.ports) && entry.ports.length > 0) {
-      ports = entry.ports;
-    } else if (Array.isArray(entry) && entry.length > 0) {
-      ports = entry;
-    } else {
-      const oType = oltTypeSelect ? oltTypeSelect.value : '8P';
-      ports = (DEFAULT_PRELOAD.ports_by_type && DEFAULT_PRELOAD.ports_by_type[oType])
-        ? DEFAULT_PRELOAD.ports_by_type[oType]
-        : (oType === '16P' ? Array.from({length: 16}, (_, i) => `P${i + 1}`) : (oType === '32P' ? Array.from({length: 32}, (_, i) => `P${i + 1}`) : Array.from({length: 8}, (_, i) => `P${i + 1}`)));
-    }
-
-    const validPrev = prevSelected.filter(p => ports.includes(p));
-    renderPortCheckboxes(ports, validPrev);
-  } else {
-    renderPortCheckboxes([]);
-  }
-}
-
-// Event Listeners for Cascading
-if (regionSelect) {
-  regionSelect.addEventListener('change', onRegionChange);
-}
-centerSelect.addEventListener('change', () => {
-  if (splitterRatioSelect) splitterRatioSelect.value = '';
-  currentActiveEnclosure = '';
-  resetPoleFields();
-  clearCustomerInputs();
-  onCenterChange();
-  fetchSurveyedPoints();
-});
-rtRoomSelect.addEventListener('change', () => {
-  if (splitterRatioSelect) splitterRatioSelect.value = '';
-  currentActiveEnclosure = '';
-  resetPoleFields();
-  clearCustomerInputs();
-  onRTRoomChange();
-});
-oltSelect.addEventListener('change', () => {
-  if (splitterRatioSelect) splitterRatioSelect.value = '';
-  currentActiveEnclosure = '';
-  resetPoleFields();
-  clearCustomerInputs();
-  onOLTChange();
-});
-if (oltTypeSelect) oltTypeSelect.addEventListener('change', onOLTTypeChange);
-if (portSelect) portSelect.addEventListener('change', () => {
-  if (enclosureSelect) enclosureSelect.value = '';
-  if (splitterRatioSelect) splitterRatioSelect.value = '';
-  currentActiveEnclosure = '';
-  resetPoleFields(true);
-  clearCustomerInputs();
-  updateAvailableEnclosures();
-  updateAvailableSplitters();
-});
-enclosureSelect.addEventListener('change', handleEnclosureChange);
-splitterRatioSelect.addEventListener('change', () => {
-  clearCustomerInputs();
-  updateSplitterColorOptions();
-});
-splitterIdSelect.addEventListener('change', () => {
-  custCountManuallyEdited = false;
-  clearCustomerInputs();
-  handleSplitterSelectionChange();
-});
-if (splitterColorSelect) splitterColorSelect.addEventListener('change', () => handleColorSelectionChange());
-if (custCountInput) {
-  custCountInput.addEventListener('input', () => {
-    custCountManuallyEdited = true;
-  });
-  custCountInput.addEventListener('change', () => {
-    custCountManuallyEdited = true;
-  });
-}
-const entryFormCard = document.getElementById('entry-form-card');
-if (entryFormCard) {
-  entryFormCard.addEventListener('focusout', () => {
-    // Wait for focus to settle on the next element before deciding the user is idle
-    setTimeout(applyPendingSurveyRefresh, 400);
-  });
-}
-
-// Close port dropdown panel on tap/click outside
-document.addEventListener('click', (e) => {
-  const panel = document.getElementById('port-dropdown-panel');
-  const trigger = document.getElementById('btn-port-picker');
-  if (!panel || panel.style.display === 'none') return;
-  if (!panel.contains(e.target) && (!trigger || !trigger.contains(e.target))) {
-    closePortDropdown();
-  }
-});
-
-// High-Precision GNSS / GPS Geolocation Engine (Multi-Sample Satellite Convergence)
-function captureGPS() {
-  if (!navigator.geolocation) {
-    showToast('GPS is not supported on this browser/device', false);
-    return;
-  }
-  
-  // Clear any existing active GPS watcher or timeout
-  if (gpsWatchId !== null) {
-    navigator.geolocation.clearWatch(gpsWatchId);
-    gpsWatchId = null;
-  }
-  if (gpsWatchTimer !== null) {
-    clearTimeout(gpsWatchTimer);
-    gpsWatchTimer = null;
-  }
-
-  const gpsBtn = document.querySelector('.btn-gps-sheet');
-  if (gpsBtn) {
-    gpsBtn.innerHTML = '⏳ Locating...';
-    gpsBtn.disabled = true;
-  }
-  manualCoordsInput.placeholder = 'Acquiring GNSS Satellites...';
-  gpsAccText.innerHTML = '<span style="color:#0284c7; font-weight:600;">📡 Connecting to satellites...</span>';
-
-  bestAccuracy = Infinity;
-  let sampleCount = 0;
-  let firstFixReceived = false;
-
-  const onLocationSuccess = (pos) => {
-    sampleCount++;
-    const lat = pos.coords.latitude;
-    const lon = pos.coords.longitude;
-    const acc = pos.coords.accuracy;
-
-    // Retain the fix with the tightest accuracy radius
-    if (acc < bestAccuracy || currentLat === null) {
-      bestAccuracy = acc;
-      currentLat = lat;
-      currentLon = lon;
-      currentAccuracy = acc;
-
-      // 6 decimal places = ~10 cm ground resolution (Google Maps standard)
-      manualCoordsInput.value = `${currentLat.toFixed(6)}, ${currentLon.toFixed(6)}`;
-
-      // Live Color-coded accuracy indicator
-      let accBadge = '';
-      if (acc <= 5) {
-        accBadge = `<span style="color:#10b981; font-weight:700;">🟢 ±${Math.round(acc)}m (High Satellite Precision)</span>`;
-      } else if (acc <= 12) {
-        accBadge = `<span style="color:#059669; font-weight:600;">🟢 ±${Math.round(acc)}m (Good GNSS Fix)</span>`;
-      } else if (acc <= 25) {
-        accBadge = `<span style="color:#d97706; font-weight:600;">🟡 ±${Math.round(acc)}m (Moderate - Adjust on Map)</span>`;
-      } else {
-        accBadge = `<span style="color:#dc2626; font-weight:600;">🔴 ±${Math.round(acc)}m (Wi-Fi / Network - Adjust on Map)</span>`;
-      }
-      gpsAccText.innerHTML = accBadge;
-
-      // Update map marker and accuracy circle
-      updateMapPosition(currentLat, currentLon, currentAccuracy);
-    }
-
-    // Smart Multi-Tier Lock (Fast on Phones, Reliable on Laptops):
-    // Tier 1: Instant Lock if High Precision (<= 6m) achieved immediately (~1s)
-    if (acc <= 6.0) {
-      finalizeGPS(gpsBtn, `High precision satellite fix locked (±${Math.round(acc)}m)!`);
-      return;
-    }
-    // Tier 2: Quick Lock if Good GNSS fix (<= 12m) confirmed across 2 samples (~1.5-2s on phone)
-    if (acc <= 12.0 && sampleCount >= 2) {
-      finalizeGPS(gpsBtn, `Good GNSS fix locked (±${Math.round(acc)}m)!`);
-      return;
-    }
-    // Tier 3: Laptop / Desktop Wi-Fi location (acc > 20m):
-    // Laptops do not have satellite chips and only fire 1 Wi-Fi reading. Lock immediately!
-    if (acc > 20.0) {
-      finalizeGPS(gpsBtn, `Location locked via Wi-Fi/Network (±${Math.round(acc)}m)`);
-      return;
-    }
-
-    // Tier 4: For mid-range mobile GPS (7m - 20m), start a fast 2.5s settle timer once first fix arrives
-    if (!firstFixReceived) {
-      firstFixReceived = true;
-      if (gpsWatchTimer !== null) clearTimeout(gpsWatchTimer);
-      gpsWatchTimer = setTimeout(() => {
-        finalizeGPS(gpsBtn, `Location locked at best accuracy (±${Math.round(bestAccuracy)}m)`);
-      }, 2500);
-    }
-  };
-
-  const onLocationError = (err) => {
-    if (currentLat === null) {
-      manualCoordsInput.placeholder = 'GPS unavailable - enter manually or tap map';
-      gpsAccText.innerHTML = `<span style="color:#dc2626; font-weight:600;">⚠️ ${err.message || 'Signal lost'}</span>`;
-      showToast(err.code === 1 ? '⚠️ Location permission denied in browser.' : 'GPS signal weak or unavailable. Tap map to select pole.', false);
-    }
-    finalizeGPS(gpsBtn);
-  };
-
-  try {
-    gpsWatchId = navigator.geolocation.watchPosition(
-      onLocationSuccess,
-      onLocationError,
-      {
-        enableHighAccuracy: true,
-        timeout: 10000,
-        maximumAge: 0
-      }
-    );
-  } catch (e) {
-    navigator.geolocation.getCurrentPosition(onLocationSuccess, onLocationError, {
-      enableHighAccuracy: true,
-      timeout: 10000,
-      maximumAge: 0
-    });
-  }
-
-  // Initial acquisition timeout: Give up to 10 seconds to receive the VERY FIRST fix (essential for laptops using Wi-Fi positioning)
-  gpsWatchTimer = setTimeout(() => {
-    if (currentLat !== null) {
-      finalizeGPS(gpsBtn, `Location locked (±${Math.round(bestAccuracy)}m)`);
-    } else {
-      manualCoordsInput.placeholder = 'GPS unavailable - enter manually or tap map';
-      gpsAccText.innerHTML = `<span style="color:#dc2626; font-weight:600;">⚠️ Location timeout - enter or tap map</span>`;
-      showToast('⚠️ No location signal received within 10s. Tap map or enter manually.', false);
-      finalizeGPS(gpsBtn);
-    }
-  }, 10000);
-}
-
-function finalizeGPS(btn, successMsg = null) {
-  if (gpsWatchId !== null) {
-    navigator.geolocation.clearWatch(gpsWatchId);
-    gpsWatchId = null;
-  }
-  if (gpsWatchTimer !== null) {
-    clearTimeout(gpsWatchTimer);
-    gpsWatchTimer = null;
-  }
-  if (btn) {
-    btn.innerHTML = '🎯 GPS';
-    btn.disabled = false;
-  }
-  if (successMsg) {
-    showToast(successMsg, true);
-  }
-}
-
-// High-Definition Crisp Red Pole Pin Marker Icon (100% Offline SVG, Zero 404s)
-function getPolePinIcon() {
-  if (typeof L === 'undefined') return undefined;
-  return L.divIcon({
-    className: 'gpon-pole-pin-icon',
-    html: `<div style="width:32px; height:42px; filter:drop-shadow(0 3px 5px rgba(0,0,0,0.45)); cursor:grab;">
-      <svg width="32" height="42" viewBox="0 0 32 42" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <path d="M16 0C7.16344 0 0 7.16344 0 16C0 27.5 16 42 16 42C16 42 32 27.5 32 16C32 7.16344 24.8366 0 16 0Z" fill="#EA4335"/>
-        <circle cx="16" cy="15" r="6.5" fill="#FFFFFF"/>
-        <circle cx="16" cy="15" r="3.5" fill="#B31412"/>
-      </svg>
-    </div>`,
-    iconSize: [32, 42],
-    iconAnchor: [16, 42],
-    popupAnchor: [0, -42]
-  });
-}
-
-// Fix Leaflet default icon paths to prevent broken image requests
-if (typeof L !== 'undefined' && L.Icon && L.Icon.Default) {
-  try {
-    delete L.Icon.Default.prototype._getIconUrl;
-    L.Icon.Default.mergeOptions({
-      iconRetinaUrl: 'vendor/marker-icon-2x.png',
-      iconUrl: 'vendor/marker-icon.png',
-      shadowUrl: 'vendor/marker-shadow.png'
-    });
-  } catch (err) {
-    console.warn('[Leaflet] Error configuring default icon fallback:', err);
-  }
-}
-
-// Update Map Position, Marker, and Accuracy Halo
-function updateMapPosition(lat, lon, acc = null) {
-  if (!mapInstance) return;
-
-  if (mapMarker) {
-    mapMarker.setLatLng([lat, lon]);
-  } else {
-    const pinIcon = getPolePinIcon();
-    const markerOpts = { draggable: true, autoPan: true };
-    if (pinIcon) markerOpts.icon = pinIcon;
-    mapMarker = L.marker([lat, lon], markerOpts).addTo(mapInstance);
-    mapMarker.bindPopup("<b>📍 Pole Location</b><br>Drag to fine-tune exact post spot.").openPopup();
-    mapMarker.on('dragend', function(e) {
-      const pt = e.target.getLatLng();
-      currentLat = pt.lat;
-      currentLon = pt.lng;
-      manualCoordsInput.value = `${currentLat.toFixed(6)}, ${currentLon.toFixed(6)}`;
-      gpsAccText.innerHTML = '<span style="color:#0284c7; font-weight:600;">📍 Fine-tuned via Satellite Map</span>';
-      showToast('Pin position updated!');
-    });
-  }
-
-  if (acc) {
-    if (accuracyCircle) {
-      accuracyCircle.setLatLng([lat, lon]).setRadius(acc);
-    } else {
-      accuracyCircle = L.circle([lat, lon], {
-        radius: acc,
-        color: '#1a73e8',
-        fillColor: '#1a73e8',
-        fillOpacity: 0.16,
-        weight: 1.5
-      }).addTo(mapInstance);
-    }
-  }
-
-  mapInstance.setView([lat, lon], Math.max(mapInstance.getZoom(), 19));
-}
-
-// Initialize Leaflet Map with Google Satellite, Google Streets, Esri & OSM
-function initMap(lat, lon) {
-  if (mapInstance) return;
-
-  mapInstance = L.map('map-container', {
-    maxZoom: 21,
-    zoomControl: false
-  }).setView([lat, lon], 19);
-
-  // Zoom control in top-left
-  L.control.zoom({ position: 'topleft' }).addTo(mapInstance);
-
-  // 1. Google Satellite (Hybrid - Aerial Imagery + Road Overlay + Building Labels)
-  const googleHybrid = L.tileLayer('https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', {
-    subdomains: ['0', '1', '2', '3'],
-    maxZoom: 21,
-    maxNativeZoom: 20,
-    attribution: '© Google Maps'
-  });
-
-  // 2. Google Streets (Standard Google Road Map)
-  const googleStreets = L.tileLayer('https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', {
-    subdomains: ['0', '1', '2', '3'],
-    maxZoom: 21,
-    maxNativeZoom: 20,
-    attribution: '© Google Maps'
-  });
-
-  // 3. Esri World Imagery (Satellite)
-  const esriSatellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-    maxZoom: 19,
-    attribution: '© Esri World Imagery'
-  });
-
-  // 4. OpenStreetMap
-  const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    attribution: '© OpenStreetMap'
-  });
-
-  // Default Layer: Google Hybrid Satellite
-  googleHybrid.addTo(mapInstance);
-
-  // Top-Right Layer Switcher
-  const baseLayers = {
-    "🛰️ Google Satellite": googleHybrid,
-    "🗺️ Google Streets": googleStreets,
-    "🌍 Esri Satellite": esriSatellite,
-    "📍 OpenStreetMap": osm
-  };
-  L.control.layers(baseLayers, null, { position: 'topright', collapsed: true }).addTo(mapInstance);
-
-  // Initial Marker and Accuracy Halo
-  if (currentAccuracy) {
-    accuracyCircle = L.circle([lat, lon], {
-      radius: currentAccuracy,
-      color: '#1a73e8',
-      fillColor: '#1a73e8',
-      fillOpacity: 0.16,
-      weight: 1.5
-    }).addTo(mapInstance);
-  }
-
-  const pinIcon = getPolePinIcon();
-  const markerOpts = { draggable: true, autoPan: true };
-  if (pinIcon) markerOpts.icon = pinIcon;
-  mapMarker = L.marker([lat, lon], markerOpts).addTo(mapInstance);
-  mapMarker.bindPopup("<b>📍 Pole Location</b><br>Drag to fine-tune exact post spot.").openPopup();
-
-  // Dragend event
-  mapMarker.on('dragend', function(e) {
-    const pt = e.target.getLatLng();
-    currentLat = pt.lat;
-    currentLon = pt.lng;
-    manualCoordsInput.value = `${currentLat.toFixed(6)}, ${currentLon.toFixed(6)}`;
-    gpsAccText.innerHTML = '<span style="color:#0284c7; font-weight:600;">📍 Fine-tuned via Satellite Map</span>';
-    showToast('Pin position updated!');
-  });
-
-  // Map tap / click event
-  mapInstance.on('click', function(e) {
-    currentLat = e.latlng.lat;
-    currentLon = e.latlng.lng;
-    mapMarker.setLatLng(e.latlng);
-    mapMarker.openPopup();
-    if (accuracyCircle) accuracyCircle.setLatLng(e.latlng);
-    manualCoordsInput.value = `${currentLat.toFixed(6)}, ${currentLon.toFixed(6)}`;
-    gpsAccText.innerHTML = '<span style="color:#0284c7; font-weight:600;">📍 Selected on Satellite Map</span>';
-  });
-}
-
-// Map Toggle (Open / Hide Google Satellite Map)
-function toggleMap() {
-  const mapWrapper = document.getElementById('map-wrapper');
-  const targetEl = mapWrapper || mapContainer;
-  const isHidden = (targetEl.style.display === 'none' || !targetEl.style.display);
-
-  if (isHidden) {
-    targetEl.style.display = 'block';
-    mapToggleBtn.innerText = '✕ Close Map';
-    mapToggleBtn.style.color = '#ef4444';
-    
-    const lat = currentLat || 10.60665;
-    const lon = currentLon || 76.21449;
-
-    if (!mapInstance) {
-      initMap(lat, lon);
-    }
-
-    setTimeout(() => {
-      if (mapInstance) {
-        mapInstance.invalidateSize();
-        if (currentLat && currentLon) {
-          updateMapPosition(currentLat, currentLon, currentAccuracy);
-        }
-      }
-    }, 150);
-  } else {
-    targetEl.style.display = 'none';
-    mapToggleBtn.innerText = '🗺️ Google Satellite Map';
-    mapToggleBtn.style.color = '#0284c7';
-  }
-}
-
-// Counter helpers
-function adjustCustomer(delta) {
-  let val = parseInt(custCountInput.value) || 0;
-  val = Math.max(0, val + delta);
-  custCountInput.value = val;
-  custCountManuallyEdited = true;
-}
-
-// Save Entry
-function saveRecord() {
-  if (!postInput.value.trim()) {
-    showToast('Please enter KSEB Post Number', false);
-    postInput.focus();
-    return;
-  }
-
-  let latLongStr = '';
-  if (currentLat && currentLon) {
-    latLongStr = `${currentLat.toFixed(6)}, ${currentLon.toFixed(6)}`;
-  } else if (manualCoordsInput && manualCoordsInput.value) {
-    const parsed = parseCoordinates(manualCoordsInput.value);
-    if (parsed) {
-      currentLat = parsed.lat;
-      currentLon = parsed.lon;
-      latLongStr = parsed.formatted;
-      manualCoordsInput.value = parsed.formatted;
-    }
-  }
-
-  // Mandatory GPS Enforcement: Network mapping strictly requires coordinates for every surveyed pole
-  if (!latLongStr) {
-    showToast('⚠️ GPS location is mandatory! Paste coordinates from Excel or tap [🎯 GPS].', false);
-    const gpsBtn = document.querySelector('.btn-gps-sheet');
-    if (gpsBtn) {
-      gpsBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      gpsBtn.focus();
-      gpsBtn.style.boxShadow = '0 0 0 3px #ef4444';
-      setTimeout(() => { if (gpsBtn) gpsBtn.style.boxShadow = ''; }, 2500);
-    }
-    if (manualCoordsInput) {
-      manualCoordsInput.style.borderColor = '#ef4444';
-      setTimeout(() => { if (manualCoordsInput) manualCoordsInput.style.borderColor = ''; }, 2500);
-    }
-    return;
-  }
-
-  // Mandatory Dropdown Validation: All cascading fields must be explicitly selected
-  const mandatoryDropdowns = [
-    { el: rtRoomSelect, label: 'RT Room' },
-    { el: oltSelect, label: 'Node Name' },
-    { el: portSelect, label: 'Port Number', triggerEl: document.getElementById('btn-port-picker') },
-    { el: enclosureSelect, label: 'Enclosure #' },
-    { el: splitterRatioSelect, label: 'Splitter Ratio' },
-    { el: splitterIdSelect, label: 'Splitter ID' }
-  ];
-  for (const dd of mandatoryDropdowns) {
-    if (!dd.el || !dd.el.value) {
-      showToast(`⚠️ ${dd.label} is mandatory! Please select a value.`, false);
-      const targetEl = dd.triggerEl || dd.el;
-      if (targetEl) {
-        targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        targetEl.focus();
-        targetEl.style.borderColor = '#ef4444';
-        targetEl.style.boxShadow = '0 0 0 3px rgba(239,68,68,0.2)';
-        setTimeout(() => { targetEl.style.borderColor = ''; targetEl.style.boxShadow = ''; }, 2500);
-      }
-      return;
-    }
-  }
-
-  const olt = oltSelect.value;
-  const port = portSelect.value;
-  const enc = enclosureSelect.value;
-  const eid = computeEnclosureId(olt, port, enc);
-  const spl = splitterIdSelect.value;
-  const colorCode = splitterColorSelect ? splitterColorSelect.value : '';
-  const adlId = (colorCode && adlSubInput) ? adlSubInput.value.trim() : '';
-  const acsId = (colorCode && acsSubInput) ? acsSubInput.value.trim() : '';
-
-  // Mandatory check: Splitter Out is strictly required if entering a Subscriber ID
-  const rawAdl = adlSubInput ? adlSubInput.value.trim() : '';
-  const rawAcs = acsSubInput ? acsSubInput.value.trim() : '';
-  if ((rawAdl || rawAcs) && !colorCode) {
-    showToast('⚠️ Splitter Out is mandatory to enter a Subscriber ID!', false);
-    if (splitterColorSelect) {
-      splitterColorSelect.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      splitterColorSelect.focus();
-      splitterColorSelect.style.borderColor = '#ef4444';
-      splitterColorSelect.style.boxShadow = '0 0 0 3px rgba(239,68,68,0.2)';
-      setTimeout(() => {
-        if (splitterColorSelect) {
-          splitterColorSelect.style.borderColor = '';
-          splitterColorSelect.style.boxShadow = '';
-        }
-      }, 2500);
-    }
-    return;
-  }
-
-  const role = currentUser ? normalizeClientRole(currentUser.role) : 'field_technician';
-  const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'admin' || role === 'super_admin');
-
-  // Check if this SPECIFIC lead (or zero-connection splitter) is already surveyed
-  const existingLeadSurvey = getLeadSurveyedInfo(eid, spl, colorCode);
-
-  // OPTION D: Field Technician Hard Block on already surveyed lead or splitter
-  if (existingLeadSurvey && !isSupervisor) {
-    const surveyor = existingLeadSurvey.surveyor_name || existingLeadSurvey.surveyor_username || 'another surveyor';
-    const blockedMsg = colorCode
-      ? `❌ Splitter Out "${colorCode}" of Splitter ${spl} under Enclosure ${eid} was already surveyed by ${surveyor}! Field technicians cannot overwrite existing records.`
-      : `❌ Splitter ${spl} under Enclosure ${eid} was already surveyed by ${surveyor}! Field technicians cannot overwrite existing records.`;
-    showToast(blockedMsg, false);
-    if (splitterColorSelect) splitterColorSelect.focus();
-    return;
-  }
-
-  // OPTION C: ACSO Supervisor Update Mode for this specific lead
-  const isAcsoUpdate = !!(existingLeadSurvey && isSupervisor);
-
-  // Safety: supervisor started a NEW entry, but another surveyor saved this lead in the meantime.
-  // Do not silently overwrite their record — ask first.
-  if (isAcsoUpdate && colorCode && currentAcsoEditingUuid !== existingLeadSurvey.client_uuid) {
-    const byWho = existingLeadSurvey.surveyor_name || existingLeadSurvey.surveyor_username || 'another surveyor';
-    const ok = window.confirm(`${spl} • ${colorCode} in ${eid} was just surveyed by ${byWho}.\n\nOK = overwrite their record with your entry\nCancel = go back and review (your typed values are kept)`);
-    if (!ok) return;
-  }
-
-  if (!isAcsoUpdate) {
-    // Condition for brand-new entries: prevent duplicate lead in same enclosure locally
-    const isDuplicateLead = records.some(r => {
-      const rEid = (r["Enclosure ID"] || r.enclosure_id || '').trim().toUpperCase();
-      const rSpl = (r["Splitter ID"] || r.splitter_id || '').trim().toUpperCase();
-      if (rEid !== eid.toUpperCase() || rSpl !== spl.toUpperCase()) return false;
-      const rCol = (r["Splitter Out"] || r["Splitter Lead Colour Code"] || r.splitter_lead_color || '').trim().toUpperCase();
-      if (!colorCode && !rCol) return true;
-      if (!colorCode || !rCol) return false;
-      const colVars = getColorVariants(colorCode);
-      const rVars = getColorVariants(rCol);
-      return colVars.some(v => rVars.includes(v));
-    });
-
-    if (isDuplicateLead) {
-      const msg = colorCode
-        ? `❌ Splitter Out "${colorCode}" of Splitter ${spl} is already in your pending records! Duplicate entry not allowed.`
-        : `❌ Splitter ${spl} is already in your pending records with zero connections!`;
-      showToast(msg, false);
-      if (splitterColorSelect) splitterColorSelect.focus();
-      return;
-    }
-
-    // Condition: S2, S3, S4 can only be added if prior splitter was already surveyed
-    if (spl !== 'S1') {
-      const sIndex = DEFAULT_PRELOAD.splitters.indexOf(spl);
-      if (sIndex > 0) {
-        const prevSplitter = DEFAULT_PRELOAD.splitters[sIndex - 1];
-        const prevSummary = getSplitterSummary(eid, prevSplitter);
-        if (!prevSummary) {
-          showToast(`❌ Splitter ${prevSplitter} must be added first before adding ${spl} in Enclosure ${enc}!`, false);
-          splitterIdSelect.focus();
-          return;
-        }
-      }
-    }
-  }
-
-  const clientUuid = isAcsoUpdate
-    ? (existingLeadSurvey.client_uuid || currentAcsoEditingUuid || crypto.randomUUID())
-    : ((typeof crypto !== 'undefined' && crypto.randomUUID) 
-        ? crypto.randomUUID() 
-        : ('rec_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9)));
-
-  const now = new Date();
-  const formattedDateTime = getFormattedDateTime(now);
-  const isoTimestamp = now.toISOString();
-
-  const entry = {
-    client_uuid: clientUuid,
-    sync_status: 'pending',
-    id: Date.now(),
-    "Date & Time": formattedDateTime,
-    Region: (regionSelect && regionSelect.value) ? regionSelect.value : getRegionForCenter(centerSelect.value),
-    Center: centerSelect.value,
-    "RT Room": rtRoomSelect.value,
-    "GPON/FTTH/WDM": techSelect.value,
-    "OLT/Node  Name": olt,
-    "Port Number": port,
-    "KSEB Post Number": postInput.value.trim(),
-    "Land Mark": landmarkInput.value.trim(),
-    "Enclosure Number": enc,
-    "Enclosure ID": eid,
-    "Lat /Long": latLongStr,
-    "Splitter ID": spl,
-    "Splitter Unique ID": `${eid}-${spl}`,
-    "Splitter Ratio": splitterRatioSelect.value,
-    "No: Of Customer Connected": parseInt(custCountInput.value) || 0,
-    "Splitter Out": colorCode,
-    "Splitter Lead Colour Code": colorCode,
-    "ADL Subscriber ID": adlId,
-    "ACS Subscriber ID": acsId,
-    splitter_lead_color: colorCode,
-    splitter_unique_id: `${eid}-${spl}`,
-    adl_subscriber_id: adlId,
-    acs_subscriber_id: acsId,
-    survey_date_time: formattedDateTime,
-    timestamp: isoTimestamp,
-    created_at: isoTimestamp,
-    surveyor_username: currentUser ? currentUser.username : '',
-    surveyor_name: currentUser ? (currentUser.full_name || currentUser.username) : ''
-  };
-
-  try {
-    if (isAcsoUpdate) {
-      const existingIdx = records.findIndex(r => r.client_uuid === clientUuid);
-      if (existingIdx >= 0) {
-        records[existingIdx] = entry;
-      } else {
-        records.push(entry);
-      }
-    } else {
-      records.push(entry);
-    }
-
-    const newCustCount = entry["No: Of Customer Connected"];
-    const targetEid = eid.trim().toUpperCase();
-    const targetSpl = spl.trim().toUpperCase();
-
-    // Splitter-level dynamic synchronization:
-    // Update all existing local records sharing this (Enclosure ID + Splitter ID) so customer count is 100% unified
-    records.forEach(r => {
-      const rEid = (r["Enclosure ID"] || r.enclosure_id || '').trim().toUpperCase();
-      const rSpl = (r["Splitter ID"] || r.splitter_id || '').trim().toUpperCase();
-      if (rEid === targetEid && rSpl === targetSpl) {
-        r["No: Of Customer Connected"] = newCustCount;
-        r.customers_connected = newCustCount;
-      }
-    });
-
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
-
-    // Update in-memory and local cache map immediately for this lead
-    const leadKey = getLeadKey(eid, spl, colorCode);
-    networkSurveyedPoints[leadKey] = entry;
-
-    const variants = getColorVariants(colorCode);
-    variants.forEach(v => {
-      networkSurveyedPoints[`${eid}|${spl}|${v}`.toUpperCase()] = entry;
-    });
-
-    // Also cascade updated customer count to all existing lead entries in local surveyed cache
-    if (networkSurveyedPoints) {
-      const splPrefix = `${targetEid}|${targetSpl}|`;
-      Object.keys(networkSurveyedPoints).forEach(k => {
-        if (k.startsWith(splPrefix) && networkSurveyedPoints[k]) {
-          networkSurveyedPoints[k]["No: Of Customer Connected"] = newCustCount;
-          networkSurveyedPoints[k].customers_connected = newCustCount;
-        }
-      });
-    }
-
-    // Update splitter summary in cache
-    const splKey = getSplitterKey(eid, spl);
-    if (!networkSurveyedPoints[splKey]) {
-      networkSurveyedPoints[splKey] = {
-        is_summary: true,
-        enclosure_id: eid,
-        splitter_id: spl,
-        splitter_ratio: entry["Splitter Ratio"],
-        leads: [],
-        count: 0,
-        kseb_post_number: entry["KSEB Post Number"],
-        landmark: entry["Land Mark"],
-        lat_long: entry["Lat /Long"],
-        surveyor_name: entry.surveyor_name,
-        survey_date_time: formattedDateTime
-      };
-    }
-    const normC = colorCode.trim().toUpperCase();
-    if (normC && !networkSurveyedPoints[splKey].leads.includes(normC)) {
-      networkSurveyedPoints[splKey].leads.push(normC);
-    }
-    networkSurveyedPoints[splKey].count = networkSurveyedPoints[splKey].leads.length;
-    networkSurveyedPoints[splKey].customers_connected = newCustCount;
-    localStorage.setItem('gpon_network_surveyed_points', JSON.stringify(networkSurveyedPoints));
-  } catch (err) {
-    console.error('Local storage write failed:', err);
-    showToast('Failed to save on device storage: ' + (err.message || 'Storage full'), false);
-    return;
-  }
-
-  updateRecordsBadge();
-  updateSyncUI();
-  if (isAcsoUpdate) {
-    showToast('✏️ Master Record Updated Successfully');
-  } else {
-    showToast('Record Submitted Successfully');
-  }
-  showSubmitConfirmModal(entry, isAcsoUpdate);
-
-  // Clear customer-specific subscriber inputs only (keep equipment & pole strictly pinned!)
-  clearCustomerInputs();
-  custCountManuallyEdited = false;
-  currentActiveEnclosure = entry["Enclosure"] || (enclosureSelect ? enclosureSelect.value : '');
-
-  const savedSpl = splitterIdSelect ? splitterIdSelect.value : '';
-  const savedRatio = splitterRatioSelect ? splitterRatioSelect.value : '';
-
-  // Refresh available splitters to reflect new capacity count
-  updateAvailableSplitters();
-
-  // Retain Splitter Ratio
-  if (savedRatio && splitterRatioSelect) {
-    splitterRatioSelect.value = savedRatio;
-  }
-
-  // Clear color selection so surveyor must explicitly select the next splitter lead
-  if (splitterColorSelect) splitterColorSelect.value = '';
-  updateSplitterColorOptions();
-
-  // Prompt surveyor to select the next Splitter Out lead
-  if (splitterColorSelect) {
-    setTimeout(() => {
-      try { splitterColorSelect.focus(); } catch (e) {}
-    }, 300);
-  }
-
-  // Trigger silent background sync if server is reachable
-  syncWithServer(true);
-}
-
-// Confirmation Message Modal
-function showSubmitConfirmModal(entry, isAcsoUpdate = false) {
-  const modal = document.getElementById('submit-confirm-modal');
-  const detailsEl = document.getElementById('submit-confirm-details');
-  const iconEl = document.getElementById('submit-confirm-icon');
-  const titleEl = document.getElementById('submit-confirm-title');
-  const descEl = document.getElementById('submit-confirm-desc');
-  if (!modal || !detailsEl) return;
-
-  if (isAcsoUpdate) {
-    if (iconEl) iconEl.innerText = '✏️';
-    if (titleEl) {
-      titleEl.innerText = 'Master Record Updated';
-      titleEl.style.color = '#0284c7';
-    }
-    if (descEl) {
-      descEl.innerText = 'Supervisor update saved. Central database will be overwritten with corrections.';
-    }
-  } else {
-    if (iconEl) iconEl.innerText = '✅';
-    if (titleEl) {
-      titleEl.innerText = 'Record Submitted Successfully';
-      titleEl.style.color = '#0f9d58';
-    }
-    if (descEl) {
-      descEl.innerText = 'The survey record has been recorded and safely saved.';
-    }
-  }
-
-  const encId = entry["Enclosure ID"] || '-';
-  const rawSpl = entry["Splitter ID"] || '';
-  const displaySplId = (rawSpl && encId && encId !== '-') 
-    ? (rawSpl.toUpperCase().startsWith(encId.toUpperCase()) ? rawSpl : `${encId}${rawSpl}`)
-    : (rawSpl || '-');
-  const splitInfo = `${displaySplId} (${entry["Splitter Ratio"] || '-'})`;
-  const portStr = entry["Port Number"] || '-';
-  const portLabel = (portStr && portStr.includes(',')) ? 'Ports' : 'Port';
-  const nodeInfo = `${entry["OLT/Node  Name"] || '-'} [${portLabel} ${portStr}]`;
-  const centerInfo = entry["Center"] || '-';
-  const custCount = entry["No: Of Customer Connected"] || 0;
-  const timeStr = entry["Date & Time"] || '';
-
-  const syncText = (entry.sync_status === 'synced')
-    ? '<span style="color:#10b981; font-weight:700;">☁️ Synced to Server ✓</span>'
-    : (isServerReachable 
-        ? '<span style="color:#0284c7; font-weight:600;">☁️ Syncing to Server...</span>' 
-        : '<span style="color:#f59e0b; font-weight:600;">💾 Saved on Phone (Pending Sync)</span>');
-
-  detailsEl.innerHTML = `
-    ${isAcsoUpdate ? `
-    <div style="background:#eff6ff; border:1px solid #bfdbfe; border-radius:6px; padding:6px 10px; margin-bottom:10px; font-size:0.8rem; color:#1e40af; display:flex; align-items:center; gap:6px;">
-      <span>✏️</span> <strong>ACSO Correction:</strong> Master database record updated.
-    </div>` : ''}
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-      <span style="color:#64748b;">Enclosure ID:</span>
-      <strong style="color:#0284c7; font-family:monospace; font-size:1.05rem;">${encId}</strong>
-    </div>
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-      <span style="color:#64748b;">Splitter & Out:</span>
-      <strong style="color:#334155;">${splitInfo} • ${entry["Splitter Out"] || entry["Splitter Lead Colour Code"] || 'No Out (0 Connected)'}</strong>
-    </div>
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-      <span style="color:#64748b;">Subscriber ID:</span>
-      <strong style="color:#0284c7; font-family:monospace;">${entry["ADL Subscriber ID"] || entry["ACS Subscriber ID"] || '-'}</strong>
-    </div>
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-      <span style="color:#64748b;">Center / Node:</span>
-      <span style="color:#334155; font-size:0.83rem;">${centerInfo} • ${nodeInfo}</span>
-    </div>
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-      <span style="color:#64748b;">Connected Customers:</span>
-      <strong style="color:#10b981; font-size:0.95rem;">${custCount}</strong>
-    </div>
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-      <span style="color:#64748b;">Storage & Sync:</span>
-      <span id="confirm-sync-status-badge">${syncText}</span>
-    </div>
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; padding-top:6px; border-top:1px dashed #cbd5e1; font-size:0.75rem;">
-      <span style="color:#64748b;">Survey Time:</span>
-      <span style="color:#64748b; font-family:monospace;">${timeStr}</span>
-    </div>
-  `;
-
-  modal.style.display = 'flex';
-  const okBtn = document.getElementById('btn-submit-confirm-ok');
-  if (okBtn) okBtn.focus();
-}
-
-
-function closeSubmitConfirmModal() {
-  const modal = document.getElementById('submit-confirm-modal');
-  if (modal) modal.style.display = 'none';
-  if (adlSubInput && adlSubInput.offsetParent !== null) {
-    adlSubInput.focus();
-  } else if (postInput) {
-    postInput.focus();
-  }
-}
-
-// Allow Enter key or Escape to dismiss confirmation modal
-document.addEventListener('keydown', (e) => {
-  const modal = document.getElementById('submit-confirm-modal');
-  if (modal && modal.style.display === 'flex') {
-    if (e.key === 'Enter' || e.key === 'Escape') {
-      e.preventDefault();
-      closeSubmitConfirmModal();
-    }
-  }
-});
-
-function updateRecordsBadge() {
-  if (recordsBadge) recordsBadge.innerText = records.length;
-  renderSheetTable();
-}
-
-function renderSheetTable() {
-  const tbody = document.getElementById('sheet-table-body');
-  if (!tbody) return;
-  tbody.innerHTML = '';
-
-  if (records.length === 0) {
-    tbody.innerHTML = `
-      <tr>
-        <td colspan="16" style="text-align: center; padding: 24px; color: #80868b;">
-          No survey points entered yet. Fill the row above and tap "Submit".
-        </td>
-      </tr>
-    `;
-    return;
-  }
-
-  records.forEach((r, idx) => {
-    const isSynced = r.sync_status === 'synced';
-    const syncTag = isSynced 
-      ? '<span class="gs-tag-synced">✓ Synced</span>' 
-      : '<span class="gs-tag-pending">⏳ Pending</span>';
-
-    const timeDisplay = r["Date & Time"] || r.survey_date_time || (r.timestamp ? r.timestamp.slice(0, 19).replace('T', ' ') : '-');
-    const colorDisplay = r["Splitter Out"] || r["Splitter Lead Colour Code"] || r.splitter_lead_color || '-';
-    const adlDisplay = r["ADL Subscriber ID"] || r.adl_subscriber_id || '-';
-    const acsDisplay = r["ACS Subscriber ID"] || r.acs_subscriber_id || '-';
-
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td class="gs-row-num">${idx + 1}</td>
-      <td style="font-family: monospace; font-size: 0.75rem; color:#5f6368;">${escapeHtml(timeDisplay)}</td>
-      <td class="gs-id-cell">${escapeHtml(r["Enclosure ID"]) || '-'}</td>
-      <td><strong>${escapeHtml(r["KSEB Post Number"]) || '-'}</strong></td>
-      <td>${escapeHtml(r["Land Mark"]) || '-'}</td>
-      <td>${escapeHtml(r["Center"]) || '-'}</td>
-      <td>${escapeHtml(r["RT Room"]) || '-'}</td>
-      <td>${escapeHtml(r["OLT/Node  Name"]) || '-'} [${escapeHtml(r["Port Number"]) || '-'}]</td>
-      <td style="font-family: monospace; font-size: 0.75rem;">${escapeHtml(r["Lat /Long"]) || '-'}</td>
-      <td>${escapeHtml(r["Splitter Ratio"]) || '-'}</td>
-      <td style="text-align:center;">${r["No: Of Customer Connected"] || 0}</td>
-      <td><span style="background:#e8f0fe; color:#1a73e8; padding:2px 6px; border-radius:4px; font-size:0.75rem; font-weight:600;">${escapeHtml(colorDisplay)}</span></td>
-      <td style="font-family: monospace; font-size: 0.75rem;">${escapeHtml(adlDisplay)}</td>
-      <td style="font-family: monospace; font-size: 0.75rem;">${escapeHtml(acsDisplay)}</td>
-      <td>${syncTag}</td>
-      <td style="text-align:center;"><button class="btn-del-cell" onclick="deleteRecord(${idx})" title="Delete Row">🗑️</button></td>
-    `;
-    tbody.appendChild(tr);
-  });
-}
-
-// Export to Excel (.xlsx) - Downloads central server survey records for the user's center
-async function exportToExcel() {
-  if (currentUser && normalizeClientRole(currentUser.role) === 'field_technician') {
-    showToast('Permission Denied: Field Technicians cannot download survey data.', false);
-    return;
-  }
-
-  // 1. Determine target center to export
-  let targetCenter = '';
-  if (centerSelect && centerSelect.value) {
-    targetCenter = centerSelect.value.trim();
-  } else if (currentUser && currentUser.assigned_center) {
-    targetCenter = currentUser.assigned_center.trim();
-  } else {
-    targetCenter = 'ALL';
-  }
-
-  // If user is assigned to multiple centers, provide option to download active center or all assigned centers
-  if (currentUser && currentUser.assigned_center && currentUser.assigned_center.includes(',')) {
-    const centersList = currentUser.assigned_center.split(',').map(s => s.trim()).filter(Boolean);
-    if (centersList.length > 1) {
-      const choice = confirm(`You have charge of multiple centers: ${centersList.join(', ')}.\n\n• Click OK to download all data for currently selected center "${targetCenter}".\n• Click Cancel to download combined data for ALL your assigned centers.`);
-      if (!choice) {
-        targetCenter = currentUser.assigned_center;
-      }
-    }
-  }
-
-  showToast(`Preparing Excel export for ${targetCenter}...`);
-
-  // 2. Online Mode: Stream live central survey data from Ubuntu Server SQLite database
-  if (isServerReachable) {
-    try {
-      const authToken = localStorage.getItem('gpon_auth_token') || (currentUser && currentUser.token) || '';
-      const headers = authToken ? { 'Authorization': `Bearer ${authToken}` } : {};
-      const exportUrl = `${serverUrl}/api/export-center-excel?center=${encodeURIComponent(targetCenter)}${authToken ? `&token=${encodeURIComponent(authToken)}` : ''}`;
-      const res = await fetch(exportUrl, { headers });
-      if (res.ok) {
-        const blob = await res.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        const today = new Date().toISOString().slice(0, 10);
-        const safeCenterName = targetCenter.replace(/[\s,]+/g, '_');
-        a.download = `${safeCenterName}_Survey_Data_${today}.xlsx`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        window.URL.revokeObjectURL(url);
-        showToast(`Excel downloaded for Center: ${targetCenter}!`);
-        return;
-      } else {
-        const errJson = await res.json().catch(() => ({}));
-        showToast(errJson.detail || 'Server export error, trying local records...', false);
-      }
-    } catch (err) {
-      console.warn('Server export fetch failed, falling back to local storage:', err);
-    }
-  }
-
-  // 3. Offline Mode Fallback: Export local records saved on this device
-  let localExportRows = records;
-  if (targetCenter && targetCenter.toUpperCase() !== 'ALL') {
-    const targetCentersList = targetCenter.split(',').map(s => s.trim().toLowerCase());
-    const filtered = records.filter(r => r.Center && targetCentersList.includes(r.Center.trim().toLowerCase()));
-    if (filtered.length > 0) {
-      localExportRows = filtered;
-    }
-  }
-
-  if (!localExportRows || localExportRows.length === 0) {
-    showToast(`No records found for center: ${targetCenter}`, false);
-    return;
-  }
-
-  // Column headers matching standard target template
-  const headers = [
-    'Region', 'Center', 'RT Room', 'GPON/FTTH/WDM', 'OLT/Node  Name', 
-    'Port Number', 'KSEB Post Number', 'Land Mark', 'Enclosure Number', 
-    'Enclosure ID', 'Lat /Long', 'Splitter ID', 'Splitter Ratio', 
-    'No: Of Customer Connected', 'Splitter Out', 
-    'ADL Subscriber ID', 'ACS Subscriber ID', 'Date & Time'
-  ];
-
-  const rows = [
-    [], // Row 1 blank like original
-    headers
-  ];
-
-  localExportRows.forEach(r => {
-    const rawEid = (r["Enclosure ID"] || r.enclosure_id || "").trim();
-    const rawSpl = (r["Splitter ID"] || r.splitter_id || "").trim();
-    let formattedSpl = rawSpl;
-    if (rawSpl && rawEid) {
-      formattedSpl = rawSpl.toUpperCase().startsWith(rawEid.toUpperCase()) ? rawSpl : `${rawEid}${rawSpl}`;
-    }
-
-    rows.push([
-      r["Region"] || "Thrissur",
-      r["Center"] || "",
-      r["RT Room"] || "",
-      r["GPON/FTTH/WDM"] || "",
-      r["OLT/Node  Name"] || "",
-      r["Port Number"] || "",
-      r["KSEB Post Number"] || "",
-      r["Land Mark"] || "",
-      r["Enclosure Number"] || "",
-      rawEid,
-      r["Lat /Long"] || "",
-      formattedSpl,
-      r["Splitter Ratio"] || "",
-      r["No: Of Customer Connected"] || 0,
-      r["Splitter Out"] || r["Splitter Lead Colour Code"] || r["splitter_lead_color"] || "",
-      r["ADL Subscriber ID"] || r["adl_subscriber_id"] || "",
-      r["ACS Subscriber ID"] || r["acs_subscriber_id"] || "",
-      r["Date & Time"] || r["survey_date_time"] || (r["timestamp"] ? r["timestamp"].slice(0, 19).replace('T', ' ') : "")
-    ]);
-  });
-
-  const ws = XLSX.utils.aoa_to_sheet(rows);
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
-
-  const today = new Date().toISOString().slice(0, 10);
-  const safeName = targetCenter.replace(/[\s,]+/g, '_');
-  XLSX.writeFile(wb, `${safeName}_Survey_Export_${today}.xlsx`);
-  showToast(`Offline Excel exported for ${targetCenter}!`);
-}
-
-let pendingDeleteIndex = null;
-
-function deleteRecord(index) {
-  if (index < 0 || index >= records.length) return;
-  pendingDeleteIndex = index;
-  const r = records[index];
-
-  const modal = document.getElementById('delete-confirm-modal');
-  const detailsEl = document.getElementById('delete-confirm-details');
-
-  if (!modal || !detailsEl) {
-    if (confirm('Are you sure you want to permanently delete this survey point from this device and the server?')) {
-      executeDeleteRecord(index);
-    }
-    return;
-  }
-
-  const eid = r["Enclosure ID"] || r.enclosure_id || '-';
-  const spl = r["Splitter ID"] || r.splitter_id || '-';
-  const post = r["KSEB Post Number"] || r.kseb_post_number || '-';
-  const lmark = r["Land Mark"] || r.landmark || '-';
-  const olt = r["OLT/Node  Name"] || r["OLT/Node Name"] || r.olt_name || '-';
-  const port = r["Port Number"] || r.port_number || '-';
-  const isSynced = r.sync_status === 'synced';
-
-  detailsEl.innerHTML = `
-    <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
-      <span style="color:#7f1d1d;">Enclosure ID:</span>
-      <strong style="font-family:monospace; color:#991b1b;">${escapeHtml(eid)}</strong>
-    </div>
-    <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
-      <span style="color:#7f1d1d;">Splitter:</span>
-      <strong style="color:#991b1b;">${escapeHtml(spl)} (${escapeHtml(r["Splitter Ratio"] || r.splitter_ratio || '-')})</strong>
-    </div>
-    <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
-      <span style="color:#7f1d1d;">KSEB Post / Landmark:</span>
-      <strong style="color:#991b1b;">${escapeHtml(post)} / ${escapeHtml(lmark)}</strong>
-    </div>
-    <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
-      <span style="color:#7f1d1d;">OLT / Port:</span>
-      <strong style="color:#991b1b;">${escapeHtml(olt)} [${escapeHtml(port)}]</strong>
-    </div>
-    <div style="display:flex; justify-content:space-between;">
-      <span style="color:#7f1d1d;">Server Status:</span>
-      <strong style="color:${isSynced ? '#059669' : '#d97706'};">${isSynced ? 'Synced on Server' : 'Pending Local Sync'}</strong>
-    </div>
-  `;
-
-  const confirmBtn = document.getElementById('btn-confirm-delete-action');
-  if (confirmBtn) {
-    confirmBtn.onclick = () => {
-      confirmDeleteRecord();
-    };
-  }
-
-  modal.style.display = 'flex';
-}
-
-function confirmDeleteRecord() {
-  if (pendingDeleteIndex !== null && pendingDeleteIndex !== undefined) {
-    const idx = pendingDeleteIndex;
-    closeDeleteConfirmModal();
-    executeDeleteRecord(idx);
-  }
-}
-
-function closeDeleteConfirmModal() {
-  const modal = document.getElementById('delete-confirm-modal');
-  if (modal) modal.style.display = 'none';
-  pendingDeleteIndex = null;
-}
-
-async function executeDeleteRecord(index) {
-  if (index === null || index < 0 || index >= records.length) {
-    closeDeleteConfirmModal();
-    return;
-  }
-  const r = records[index];
-  const clientUuid = r.client_uuid || '';
-  const eid = (r["Enclosure ID"] || r.enclosure_id || '').trim();
-  const spl = (r["Splitter ID"] || r.splitter_id || '').trim();
-  const col = (r["Splitter Lead Colour Code"] || r.splitter_lead_color || '').trim();
-
-  // Guarantee modal is closed immediately
-  closeDeleteConfirmModal();
-
-  try {
-    // 1. Remove from local array & localStorage
-    records.splice(index, 1);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
-
-    // 2. Clear from local surveyed points cache so UI unlocks immediately
-    if (eid && spl) {
-      if (typeof networkSurveyedPoints !== 'undefined') {
-        const variants = getColorVariants(col);
-        variants.forEach(v => {
-          const k = `${eid}|${spl}|${v}`.toUpperCase();
-          delete networkSurveyedPoints[k];
-        });
-        const kEmpty = `${eid}|${spl}|`.toUpperCase();
-        if (!col) delete networkSurveyedPoints[kEmpty];
-
-        const splKey = `${eid}|${spl}`.toUpperCase();
-        if (networkSurveyedPoints[splKey]) {
-          const s = networkSurveyedPoints[splKey];
-          if (Array.isArray(s.leads)) {
-            const normC = col.toUpperCase();
-            s.leads = s.leads.filter(l => l !== normC);
-            s.count = s.leads.length;
-            if (s.count === 0 && !col) {
-              delete networkSurveyedPoints[splKey];
-            }
-          }
-        }
-        try {
-          localStorage.setItem('gpon_network_surveyed_points', JSON.stringify(networkSurveyedPoints));
-        } catch (quotaErr) {
-          console.warn('[Storage] Quota exceeded for surveyed points cache, keeping in-memory:', quotaErr);
-        }
-      }
-    }
-
-    // 3. Update UI
-    updateRecordsBadge();
-    updateSyncUI();
-    updateAvailableEnclosures();
-    updateAvailableSplitters();
-  } catch (err) {
-    console.error('Error during local record deletion:', err);
-  }
-
-  // 4. Send DELETE to server with both UUID and natural key fallback
-  let serverDeleted = false;
-  try {
-    const authToken = localStorage.getItem('gpon_auth_token') || (currentUser && currentUser.token) || '';
-    const headers = authToken ? { 'Authorization': `Bearer ${authToken}` } : {};
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
-
-    const uuidParam = encodeURIComponent(clientUuid || 'by-point');
-    const qParams = new URLSearchParams();
-    if (eid) qParams.append('enclosure_id', eid);
-    if (spl) qParams.append('splitter_id', spl);
-    if (col) qParams.append('splitter_lead_color', col);
-
-    const deleteUrl = `${serverUrl}/api/records/${uuidParam}?${qParams.toString()}`;
-    const res = await fetch(deleteUrl, {
-      method: 'DELETE',
-      headers: headers,
-      signal: controller.signal
-    });
-    clearTimeout(timeoutId);
-    if (res.ok) {
-      serverDeleted = true;
-    }
-  } catch (err) {
-    console.warn('[Delete] Could not delete from server right now (network offline):', err);
-  }
-
-  if (serverDeleted) {
-    showToast('✓ Record permanently deleted from device and server');
-    // Refresh surveyed points in background
-    if (typeof fetchSurveyedPoints === 'function') {
-      fetchSurveyedPoints().catch(() => {});
-    }
-  } else {
-    // Offline fallback: queue clientUuid for deletion on next server sync
-    if (clientUuid) {
-      let pendingDeletions = [];
-      try {
-        pendingDeletions = JSON.parse(localStorage.getItem('gpon_pending_deletions') || '[]');
-      } catch(e) { pendingDeletions = []; }
-      if (!pendingDeletions.includes(clientUuid)) {
-        pendingDeletions.push(clientUuid);
-        localStorage.setItem('gpon_pending_deletions', JSON.stringify(pendingDeletions));
-      }
-    }
-    showToast('✓ Record deleted locally (will delete from server when connected)');
-  }
-}
-
-// ==========================================
-// OFFLINE-FIRST SYNC ENGINE (UBUNTU SERVER)
-// ==========================================
-
-async function checkServerConnection() {
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3500);
-    const res = await fetch(`${serverUrl}/api/health`, { signal: controller.signal });
-    clearTimeout(timeoutId);
-    if (res.ok) {
-      isServerReachable = true;
-      fetchSurveyedPoints(true);
-      const data = await res.json().catch(() => null);
-      if (data && data.hierarchy_version) {
-        // Only record the version as "known" when logged in, because fetchHierarchyFromServer() is auth-guarded
-        if (currentUser && (data.hierarchy_version !== lastKnownHierarchyVersion || !DEFAULT_PRELOAD.hierarchy || Object.keys(DEFAULT_PRELOAD.hierarchy).length === 0)) {
-          lastKnownHierarchyVersion = data.hierarchy_version;
-          localStorage.setItem('gpon_hierarchy_version', String(data.hierarchy_version));
-          fetchHierarchyFromServer();
-        }
-      } else if (!DEFAULT_PRELOAD.hierarchy || Object.keys(DEFAULT_PRELOAD.hierarchy).length === 0) {
-        fetchHierarchyFromServer();
-      }
-    } else {
-      isServerReachable = false;
-    }
-  } catch (err) {
-    isServerReachable = false;
-  } finally {
-    serverConnectionChecked = true;
-    updateSyncUI();
-  }
-}
-
-async function fetchHierarchyFromServer() {
-  if (!currentUser) return; // Guard: Never fetch hierarchy or populate dropdowns when unauthenticated
-  try {
-    const token = localStorage.getItem('gpon_auth_token') || '';
-    const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
-    const res = await fetch(`${serverUrl}/api/hierarchy?t=${Date.now()}`, { headers });
-    if (res.ok) {
-      const data = await res.json();
-      if (data && data.hierarchy && typeof data.hierarchy === 'object' && Object.keys(data.hierarchy).length > 0) {
-        const newStr = JSON.stringify(data.hierarchy);
-        const oldStr = localStorage.getItem('gpon_custom_hierarchy');
-        const hierEmpty = !DEFAULT_PRELOAD.hierarchy || Object.keys(DEFAULT_PRELOAD.hierarchy).length === 0;
-        if (newStr !== oldStr || hierEmpty) {
-          DEFAULT_PRELOAD.hierarchy = data.hierarchy;
-          localStorage.setItem('gpon_custom_hierarchy', newStr);
-          initDropdowns(true);
-        }
-      }
-    }
-  } catch (e) {}
-}
-
-async function refreshCurrentUserProfile() {
-  if (!currentUser || !currentUser.username) return;
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 4000);
-    const token = localStorage.getItem('gpon_auth_token') || '';
-    const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
-    const res = await fetch(`${serverUrl}/api/user-profile?username=${encodeURIComponent(currentUser.username)}`, {
-      headers,
-      signal: controller.signal
-    });
-    clearTimeout(timeoutId);
-    if (res.ok) {
-      const data = await res.json();
-      if (data && data.user) {
-        const oldRole = currentUser.role;
-        const oldCenters = currentUser.assigned_center;
-        const oldRegion = currentUser.assigned_region;
-        currentUser = data.user;
-        localStorage.setItem('gpon_logged_in_user', JSON.stringify(currentUser));
-        updateUserBar();
-        if (oldRole !== currentUser.role || oldCenters !== currentUser.assigned_center || oldRegion !== currentUser.assigned_region) {
-          initDropdowns();
-          console.log(`[Auth] User profile auto-refreshed from server. Role: ${currentUser.role}, Region: ${currentUser.assigned_region}`);
-        }
-      }
-    }
-  } catch (e) {
-    // Offline or server unreachable
-  }
-}
-
-function updateSyncUI() {
-  const badge = document.getElementById('sync-status-badge') || document.querySelector('.gs-doc-subtitle');
-  const dot = document.getElementById('sync-dot');
-  const text = document.getElementById('sync-text');
-  if (!text) return;
-
-  const unsyncedCount = records.filter(r => r.sync_status !== 'synced' && r.sync_status !== 'duplicate_skipped').length;
-  const duplicateSkippedCount = records.filter(r => r.sync_status === 'duplicate_skipped').length;
-
-  if (isSyncing) {
-    if (dot) dot.style.background = '#38bdf8';
-    text.innerText = 'Syncing with Server...';
-    if (badge) badge.title = 'Uploading survey records to Ubuntu server...';
-    return;
-  }
-
-  if (!serverConnectionChecked) {
-    if (dot) dot.style.background = '#f59e0b';
-    text.innerText = 'Checking server...';
-    if (badge) badge.title = 'Testing connection to Ubuntu server...';
-    return;
-  }
-
-  if (!isServerReachable) {
-    if (dot) dot.style.background = '#ef4444';
-    text.innerText = unsyncedCount > 0 
-      ? `Server Disconnected (${unsyncedCount} unsynced)` 
-      : 'Server Disconnected';
-    if (badge) badge.title = 'Ubuntu server unreachable / offline. Data is saved safely on your device. Tap to test connection.';
-  } else {
-    if (unsyncedCount === 0) {
-      if (dot) dot.style.background = '#10b981';
-      text.innerText = duplicateSkippedCount > 0 
-        ? `Server Connected (Synced ✓, ${duplicateSkippedCount} dupe skipped)` 
-        : 'Server Connected (Synced ✓)';
-      if (badge) badge.title = 'Connected to Ubuntu server. All records synced! Tap to re-check.';
-    } else {
-      if (dot) dot.style.background = '#0284c7';
-      text.innerText = `Server Connected (${unsyncedCount} unsynced)`;
-      if (badge) badge.title = `Connected to Ubuntu server. ${unsyncedCount} records ready to sync. Tap to sync now.`;
-    }
-  }
-}
-
-async function syncWithServer(silent = false) {
-  if (isSyncing) return;
-
-  // 1. Process queued offline deletions safely without overwriting concurrent in-flight deletions
-  let pendingDeletions = [];
-  try {
-    pendingDeletions = JSON.parse(localStorage.getItem('gpon_pending_deletions') || '[]');
-  } catch(e) { pendingDeletions = []; }
-
-  if (pendingDeletions.length > 0) {
-    try {
-      const syncToken = localStorage.getItem('gpon_auth_token') || '';
-      const delHeaders = { 'Content-Type': 'application/json' };
-      if (syncToken) delHeaders['Authorization'] = 'Bearer ' + syncToken;
-      const delRes = await fetch(`${serverUrl}/api/records/bulk-delete`, {
-        method: 'POST',
-        headers: delHeaders,
-        body: JSON.stringify({ uuids: pendingDeletions })
-      });
-      if (delRes.ok) {
-        let currentPending = [];
-        try { currentPending = JSON.parse(localStorage.getItem('gpon_pending_deletions') || '[]'); } catch(e){}
-        const sentSet = new Set(pendingDeletions);
-        const remaining = currentPending.filter(uuid => !sentSet.has(uuid));
-        if (remaining.length > 0) {
-          localStorage.setItem('gpon_pending_deletions', JSON.stringify(remaining));
-        } else {
-          localStorage.removeItem('gpon_pending_deletions');
-        }
-      }
-    } catch(err) {
-      console.warn('[Sync] Could not process pending deletions:', err);
-    }
-  }
-  
-  // 2. Filter un-synced records, excluding already rejected duplicates to prevent infinite retry loops
-  const pendingRecords = records.filter(r => r.sync_status !== 'synced' && r.sync_status !== 'duplicate_skipped');
-  if (pendingRecords.length === 0) {
-    if (!silent) showToast('All records are already synced with Ubuntu server!');
-    checkServerConnection();
-    updateRecordsBadge();
-    return;
-  }
-
-  isSyncing = true;
-  updateSyncUI();
-
-  try {
-    const formattedRecords = pendingRecords.map(r => ({
-      client_uuid: r.client_uuid,
-      region: r.Region || r.region || 'Thrissur',
-      center: r.Center || r.center || '',
-      rt_room: r['RT Room'] || r.rt_room || '',
-      technology: r['GPON/FTTH/WDM'] || r.technology || 'GPON',
-      olt_name: r['OLT/Node  Name'] || r['OLT/Node Name'] || r.olt_name || '',
-      port_number: r['Port Number'] || r.port_number || '',
-      kseb_post_number: r['KSEB Post Number'] || r.kseb_post_number || '',
-      landmark: r['Land Mark'] || r.landmark || '',
-      enclosure_number: r['Enclosure Number'] || r.enclosure_number || '',
-      enclosure_id: r['Enclosure ID'] || r.enclosure_id || '',
-      lat_long: r['Lat /Long'] || r['Lat/Long'] || r.lat_long || '',
-      splitter_id: r['Splitter ID'] || r.splitter_id || '',
-      splitter_ratio: r['Splitter Ratio'] || r.splitter_ratio || '',
-      customers_connected: r['No: Of Customer Connected'] || r['No: of Customer Connected'] || r.customers_connected || 0,
-      splitter_lead_color: r['Splitter Lead Colour Code'] || r.splitter_lead_color || '',
-      adl_subscriber_id: r['ADL Subscriber ID'] || r.adl_subscriber_id || '',
-      acs_subscriber_id: r['ACS Subscriber ID'] || r.acs_subscriber_id || '',
-      survey_date_time: r['Date & Time'] || r.survey_date_time || r.timestamp || '',
-      device_id: deviceId,
-      surveyor_username: r.surveyor_username || (currentUser ? currentUser.username : ''),
-      surveyor_name: r.surveyor_name || (currentUser ? currentUser.full_name : ''),
-      created_at: r.timestamp || r.created_at || r['Date & Time'] || ''
-    }));
-
-    const syncToken = localStorage.getItem('gpon_auth_token') || '';
-    const syncHeaders = { 'Content-Type': 'application/json' };
-    if (syncToken) syncHeaders['Authorization'] = 'Bearer ' + syncToken;
-
-    // 3. Batch processing (25 records per chunk) with 25s timeout for resilient field 2G/3G sync
-    const BATCH_SIZE = 25;
-    let totalSyncedCount = 0;
-    let totalSkippedCount = 0;
-
-    for (let i = 0; i < formattedRecords.length; i += BATCH_SIZE) {
-      const batch = formattedRecords.slice(i, i + BATCH_SIZE);
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 25000); // 25s for slow mobile networks
-
-      try {
-        const res = await fetch(`${serverUrl}/api/sync`, {
-          method: 'POST',
-          headers: syncHeaders,
-          body: JSON.stringify({
-            device_id: deviceId,
-            records: batch
-          }),
-          signal: controller.signal
-        });
-        clearTimeout(timeoutId);
-
-        if (res.ok) {
-          const data = await res.json();
-          const syncedIds = new Set(data.synced_uuids || []);
-          const skippedDupes = data.skipped_duplicates || [];
-          const skippedIds = new Set(skippedDupes.map(d => d.client_uuid));
-
-          records.forEach(r => {
-            if (syncedIds.has(r.client_uuid)) {
-              r.sync_status = 'synced';
-            } else if (skippedIds.has(r.client_uuid)) {
-              r.sync_status = 'duplicate_skipped';
-            }
-          });
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
-          totalSyncedCount += syncedIds.size;
-          totalSkippedCount += skippedDupes.length;
-          isServerReachable = true;
-        } else if (res.status === 401) {
-          isServerReachable = true;
-          serverConnectionChecked = true;
-          showToast('⚠️ Session expired. Please log in again to sync records.', false);
-          break;
-        } else {
-          isServerReachable = false;
-          serverConnectionChecked = true;
-          if (!silent) showToast(`Server returned error ${res.status}. Data is safe locally.`, false);
-          break;
-        }
-      } catch (batchErr) {
-        clearTimeout(timeoutId);
-        isServerReachable = false;
-        serverConnectionChecked = true;
-        if (!silent) showToast('Network timeout or connection lost. Data is stored safely on phone.', false);
-        break;
-      }
-    }
-
-    if (totalSyncedCount > 0 || totalSkippedCount > 0) {
-      const modalSyncBadge = document.getElementById('confirm-sync-status-badge');
-      if (modalSyncBadge) {
-        modalSyncBadge.innerHTML = '<span style="color:#10b981; font-weight:700;">☁️ Synced to Server ✓</span>';
-      }
-
-      if (totalSkippedCount > 0) {
-        showToast(`⚠️ ${totalSkippedCount} duplicate record(s) rejected by server (already surveyed).`, false);
-      }
-      if (totalSyncedCount > 0 && !silent) {
-        showToast(`Synced ${totalSyncedCount} records with Ubuntu server!`);
-      }
-
-      fetchSurveyedPoints(true);
-      updateRecordsBadge();
-    }
-  } catch (err) {
-    isServerReachable = false;
-    serverConnectionChecked = true;
-    if (!silent) showToast('Could not reach server. Data is stored safely on phone.', false);
-  } finally {
-    isSyncing = false;
-    serverConnectionChecked = true;
-    updateSyncUI();
-    updateRecordsBadge();
-  }
-}
-
-async function triggerManualSync() {
-  await checkServerConnection();
-  refreshCurrentUserProfile();
-  syncWithServer(false);
-}
-
-// Register Service Worker for Offline PWA
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./sw.js')
-      .then(reg => {
-        console.log('SW registered successfully:', reg.scope);
-        reg.update();
-      })
-      .catch(err => console.log('SW registration failed:', err));
-  });
-}
-
-// Auto-Sync Listeners
-window.addEventListener('online', () => {
-  showToast('Internet connected. Checking server...');
-  checkServerConnection();
-  syncWithServer(true);
-});
-
-window.addEventListener('offline', () => {
-  isServerReachable = false;
-  serverConnectionChecked = true;
-  updateSyncUI();
-});
-
-// Init App Lifecycle
-function bootApp() {
-  // Ensure Submit button label is strictly set to 'Submit'
-  const submitBtnEl = document.getElementById('btn-save-record') || document.querySelector('.btn-add-row');
-  if (submitBtnEl) {
-    submitBtnEl.innerHTML = '<span>➕</span> Submit';
-  }
-
-  // Pre-fill username if remembered
-  const isRemembered = localStorage.getItem('gpon_remember_creds') === 'true';
-  const savedU = localStorage.getItem('gpon_remembered_username') || '';
-  const uInput = document.getElementById('login-username');
-  const rCheckbox = document.getElementById('login-remember-me');
-  if (uInput && savedU) uInput.value = savedU;
-  if (rCheckbox && localStorage.getItem('gpon_remember_creds') !== null) {
-    rCheckbox.checked = isRemembered;
-  }
-  // Purge any legacy plaintext passwords stored previously
-  localStorage.removeItem('gpon_remembered_password');
-
-  // Check Login State
-  if (!currentUser) {
-    showLoginOverlay();
-  } else {
-    hideLoginOverlay();
-    updateUserBar();
-    refreshCurrentUserProfile();
-    initDropdowns();
-    fetchSurveyedPoints();
-    scheduleMidnightLogout();
-    if (!DEFAULT_PRELOAD.hierarchy || Object.keys(DEFAULT_PRELOAD.hierarchy).length === 0) {
-      fetchHierarchyFromServer();
-    }
-  }
-
-  updateSubscriberInputsState();
-  updateRecordsBadge();
-  updateSyncUI();
-  checkServerConnection();
-}
-
-// Ensure bootApp executes regardless of whether DOMContentLoaded already fired
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', bootApp);
-} else {
-  bootApp();
-}
-
-// Smart Lightweight Heartbeat: Periodic background check (every 20 seconds, active tab only)
-setInterval(() => {
-  // If phone is locked or surveyor switched apps, pause heartbeat to save phone battery & data
-  if (document.visibilityState !== 'visible') return;
-
-  checkMidnightExpiration();
-  checkServerConnection();
-  if (isServerReachable && records.some(r => r.sync_status !== 'synced')) {
-    syncWithServer(true);
-  }
-}, 20000);
-
-// Live auto-refresh when surveyor returns to the app
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') {
-    checkMidnightExpiration();
-    checkServerConnection();
-    refreshCurrentUserProfile();
-  }
-});
-window.addEventListener('focus', () => {
-  checkMidnightExpiration();
-  checkServerConnection();
-  refreshCurrentUserProfile();
-});
+// State Management
+let currentLat = null;
+let currentLon = null;
+let currentAccuracy = null;
+let mapInstance = null;
+let mapMarker = null;
+let accuracyCircle = null;
+let gpsWatchId = null;
+let gpsWatchTimer = null;
+let bestAccuracy = Infinity;
+let currentActiveEnclosure = '';
+
+const STORAGE_KEY = 'gpon_survey_records_v1';
+let records = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+
+// Device & Server Configuration
+let deviceId = localStorage.getItem('gpon_device_id');
+if (!deviceId) {
+  deviceId = 'DEV-' + Math.random().toString(36).substring(2, 8).toUpperCase();
+  localStorage.setItem('gpon_device_id', deviceId);
+}
+
+let serverUrl = localStorage.getItem('gpon_server_url');
+if (!serverUrl || (window.location.protocol.startsWith('http') && window.location.port !== '5500')) {
+  // If served via web server (e.g. https://network-mapping.online), always use current origin
+  serverUrl = window.location.origin;
+  localStorage.setItem('gpon_server_url', serverUrl);
+}
+
+let isSyncing = false;
+let isServerReachable = false;
+let serverConnectionChecked = false;
+let lastKnownHierarchyVersion = parseInt(localStorage.getItem('gpon_hierarchy_version') || '0', 10);
+
+// Cross-browser Polyfill for Element.remove() (IE 9-11, legacy Android WebViews)
+if (typeof Element !== 'undefined' && !Element.prototype.remove) {
+  Element.prototype.remove = function() {
+    if (this.parentNode) {
+      this.parentNode.removeChild(this);
+    }
+  };
+}
+
+function removeFoucPrevention() {
+  try {
+    const s = document.getElementById('fouc-prevention');
+    if (s) {
+      if (typeof s.remove === 'function') {
+        s.remove();
+      } else if (s.parentNode) {
+        s.parentNode.removeChild(s);
+      }
+    }
+  } catch (e) {}
+}
+
+function showLoginOverlay() {
+  removeFoucPrevention();
+  const overlay = document.getElementById('login-overlay');
+  if (overlay) {
+    overlay.style.cssText = "display: flex !important; position: fixed !important; top: 0 !important; left: 0 !important; right: 0 !important; bottom: 0 !important; width: 100% !important; height: 100% !important; z-index: 99999 !important; background: rgba(32, 33, 36, 0.85) !important; align-items: center !important; justify-content: center !important;";
+  }
+  const userBar = document.getElementById('user-bar');
+  if (userBar) userBar.style.display = 'none';
+}
+
+function hideLoginOverlay() {
+  const overlay = document.getElementById('login-overlay');
+  if (overlay) {
+    overlay.style.setProperty('display', 'none', 'important');
+  }
+}
+
+// User Session & Authentication
+let midnightTimer = null;
+
+function getNextMidnightTimestamp() {
+  const now = new Date();
+  // Next midnight: tomorrow at 00:00:00 local time
+  const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0);
+  return midnight.getTime();
+}
+
+function clearSessionOnly() {
+  currentUser = null;
+  networkSurveyedPoints = {};
+  localStorage.removeItem('gpon_logged_in_user');
+  localStorage.removeItem('gpon_auth_token');
+  localStorage.removeItem('gpon_session_expires_at');
+  localStorage.removeItem('gpon_network_surveyed_points');
+  if (midnightTimer) {
+    clearTimeout(midnightTimer);
+    midnightTimer = null;
+  }
+  // ZERO DATA LOSS INVARIANT:
+  // STORAGE_KEY ('gpon_survey_records_v1') and 'gpon_pending_deletions' are NEVER cleared or modified.
+  // All pending offline survey records are safely preserved on this device.
+}
+
+function scheduleMidnightLogout() {
+  if (midnightTimer) {
+    clearTimeout(midnightTimer);
+    midnightTimer = null;
+  }
+  if (!currentUser) return;
+
+  const nextMidnight = getNextMidnightTimestamp();
+  const msUntilMidnight = Math.max(1000, nextMidnight - Date.now());
+
+  midnightTimer = setTimeout(async () => {
+    console.log('[Auth] 00:00 Midnight reached. Triggering daily session logout.');
+    await handleMidnightSessionReset();
+  }, msUntilMidnight);
+}
+
+async function handleMidnightSessionReset() {
+  if (!currentUser) return;
+
+  // 1. Attempt silent auto-sync of pending records before closing session if connected
+  const pendingCount = (records || []).filter(r => r.sync_status !== 'synced').length;
+  if (pendingCount > 0 && isServerReachable) {
+    try {
+      console.log(`[Auth] Attempting auto-sync of ${pendingCount} pending records prior to midnight logout...`);
+      await syncWithServer(true);
+    } catch (e) {
+      console.warn('[Auth] Pre-midnight sync failed (offline):', e);
+    }
+  }
+
+  // 2. Clear authentication session while keeping all offline records 100% safe
+  clearSessionOnly();
+
+  // 3. UI Update
+  showLoginOverlay();
+  updateUserBar();
+
+  // Friendly midnight notice on the login card
+  const loginErrBox = document.getElementById('login-error-msg');
+  if (loginErrBox) {
+    loginErrBox.style.display = 'block';
+    loginErrBox.style.backgroundColor = '#eff6ff';
+    loginErrBox.style.color = '#1e40af';
+    loginErrBox.style.borderColor = '#bfdbfe';
+    loginErrBox.innerHTML = '🌙 <strong>Daily Midnight Reset:</strong> Session ended at 00:00.<br><span style="font-size: 0.8rem; opacity: 0.95;">Please sign in for today\'s shift. All your pending offline records are safely preserved on this device.</span>';
+  }
+  showToast('🌙 Daily session reset at 00:00. Offline records preserved.', true);
+}
+
+function checkMidnightExpiration() {
+  if (!currentUser) return;
+  const expiresAt = parseInt(localStorage.getItem('gpon_session_expires_at') || '0', 10);
+  if (expiresAt > 0 && Date.now() >= expiresAt) {
+    console.log('[Auth] Session crossed midnight (00:00). Triggering session reset.');
+    handleMidnightSessionReset();
+  }
+}
+
+async function hashOfflineCredential(username, password) {
+  try {
+    if (window.crypto && crypto.subtle) {
+      const enc = new TextEncoder();
+      const data = enc.encode(`gpon_salt_${username.toLowerCase().trim()}_${password}`);
+      const hashBuf = await crypto.subtle.digest('SHA-256', data);
+      return Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+  } catch (e) {}
+  return btoa(`${username.toLowerCase().trim()}:${password}`);
+}
+
+function getStoredUser() {
+  try {
+    const raw = localStorage.getItem('gpon_logged_in_user');
+    if (!raw || raw === 'null' || raw === 'undefined' || raw === '{}') return null;
+    const u = JSON.parse(raw);
+    if (u && typeof u === 'object' && u.username && typeof u.username === 'string' && u.username.trim().length > 0) {
+      // Check if session has crossed 00:00 midnight
+      const expiresAt = parseInt(localStorage.getItem('gpon_session_expires_at') || '0', 10);
+      if (expiresAt > 0 && Date.now() >= expiresAt) {
+        console.log('[Auth] Daily session expired past midnight (00:00). Requiring login for today.');
+        clearSessionOnly();
+        return null;
+      }
+      return u;
+    }
+  } catch (e) {
+    console.warn('Invalid user session in localStorage:', e);
+  }
+  localStorage.removeItem('gpon_logged_in_user');
+  return null;
+}
+let currentUser = getStoredUser();
+
+// Network-Wide Surveyed Points Map (for duplicate checking, field locks, and ACSO supervisor updates)
+let networkSurveyedPoints = {};
+let currentAcsoEditingUuid = null;
+
+try {
+  const cachedPoints = localStorage.getItem('gpon_network_surveyed_points');
+  if (cachedPoints) {
+    networkSurveyedPoints = JSON.parse(cachedPoints);
+  }
+} catch (e) {
+  networkSurveyedPoints = {};
+}
+
+const FIBER_COLORS = ["BLUE", "ORANGE", "GREEN", "BROWN", "SLATE", "WHITE", "RED", "BLACK", "YELLOW", "VIOLET", "ROSE", "AQUA"];
+const COLOR_TO_NUM = {};
+const NUM_TO_COLOR = {};
+FIBER_COLORS.forEach((col, idx) => {
+  COLOR_TO_NUM[col] = idx + 1;
+  NUM_TO_COLOR[idx + 1] = col;
+});
+
+function getColorVariants(color) {
+  const c = String(color || '').trim().toUpperCase();
+  if (!c) return [];
+  const variants = new Set([c]);
+
+  let portNum = null;
+  const m = c.match(/^OUT\s*[- ]\s*(\d+)|^OUT\s*(\d+)/i);
+  if (m) {
+    portNum = parseInt(m[1] || m[2], 10);
+  } else if (COLOR_TO_NUM[c]) {
+    portNum = COLOR_TO_NUM[c];
+  }
+
+  if (portNum && !isNaN(portNum) && portNum > 0) {
+    variants.add(`OUT-${portNum}`);
+    variants.add(`OUT -${portNum}`);
+    variants.add(`OUT - ${portNum}`);
+    variants.add(`OUT ${portNum}`);
+    if (NUM_TO_COLOR[portNum]) {
+      const colName = NUM_TO_COLOR[portNum];
+      variants.add(`OUT ${portNum} - ${colName}`);
+      variants.add(`OUT-${portNum} - ${colName}`);
+      if (portNum <= 12) {
+        variants.add(colName);
+      }
+    }
+  }
+
+  return Array.from(variants);
+}
+
+function getLeadKey(eid, spl, color) {
+  if (!eid || !spl) return '';
+  const eidUp = eid.trim().toUpperCase();
+  let splUp = spl.trim().toUpperCase();
+  if (splUp.startsWith(eidUp) && splUp.length > eidUp.length) {
+    splUp = splUp.substring(eidUp.length).trim();
+  }
+  const c = color ? String(color).trim().toUpperCase() : '';
+  return `${eidUp}|${splUp}|${c}`;
+}
+
+function getSplitterKey(eid, spl) {
+  if (!eid || !spl) return '';
+  const eidUp = eid.trim().toUpperCase();
+  let splUp = spl.trim().toUpperCase();
+  if (splUp.startsWith(eidUp) && splUp.length > eidUp.length) {
+    splUp = splUp.substring(eidUp.length).trim();
+  }
+  return `${eidUp}|${splUp}`;
+}
+
+function getLeadSurveyedInfo(eid, spl, color) {
+  if (!eid || !spl) return null;
+  const eidUp = eid.trim().toUpperCase();
+  let splUp = spl.trim().toUpperCase();
+  if (splUp.startsWith(eidUp) && splUp.length > eidUp.length) {
+    splUp = splUp.substring(eidUp.length).trim();
+  }
+  const colVariants = getColorVariants(color);
+
+  // 1. Check in networkSurveyedPoints
+  if (networkSurveyedPoints) {
+    for (const cv of colVariants) {
+      const k = `${eidUp}|${splUp}|${cv}`;
+      if (networkSurveyedPoints[k] && !networkSurveyedPoints[k].is_summary) {
+        return networkSurveyedPoints[k];
+      }
+    }
+    if (colVariants.length === 0) {
+      const kEmpty = `${eidUp}|${splUp}|`;
+      if (networkSurveyedPoints[kEmpty] && !networkSurveyedPoints[kEmpty].is_summary) {
+        return networkSurveyedPoints[kEmpty];
+      }
+    }
+  }
+
+  // 2. Check in local records array
+  const local = records.find(r => {
+    const rEid = (r["Enclosure ID"] || r.enclosure_id || '').trim().toUpperCase();
+    const rSpl = (r["Splitter ID"] || r.splitter_id || '').trim().toUpperCase();
+    if (rEid !== eidUp || rSpl !== splUp) return false;
+    const rCol = (r["Splitter Lead Colour Code"] || r.splitter_lead_color || '').trim().toUpperCase();
+    if (colVariants.length === 0 && !rCol) return true;
+    const rVariants = getColorVariants(rCol);
+    return colVariants.some(v => rVariants.includes(v));
+  });
+
+  if (local) {
+    return {
+      client_uuid: local.client_uuid,
+      enclosure_id: local["Enclosure ID"] || local.enclosure_id,
+      splitter_id: local["Splitter ID"] || local.splitter_id,
+      splitter_ratio: local["Splitter Ratio"] || local.splitter_ratio || '',
+      splitter_lead_color: local["Splitter Lead Colour Code"] || local.splitter_lead_color || '',
+      surveyor_name: local.surveyor_name || local.surveyor_username || 'Local',
+      survey_date_time: local["Date & Time"] || local.survey_date_time || '',
+      kseb_post_number: local["KSEB Post Number"] || local.kseb_post_number || '',
+      landmark: local["Land Mark"] || local.landmark || '',
+      lat_long: local["Lat /Long"] || local.lat_long || '',
+      customers_connected: (local["No: Of Customer Connected"] !== undefined ? local["No: Of Customer Connected"] : local.customers_connected) || 0,
+      adl_subscriber_id: local["ADL Subscriber ID"] || local.adl_subscriber_id || '',
+      acs_subscriber_id: local["ACS Subscriber ID"] || local.acs_subscriber_id || ''
+    };
+  }
+  return null;
+}
+
+function getSplitterSummary(eid, spl) {
+  if (!eid || !spl) return null;
+  const eidUp = eid.trim().toUpperCase();
+  let splUp = spl.trim().toUpperCase();
+  if (splUp.startsWith(eidUp) && splUp.length > eidUp.length) {
+    splUp = splUp.substring(eidUp.length).trim();
+  }
+  const splKey = `${eidUp}|${splUp}`;
+
+  const leadsSet = new Set();
+  let latestInfo = null;
+
+  if (networkSurveyedPoints) {
+    if (networkSurveyedPoints[splKey]) {
+      const s = networkSurveyedPoints[splKey];
+      latestInfo = Object.assign({}, s);
+      if (Array.isArray(s.leads)) {
+        s.leads.forEach(l => leadsSet.add(l.toUpperCase()));
+      }
+    }
+    const prefix = splKey + '|';
+    Object.keys(networkSurveyedPoints).forEach(k => {
+      if (k.startsWith(prefix)) {
+        const item = networkSurveyedPoints[k];
+        if (item && !item.is_summary) {
+          if (!latestInfo) {
+            latestInfo = Object.assign({}, item);
+          } else {
+            // Fill any missing properties from individual lead items
+            if (latestInfo.customers_connected === undefined || latestInfo.customers_connected === null || latestInfo.customers_connected === '') {
+              if (item.customers_connected !== undefined && item.customers_connected !== null && item.customers_connected !== '') {
+                latestInfo.customers_connected = item.customers_connected;
+              }
+            }
+            if (!latestInfo.splitter_ratio && item.splitter_ratio) latestInfo.splitter_ratio = item.splitter_ratio;
+            if (!latestInfo.kseb_post_number && item.kseb_post_number) latestInfo.kseb_post_number = item.kseb_post_number;
+            if (!latestInfo.landmark && item.landmark) latestInfo.landmark = item.landmark;
+            if (!latestInfo.lat_long && item.lat_long) latestInfo.lat_long = item.lat_long;
+          }
+          const col = (item.splitter_lead_color || '').trim().toUpperCase();
+          if (col) leadsSet.add(col);
+        }
+      }
+    });
+  }
+
+  records.forEach(r => {
+    const rEid = (r["Enclosure ID"] || r.enclosure_id || '').trim().toUpperCase();
+    const rSpl = (r["Splitter ID"] || r.splitter_id || '').trim().toUpperCase();
+    if (rEid === eidUp && rSpl === splUp) {
+      const rCust = (r["No: Of Customer Connected"] !== undefined ? r["No: Of Customer Connected"] : r.customers_connected);
+      if (!latestInfo) {
+        latestInfo = {
+          splitter_ratio: r["Splitter Ratio"] || r.splitter_ratio,
+          customers_connected: rCust,
+          kseb_post_number: r["KSEB Post Number"] || r.kseb_post_number,
+          landmark: r["Land Mark"] || r.landmark,
+          lat_long: r["Lat /Long"] || r.lat_long,
+          surveyor_name: r.surveyor_name || r.surveyor_username,
+          survey_date_time: r["Date & Time"] || r.survey_date_time
+        };
+      } else {
+        if (rCust !== undefined && rCust !== null && rCust !== '') {
+          latestInfo.customers_connected = rCust;
+        }
+        if (!latestInfo.splitter_ratio) latestInfo.splitter_ratio = r["Splitter Ratio"] || r.splitter_ratio;
+        if (!latestInfo.kseb_post_number) latestInfo.kseb_post_number = r["KSEB Post Number"] || r.kseb_post_number;
+        if (!latestInfo.landmark) latestInfo.landmark = r["Land Mark"] || r.landmark;
+        if (!latestInfo.lat_long) latestInfo.lat_long = r["Lat /Long"] || r.lat_long;
+      }
+      const col = (r["Splitter Lead Colour Code"] || r.splitter_lead_color || '').trim().toUpperCase();
+      if (col) leadsSet.add(col);
+    }
+  });
+
+  const leadsList = Array.from(leadsSet);
+  if (leadsList.length === 0 && !latestInfo) return null;
+
+  const resolvedCustomers = (latestInfo && (latestInfo.customers_connected !== undefined ? latestInfo.customers_connected : latestInfo["No: Of Customer Connected"]));
+
+  return {
+    count: leadsList.length,
+    leads: leadsList,
+    splitter_ratio: (latestInfo && latestInfo.splitter_ratio) || '',
+    customers_connected: (resolvedCustomers !== undefined && resolvedCustomers !== null && resolvedCustomers !== '') ? resolvedCustomers : '',
+    kseb_post_number: (latestInfo && latestInfo.kseb_post_number) || '',
+    landmark: (latestInfo && latestInfo.landmark) || '',
+    lat_long: (latestInfo && latestInfo.lat_long) || '',
+    surveyor_name: (latestInfo && (latestInfo.surveyor_name || latestInfo.surveyor_username)) || 'Surveyor',
+    survey_date_time: (latestInfo && latestInfo.survey_date_time) || ''
+  };
+}
+
+function getSurveyedSplittersForEnclosure(eid) {
+  const surveyed = new Set();
+  const eidUpper = (eid || '').toUpperCase();
+  if (!eidUpper) return [];
+
+  if (networkSurveyedPoints) {
+    Object.keys(networkSurveyedPoints).forEach(key => {
+      if (key.startsWith(eidUpper + '|')) {
+        const parts = key.split('|');
+        if (parts[1]) surveyed.add(parts[1]);
+      }
+    });
+  }
+
+  records.forEach(r => {
+    const rEid = (r["Enclosure ID"] || r.enclosure_id || '').toUpperCase();
+    const rSpl = (r["Splitter ID"] || r.splitter_id || '').toUpperCase();
+    if (rEid === eidUpper && rSpl) {
+      surveyed.add(rSpl);
+    }
+  });
+
+  return Array.from(surveyed);
+}
+
+// Form Edit State Tracking: Guards against background heartbeats wiping user inputs
+let custCountManuallyEdited = false;
+let currentActiveSplitter = null;
+let currentActiveLeadColor = null;
+
+function isUserInteractingWithForm() {
+  const active = document.activeElement;
+  const formCard = document.getElementById('entry-form-card') || document.querySelector('.gs-card') || document.body;
+  const isInputActive = active && (active.tagName === 'INPUT' || active.tagName === 'SELECT' || active.tagName === 'TEXTAREA') && formCard.contains(active);
+  if (isInputActive) return true;
+  if (custCountManuallyEdited) return true;
+  if (typeof adlSubInput !== 'undefined' && adlSubInput && adlSubInput.value && adlSubInput.value.trim().length > 0) return true;
+  if (typeof acsSubInput !== 'undefined' && acsSubInput && acsSubInput.value && acsSubInput.value.trim().length > 0) return true;
+  return false;
+}
+
+let pendingSurveyRefresh = false;
+let lastConflictWarningKey = '';
+
+// Update Splitter Out option labels / lock state IN PLACE (no rebuild, no value change, no change handlers).
+// Keeps lock status live even while the surveyor is typing, and warns if their selected lead was just taken.
+function softRefreshLeadLabels() {
+  try {
+    if (!splitterColorSelect) return;
+    const olt = oltSelect ? oltSelect.value : '';
+    const port = portSelect ? portSelect.value : '';
+    const enc = enclosureSelect ? enclosureSelect.value : '';
+    const spl = splitterIdSelect ? splitterIdSelect.value : '';
+    if (!olt || !port || !enc || !spl) return;
+    const eid = computeEnclosureId(olt, port, enc);
+    const role = currentUser ? normalizeClientRole(currentUser.role) : 'field_technician';
+    const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'admin' || role === 'super_admin');
+    const selectedCol = splitterColorSelect.value;
+
+    Array.from(splitterColorSelect.options).forEach(opt => {
+      const col = opt.value;
+      if (!col) return;
+      const leadSurvey = getLeadSurveyedInfo(eid, spl, col);
+      if (leadSurvey) {
+        const byWho = leadSurvey.surveyor_name || leadSurvey.surveyor_username || 'Surveyor';
+        if (isSupervisor) {
+          const txt = `${col} — ✏️ Surveyed (${byWho})`;
+          opt.innerText = txt;
+          opt.textContent = txt;
+          opt.style.color = '#0284c7';
+          opt.style.fontWeight = '600';
+        } else {
+          const txt = `${col} — 🔒 Surveyed (${byWho})`;
+          opt.innerText = txt;
+          opt.textContent = txt;
+          opt.style.color = '#94a3b8';
+          opt.style.backgroundColor = '#f1f5f9';
+          // Never disable the currently selected option (that would silently change the value)
+          if (col !== selectedCol) opt.disabled = true;
+        }
+      }
+    });
+
+    // Conflict warning: selected lead was surveyed by someone else while this surveyor was typing
+    if (selectedCol) {
+      const taken = getLeadSurveyedInfo(eid, spl, selectedCol);
+      const isOwnEdit = taken && currentAcsoEditingUuid && taken.client_uuid === currentAcsoEditingUuid;
+      const key = `${eid}|${spl}|${selectedCol}`;
+      if (taken && !isOwnEdit && lastConflictWarningKey !== key) {
+        lastConflictWarningKey = key;
+        const byWho = taken.surveyor_name || taken.surveyor_username || 'another surveyor';
+        showToast(isSupervisor
+          ? `⚠️ ${spl} • ${selectedCol} was just surveyed by ${byWho}. Submitting will OVERWRITE their record.`
+          : `⚠️ ${spl} • ${selectedCol} was just surveyed by ${byWho}. Please choose another Splitter Out.`, false);
+      }
+    }
+  } catch (e) {
+    console.warn('[SoftRefresh] failed:', e);
+  }
+}
+
+// Apply the deferred full dropdown rebuild once the surveyor is no longer editing
+function applyPendingSurveyRefresh() {
+  if (!pendingSurveyRefresh || isUserInteractingWithForm()) return;
+  pendingSurveyRefresh = false;
+  updateAvailableEnclosures();
+}
+
+async function fetchSurveyedPoints(isBackground = false) {
+  try {
+    const center = (centerSelect && centerSelect.value && centerSelect.value !== 'Center') 
+      ? centerSelect.value 
+      : (currentUser && currentUser.assigned_center && currentUser.assigned_center !== 'ALL' ? currentUser.assigned_center : '');
+    
+    const query = center ? `?center=${encodeURIComponent(center)}` : '';
+    const token = localStorage.getItem('gpon_auth_token') || '';
+    const headers = {};
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+
+    const res = await fetch(`${serverUrl}/api/surveyed-points${query}`, { headers });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.points) {
+        networkSurveyedPoints = data.points;
+        try {
+          localStorage.setItem('gpon_network_surveyed_points', JSON.stringify(networkSurveyedPoints));
+        } catch (quotaErr) {
+          console.warn('[Storage] Quota exceeded for surveyed points cache, keeping in-memory:', quotaErr);
+        }
+        // If this is a periodic background fetch and user is actively working on the form,
+        // do not rebuild select menus or trigger form cascades to prevent UI flicker or wiping user input.
+        // Instead: soft-update lead lock labels in place, and defer the full rebuild until the surveyor is idle.
+        if (isBackground && isUserInteractingWithForm()) {
+          pendingSurveyRefresh = true;
+          softRefreshLeadLabels();
+          return;
+        }
+        pendingSurveyRefresh = false;
+        updateAvailableEnclosures();
+      }
+    }
+  } catch (err) {
+    console.warn('Could not fetch surveyed points from server (using offline cache):', err);
+  }
+}
+
+function normalizeClientRole(role) {
+  const r = (role || '').trim().toLowerCase();
+  if (r === 'super_admin' || r === 'superadmin') return 'super_admin';
+  if (r === 'admin' || r === 'operations_admin') return 'admin';
+  if (r === 'rcsm') return 'rcsm';
+  if (r === 'acso') return 'acso';
+  return 'field_technician';
+}
+
+
+function updateUserBar() {
+  const userBar = document.getElementById('user-bar');
+  const nameEl = document.getElementById('logged-user-name');
+  const centerEl = document.getElementById('logged-user-center');
+  const roleEl = document.getElementById('logged-user-role');
+  const adminLink = document.getElementById('admin-nav-link');
+  const rcsmBanner = document.getElementById('rcsm-banner');
+  const submitBtn = document.querySelector('.btn-add-row');
+  const excelBtn = document.getElementById('btn-export-excel') || document.querySelector('.btn-gs-excel');
+
+  if (currentUser) {
+    nameEl.innerText = currentUser.full_name || currentUser.username;
+    const assignedStr = currentUser.assigned_center || 'Unassigned';
+    const assignedArr = (currentUser.assigned_centers || assignedStr.split(',')).map(s => s.trim()).filter(Boolean);
+    if (assignedStr === 'Unassigned' || assignedArr.includes('Unassigned') || assignedArr.length === 0) {
+      centerEl.innerText = '⚠️ Unassigned Center';
+      centerEl.style.color = '#f59e0b';
+    } else if (assignedArr.length > 1 && !assignedArr.includes('ALL')) {
+      centerEl.innerText = `🏢 ${assignedArr.length} Centers Charge`;
+      centerEl.title = `Assigned Centers: ${assignedArr.join(', ')}`;
+      centerEl.style.color = '';
+    } else {
+      centerEl.innerText = assignedStr;
+      centerEl.style.color = '';
+    }
+    userBar.style.display = 'flex';
+
+    const role = normalizeClientRole(currentUser.role);
+    currentUser.role = role;
+
+    // 1. Role Badges
+    if (roleEl) {
+      roleEl.className = `gs-role-badge role-${role}`;
+      if (role === 'super_admin') {
+        roleEl.innerText = '👑 Super Admin';
+      } else if (role === 'admin') {
+        roleEl.innerText = '🛡️ Admin';
+      } else if (role === 'rcsm') {
+        roleEl.innerText = '📊 RCSM';
+      } else if (role === 'acso') {
+        roleEl.innerText = '📝 ACSO';
+      } else {
+        roleEl.innerText = '👷 Field Tech';
+      }
+    }
+
+    // 2. Dashboard Link for Super Admin, Admin & RCSM
+    if (adminLink) {
+      if (role === 'super_admin') {
+        adminLink.innerText = '⚙️ Admin Dashboard';
+        adminLink.style.display = 'inline-block';
+      } else if (role === 'admin') {
+        adminLink.innerText = '🛡️ Admin Dashboard';
+        adminLink.style.display = 'inline-block';
+      } else if (role === 'rcsm') {
+        adminLink.innerText = '📊 RCSM Dashboard';
+        adminLink.style.display = 'inline-block';
+      } else {
+        adminLink.style.display = 'none';
+      }
+    }
+
+    // 3. Field Survey Entry: Enabled for all roles (including RCSM, ACSO, Super Admin, and Field Tech)
+    const isEntryAllowed = true;
+    if (rcsmBanner) rcsmBanner.style.display = 'none';
+    if (submitBtn) submitBtn.style.display = 'flex';
+
+    const formInputs = document.querySelectorAll('.gs-card-body input, .gs-card-body select');
+    formInputs.forEach(el => {
+      if (!['tech-select', 'olt-type-select'].includes(el.id)) {
+        el.removeAttribute('disabled');
+      }
+    });
+    if (typeof getUserAvailableRegions === 'function' && regionSelect) {
+      const availRegs = getUserAvailableRegions();
+      regionSelect.disabled = (availRegs.length <= 1);
+    }
+
+    // 4. Field Technician: "Option to enter the field input only no options to download the data"
+    // ACSO & RCSM & Super Admin can download data. Field Technician cannot.
+    const isDownloadAllowed = (role !== 'field_technician');
+    if (excelBtn) excelBtn.style.display = isDownloadAllowed ? 'inline-flex' : 'none';
+
+    updateAvailableEnclosures();
+    updateAvailableSplitters();
+  } else {
+    userBar.style.display = 'none';
+  }
+}
+
+// ==========================================
+// AUTHENTICATION & LOGIN HELPERS
+// ==========================================
+
+function togglePasswordVisibility(inputId, btnId) {
+  const input = document.getElementById(inputId);
+  const btn = document.getElementById(btnId);
+  if (!input) return;
+  if (input.type === 'password') {
+    input.type = 'text';
+    if (btn) {
+      btn.innerText = '🙈';
+      btn.title = 'Hide password';
+      btn.setAttribute('aria-label', 'Hide password');
+    }
+  } else {
+    input.type = 'password';
+    if (btn) {
+      btn.innerText = '👁️';
+      btn.title = 'Show password';
+      btn.setAttribute('aria-label', 'Show password');
+    }
+  }
+}
+
+function setLoginError(htmlMsg) {
+  const errBox = document.getElementById('login-error-msg');
+  if (errBox) {
+    errBox.innerHTML = htmlMsg;
+    errBox.style.display = 'block';
+    errBox.style.backgroundColor = '#fef2f2';
+    errBox.style.color = '#991b1b';
+    errBox.style.borderColor = '#fecaca';
+    errBox.classList.remove('shake-anim');
+    void errBox.offsetWidth; // Force DOM reflow to re-trigger shake animation
+    errBox.classList.add('shake-anim');
+  }
+  // Strip HTML tags for clean toast notification
+  const plainText = htmlMsg.replace(/<[^>]*>?/gm, '');
+  showToast(plainText, false);
+}
+
+function clearLoginError() {
+  const errBox = document.getElementById('login-error-msg');
+  if (errBox) {
+    errBox.style.display = 'none';
+    errBox.innerHTML = '';
+    errBox.style.backgroundColor = '';
+    errBox.style.color = '';
+    errBox.style.borderColor = '';
+  }
+}
+
+async function handleLogin(e) {
+  if (e) e.preventDefault();
+  clearLoginError();
+
+  const uInput = document.getElementById('login-username');
+  const pInput = document.getElementById('login-password');
+  const submitBtn = document.getElementById('btn-login-submit');
+
+  const u = (uInput ? uInput.value : '').trim();
+  const p = (pInput ? pInput.value : '').trim();
+  const rememberCheckbox = document.getElementById('login-remember-me');
+  const remember = rememberCheckbox ? rememberCheckbox.checked : true;
+  
+  if (!u || !p) {
+    setLoginError('⚠️ <strong>Please enter username and password.</strong>');
+    if (!u && uInput) uInput.focus();
+    else if (!p && pInput) pInput.focus();
+    return;
+  }
+
+  // Visual loading indicator on submit button
+  const origBtnHtml = submitBtn ? submitBtn.innerHTML : 'Sign In';
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '⏳ Signing in...';
+    submitBtn.style.opacity = '0.75';
+    submitBtn.style.cursor = 'not-allowed';
+  }
+
+  let serverContacted = false;
+
+  // 1. Attempt login with Ubuntu server (15-second timeout for mobile networks)
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+    const res = await fetch(`${serverUrl}/api/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: u, password: p }),
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+    serverContacted = true;
+
+    if (res.ok) {
+      const data = await res.json();
+      if (data.token) {
+        localStorage.setItem('gpon_auth_token', data.token);
+      }
+      if (remember) {
+        localStorage.setItem('gpon_remember_creds', 'true');
+        localStorage.setItem('gpon_remembered_username', u);
+      } else {
+        localStorage.removeItem('gpon_remember_creds');
+        localStorage.removeItem('gpon_remembered_username');
+      }
+      // Purge any legacy plaintext passwords stored previously
+      localStorage.removeItem('gpon_remembered_password');
+
+      // Cache credentials securely for offline field re-authentication
+      try {
+        const hash = await hashOfflineCredential(u, p);
+        localStorage.setItem('gpon_offline_user_' + u.toLowerCase().trim(), JSON.stringify({
+          user: data.user,
+          hash: hash
+        }));
+      } catch (e) {}
+
+      setCurrentUser(data.user);
+      showToast(`Welcome, ${data.user.full_name}!`);
+      return;
+    } else {
+      // Server returned an HTTP error
+      const errData = await res.json().catch(() => ({}));
+      if (res.status === 401) {
+        setLoginError('⚠️ <strong>Invalid username or password.</strong><br><span style="font-size: 0.78rem; opacity: 0.95;">Tap the 👁️ eye icon to check your password for typos or phone auto-capitalization.</span>');
+      } else if (res.status === 429) {
+        setLoginError('⏳ <strong>Too many login attempts.</strong><br><span style="font-size: 0.78rem;">Please wait 1 minute before trying again.</span>');
+      } else if (res.status >= 500) {
+        setLoginError(`⚠️ <strong>Server Error (${res.status}).</strong><br><span style="font-size: 0.78rem;">The server is restarting or busy. Please retry in a few moments.</span>`);
+      } else {
+        setLoginError(`⚠️ <strong>${errData.detail || 'Login failed. Please check credentials.'}</strong>`);
+      }
+      return;
+    }
+  } catch (err) {
+    console.log('Server login error / unreachable:', err);
+    if (err.name === 'AbortError') {
+      setLoginError('⚠️ <strong>Connection Timed Out.</strong><br><span style="font-size: 0.78rem;">Server took too long to respond. Please check your mobile signal and retry.</span>');
+      return;
+    }
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = origBtnHtml;
+      submitBtn.style.opacity = '1';
+      submitBtn.style.cursor = 'pointer';
+    }
+  }
+
+  // 2. Offline fallback credentials for remote emergency field areas
+  if (!serverContacted) {
+    let offlineMatchedUser = null;
+
+    // Check cached offline credentials for this device
+    try {
+      const cachedRaw = localStorage.getItem('gpon_offline_user_' + u.toLowerCase().trim());
+      if (cachedRaw) {
+        const cachedObj = JSON.parse(cachedRaw);
+        const inputHash = await hashOfflineCredential(u, p);
+        if (cachedObj && cachedObj.hash === inputHash) {
+          offlineMatchedUser = cachedObj.user;
+        }
+      }
+    } catch (e) {
+      console.warn('Offline credential verification error:', e);
+    }
+
+    if (!offlineMatchedUser) {
+      const offlineUsers = {
+        'admin': { username: 'admin', full_name: 'Central Super Administrator', email: 'admin@gpon.local', assigned_center: 'ALL', assigned_region: 'ALL', role: 'super_admin' }
+      };
+      if (offlineUsers[u.toLowerCase()] && p === 'admin123') {
+        offlineMatchedUser = offlineUsers[u.toLowerCase()];
+      }
+    }
+
+    if (offlineMatchedUser) {
+      if (remember) {
+        localStorage.setItem('gpon_remember_creds', 'true');
+        localStorage.setItem('gpon_remembered_username', u);
+      }
+      localStorage.removeItem('gpon_remembered_password');
+      setCurrentUser(offlineMatchedUser);
+      showToast(`Offline Login: Welcome, ${offlineMatchedUser.full_name}! (Working Offline)`);
+    } else {
+      setLoginError('⚠️ <strong>Unable to connect to server.</strong><br><span style="font-size: 0.78rem;">Please check your mobile data / Wi-Fi or verify credentials.</span>');
+    }
+  }
+}
+
+function setCurrentUser(user) {
+  currentUser = user;
+  localStorage.setItem('gpon_logged_in_user', JSON.stringify(user));
+
+  // Schedule midnight daily session expiration (00:00 local time)
+  const nextMidnight = getNextMidnightTimestamp();
+  localStorage.setItem('gpon_session_expires_at', String(nextMidnight));
+  scheduleMidnightLogout();
+
+  hideLoginOverlay();
+  updateUserBar();
+  initDropdowns();
+  fetchSurveyedPoints();
+  // Always pull the latest hierarchy after login (no-op re-render if unchanged)
+  fetchHierarchyFromServer();
+}
+
+async function logout() {
+  const pendingCount = (records || []).filter(r => r.sync_status !== 'synced').length;
+
+  // If connected and pending records exist, attempt auto-sync before signing out
+  if (pendingCount > 0 && isServerReachable) {
+    showToast('🔄 Syncing pending records before sign out...', true);
+    try {
+      await syncWithServer(true);
+    } catch (e) {
+      console.warn('Pre-logout sync error:', e);
+    }
+  }
+
+  const remainingPending = (records || []).filter(r => r.sync_status !== 'synced').length;
+  let confirmMsg = 'Log out from survey account?';
+  if (remainingPending > 0) {
+    confirmMsg = `⚠️ You have ${remainingPending} unsynced record(s) on this device.\n\nThey are safely saved in local offline storage and will NOT be lost. When you or another surveyor signs in with internet, they will sync to the server.\n\nDo you want to log out now?`;
+  }
+
+  if (confirm(confirmMsg)) {
+    // If online, notify server of logout
+    try {
+      const token = localStorage.getItem('gpon_auth_token') || '';
+      if (token && isServerReachable) {
+        fetch(`${serverUrl}/api/logout`, {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + token }
+        }).catch(() => {});
+      }
+    } catch (e) {}
+
+    clearSessionOnly();
+    showLoginOverlay();
+    updateUserBar();
+    showToast('Signed out successfully. Offline records preserved.', true);
+  }
+}
+
+let resetResendTimer = null;
+let resetResendCountdown = 0;
+
+function goToResetStep(step) {
+  const s1 = document.getElementById('reset-step-1');
+  const s2 = document.getElementById('reset-step-2');
+  const err1 = document.getElementById('reset-step1-error');
+  const err2 = document.getElementById('reset-step2-error');
+  const succ2 = document.getElementById('reset-step2-success');
+
+  if (err1) err1.style.display = 'none';
+  if (err2) err2.style.display = 'none';
+  if (succ2) succ2.style.display = 'none';
+
+  if (step === 1) {
+    if (s1) s1.style.display = 'block';
+    if (s2) s2.style.display = 'none';
+    const idField = document.getElementById('reset-identifier');
+    if (idField) setTimeout(() => idField.focus(), 100);
+  } else {
+    if (s1) s1.style.display = 'none';
+    if (s2) s2.style.display = 'block';
+    const otpField = document.getElementById('reset-otp-code');
+    if (otpField) {
+      otpField.value = '';
+      setTimeout(() => otpField.focus(), 100);
+    }
+  }
+}
+
+function openResetPasswordModal(username, email) {
+  const overlay = document.getElementById('reset-password-overlay');
+  if (!overlay) return;
+  const idField = document.getElementById('reset-identifier');
+  const p1 = document.getElementById('reset-new-password');
+  const p2 = document.getElementById('reset-confirm-password');
+
+  if (idField) {
+    idField.value = username || email || (currentUser ? currentUser.username : (document.getElementById('login-username').value || ''));
+  }
+  if (p1) p1.value = '';
+  if (p2) p2.value = '';
+
+  goToResetStep(1);
+  overlay.style.display = 'flex';
+}
+
+function closeResetPasswordModal() {
+  const overlay = document.getElementById('reset-password-overlay');
+  if (overlay) overlay.style.display = 'none';
+  if (resetResendTimer) {
+    clearInterval(resetResendTimer);
+    resetResendTimer = null;
+  }
+}
+
+function startResendCooldown() {
+  const btn = document.getElementById('btn-resend-reset-otp');
+  if (!btn) return;
+  if (resetResendTimer) clearInterval(resetResendTimer);
+  resetResendCountdown = 60;
+  btn.disabled = true;
+  btn.style.opacity = '0.6';
+  btn.innerText = `⏳ Resend in ${resetResendCountdown}s`;
+
+  resetResendTimer = setInterval(() => {
+    resetResendCountdown -= 1;
+    if (resetResendCountdown <= 0) {
+      clearInterval(resetResendTimer);
+      resetResendTimer = null;
+      btn.disabled = false;
+      btn.style.opacity = '1';
+      btn.innerText = '🔄 Resend Code';
+    } else {
+      btn.innerText = `⏳ Resend in ${resetResendCountdown}s`;
+    }
+  }, 1000);
+}
+
+async function handleRequestResetOtp(e) {
+  if (e) e.preventDefault();
+  const idField = document.getElementById('reset-identifier');
+  const btn = document.getElementById('btn-send-reset-otp');
+  const errDiv = document.getElementById('reset-step1-error');
+  if (errDiv) errDiv.style.display = 'none';
+
+  const val = idField ? idField.value.trim() : '';
+  if (!val) {
+    if (errDiv) {
+      errDiv.innerText = 'Please enter your username or registered email address.';
+      errDiv.style.display = 'block';
+    }
+    return;
+  }
+
+  if (btn) {
+    btn.disabled = true;
+    btn.innerText = '⏳ Sending OTP...';
+  }
+
+  try {
+    const res = await fetch(`${serverUrl}/api/request-password-reset-otp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username_or_email: val })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      document.getElementById('reset-verified-username').value = data.username;
+      const maskedEl = document.getElementById('reset-masked-email');
+      if (maskedEl) maskedEl.innerText = data.masked_email;
+      goToResetStep(2);
+      startResendCooldown();
+    } else {
+      if (errDiv) {
+        errDiv.innerText = data.detail || 'Could not send verification OTP.';
+        errDiv.style.display = 'block';
+      }
+    }
+  } catch (err) {
+    if (errDiv) {
+      errDiv.innerText = 'Cannot reach the server. Please check your network connection.';
+      errDiv.style.display = 'block';
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerText = '📩 Send Verification OTP';
+    }
+  }
+}
+
+async function resendResetOtp() {
+  const uname = document.getElementById('reset-verified-username').value.trim();
+  if (!uname) {
+    goToResetStep(1);
+    return;
+  }
+  const btn = document.getElementById('btn-resend-reset-otp');
+  if (btn && btn.disabled) return;
+
+  try {
+    const res = await fetch(`${serverUrl}/api/request-password-reset-otp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username_or_email: uname })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast('New 6-digit OTP sent to your registered email!', true);
+      startResendCooldown();
+    } else {
+      showToast(data.detail || 'Failed to resend code.', false);
+    }
+  } catch (e) {
+    showToast('Cannot connect to server to resend code.', false);
+  }
+}
+
+async function handleVerifyResetOtp(e) {
+  if (e) e.preventDefault();
+  const uname = document.getElementById('reset-verified-username').value.trim();
+  const otp = document.getElementById('reset-otp-code').value.trim();
+  const p1 = document.getElementById('reset-new-password').value.trim();
+  const p2 = document.getElementById('reset-confirm-password').value.trim();
+  const btn = document.getElementById('btn-verify-reset-otp');
+  const errDiv = document.getElementById('reset-step2-error');
+  const succDiv = document.getElementById('reset-step2-success');
+
+  if (errDiv) errDiv.style.display = 'none';
+  if (succDiv) succDiv.style.display = 'none';
+
+  if (!otp || otp.length !== 6) {
+    if (errDiv) {
+      errDiv.innerText = 'Please enter the complete 6-digit verification OTP.';
+      errDiv.style.display = 'block';
+    }
+    return;
+  }
+
+  if (!p1 || p1.length < 4) {
+    if (errDiv) {
+      errDiv.innerText = 'New password must be at least 4 characters long.';
+      errDiv.style.display = 'block';
+    }
+    return;
+  }
+
+  if (p1 !== p2) {
+    if (errDiv) {
+      errDiv.innerText = 'Passwords do not match. Please re-enter.';
+      errDiv.style.display = 'block';
+    }
+    return;
+  }
+
+  if (btn) {
+    btn.disabled = true;
+    btn.innerText = '⏳ Verifying...';
+  }
+
+  try {
+    const res = await fetch(`${serverUrl}/api/verify-password-reset-otp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: uname,
+        otp: otp,
+        new_password: p1
+      })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      if (succDiv) {
+        succDiv.innerText = data.message || 'Password updated successfully!';
+        succDiv.style.display = 'block';
+      }
+      setTimeout(() => {
+        closeResetPasswordModal();
+        const loginU = document.getElementById('login-username');
+        const loginP = document.getElementById('login-password');
+        if (loginU) loginU.value = uname;
+        if (loginP) loginP.value = p1;
+        showToast('Password updated! You can now log in.', true);
+      }, 1500);
+    } else {
+      if (errDiv) {
+        errDiv.innerText = data.detail || 'Could not verify OTP.';
+        errDiv.style.display = 'block';
+      }
+    }
+  } catch (err) {
+    if (errDiv) {
+      errDiv.innerText = 'Cannot reach the server. Please check your connection.';
+      errDiv.style.display = 'block';
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerText = '✓ Verify OTP & Set Password';
+    }
+  }
+}
+
+// DOM Elements
+const regionSelect = document.getElementById('region-select');
+const centerSelect = document.getElementById('center-select');
+const rtRoomSelect = document.getElementById('rtroom-select');
+const techSelect = document.getElementById('tech-select');
+const oltSelect = document.getElementById('olt-select');
+const oltTypeSelect = document.getElementById('olt-type-select');
+const portSelect = document.getElementById('port-select');
+const postInput = document.getElementById('post-input');
+const landmarkInput = document.getElementById('landmark-input');
+const enclosureSelect = document.getElementById('enclosure-select');
+const enclosureIdPreview = document.getElementById('enclosure-id-preview');
+const splitterIdPreview = document.getElementById('splitter-id-preview');
+const splitterIdSelect = document.getElementById('splitter-id-select');
+const splitterRatioSelect = document.getElementById('splitter-ratio-select');
+const custCountInput = document.getElementById('cust-count-input');
+const splitterColorSelect = document.getElementById('splitter-color-select');
+const adlSubInput = document.getElementById('adl-sub-input');
+const acsSubInput = document.getElementById('acs-sub-input');
+
+function getFormattedDateTime(d = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0');
+  const year = d.getFullYear();
+  const month = pad(d.getMonth() + 1);
+  const day = pad(d.getDate());
+  const hours = pad(d.getHours());
+  const mins = pad(d.getMinutes());
+  const secs = pad(d.getSeconds());
+  return `${year}-${month}-${day} ${hours}:${mins}:${secs}`;
+}
+
+const manualCoordsInput = document.getElementById('manual-coords-input');
+const gpsAccText = document.getElementById('gps-acc');
+const mapContainer = document.getElementById('map-container');
+const mapToggleBtn = document.getElementById('map-toggle-btn');
+const recordsBadge = document.getElementById('records-count-badge');
+
+function formatLatLon(lat, lon) {
+  return `${Number(lat).toFixed(6)}, ${Number(lon).toFixed(6)}`;
+}
+
+function parseCoordinates(val) {
+  if (!val || typeof val !== 'string') return null;
+  let clean = val.trim();
+  if (!clean) return null;
+
+  // 1. Google Maps URL extraction: e.g. maps.google.com/?q=10.606650,76.214490 or /@10.6066389,76.2145,17z
+  const urlQMatch = clean.match(/[?&]q=([-+]?\d*\.?\d+)[,\s]+([-+]?\d*\.?\d+)/i);
+  if (urlQMatch) {
+    clean = `${urlQMatch[1]}, ${urlQMatch[2]}`;
+  } else {
+    const urlAtMatch = clean.match(/@([-+]?\d*\.?\d+)[,\s]+([-+]?\d*\.?\d+)/);
+    if (urlAtMatch) {
+      clean = `${urlAtMatch[1]}, ${urlAtMatch[2]}`;
+    }
+  }
+
+  // 2. Degrees Minutes Seconds (DMS) format: e.g. 10°36'24.0"N 76°12'52.2"E
+  const dmsRegex = /(\d+)[°\s]+(\d+)['\s]+([\d.]+)(?:["\s]*([NSEW]))?/gi;
+  const dmsMatches = [...clean.matchAll(dmsRegex)];
+  if (dmsMatches.length >= 2) {
+    const toDecimal = (deg, min, sec, dir) => {
+      let dec = parseFloat(deg) + parseFloat(min) / 60 + parseFloat(sec) / 3600;
+      if (dir && (dir.toUpperCase() === 'S' || dir.toUpperCase() === 'W')) {
+        dec = -dec;
+      }
+      return dec;
+    };
+    let lat = toDecimal(dmsMatches[0][1], dmsMatches[0][2], dmsMatches[0][3], dmsMatches[0][4]);
+    let lon = toDecimal(dmsMatches[1][1], dmsMatches[1][2], dmsMatches[1][3], dmsMatches[1][4]);
+
+    // Check if inverted (e.g. 76°E first then 10°N)
+    if (dmsMatches[0][4] && dmsMatches[0][4].toUpperCase() === 'E' && dmsMatches[1][4] && dmsMatches[1][4].toUpperCase() === 'N') {
+      const temp = lat; lat = lon; lon = temp;
+    }
+    if (!isNaN(lat) && !isNaN(lon) && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180) {
+      return { lat, lon, formatted: formatLatLon(lat, lon) };
+    }
+  }
+
+  // 3. Standard Decimal Pair (separated by comma, tab, space, semicolon, or slash)
+  const decMatches = clean.match(/[-+]?\d*\.?\d+/g);
+  if (decMatches && decMatches.length >= 2) {
+    let lat = parseFloat(decMatches[0]);
+    let lon = parseFloat(decMatches[1]);
+
+    // Auto-correction for inverted longitude, latitude in India (Lon ~68-97, Lat ~6-38)
+    if ((lat > 60 && lat < 100) && (lon >= 0 && lon < 45)) {
+      const temp = lat; lat = lon; lon = temp;
+    }
+
+    if (!isNaN(lat) && !isNaN(lon) && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180 && (lat !== 0 || lon !== 0)) {
+      return { lat, lon, formatted: formatLatLon(lat, lon) };
+    }
+  }
+
+  return null;
+}
+
+function onManualCoordsChange(val) {
+  if (!val) return;
+  const parsed = parseCoordinates(val);
+  if (parsed) {
+    currentLat = parsed.lat;
+    currentLon = parsed.lon;
+    if (manualCoordsInput && manualCoordsInput.value !== parsed.formatted) {
+      manualCoordsInput.value = parsed.formatted;
+    }
+    if (gpsAccText) {
+      gpsAccText.innerHTML = '<span style="color:#0284c7; font-weight:600;">📍 Coordinates Entered Manually / Pasted</span>';
+    }
+    if (mapInstance) {
+      updateMapPosition(currentLat, currentLon, null);
+    }
+    showToast(`Coordinates updated: ${parsed.formatted}`);
+  }
+}
+
+async function pasteCoordinatesFromClipboard() {
+  try {
+    let text = '';
+    if (navigator.clipboard && navigator.clipboard.readText) {
+      try {
+        text = await navigator.clipboard.readText();
+      } catch (clipErr) {
+        console.warn('Direct clipboard.readText blocked:', clipErr);
+      }
+    }
+    if (!text) {
+      text = prompt('Paste GPS coordinates or Google Maps link here:');
+    }
+    if (!text || !text.trim()) {
+      return;
+    }
+    const parsed = parseCoordinates(text);
+    if (parsed) {
+      if (manualCoordsInput) {
+        manualCoordsInput.value = parsed.formatted;
+      }
+      onManualCoordsChange(parsed.formatted);
+      showToast(`Pasted: ${parsed.formatted}`, true);
+    } else {
+      showToast('Could not find valid coordinates in pasted text.', false);
+    }
+  } catch (err) {
+    console.error('Paste error:', err);
+    showToast('Failed to paste coordinates: ' + err.message, false);
+  }
+}
+
+async function copyCoordinatesToClipboard() {
+  try {
+    let val = manualCoordsInput ? manualCoordsInput.value.trim() : '';
+    if (!val && currentLat && currentLon) {
+      val = formatLatLon(currentLat, currentLon);
+    }
+    if (!val) {
+      showToast('No coordinates available to copy.', false);
+      return;
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(val);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = val;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    showToast(`Copied to clipboard: ${val}`, true);
+  } catch (err) {
+    console.error('Copy error:', err);
+    showToast('Failed to copy coordinates.', false);
+  }
+}
+
+if (manualCoordsInput) {
+  manualCoordsInput.addEventListener('paste', () => {
+    setTimeout(() => {
+      onManualCoordsChange(manualCoordsInput.value);
+    }, 50);
+  });
+}
+
+// Toast Notification
+function showToast(msg, isSuccess = true) {
+  const toast = document.getElementById('toast');
+  toast.innerText = msg;
+  toast.style.background = isSuccess ? '#10b981' : '#ef4444';
+  toast.style.display = 'block';
+  setTimeout(() => {
+    toast.style.display = 'none';
+  }, 2500);
+}
+
+// HTML Escape utility to prevent XSS in record table rendering
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+}
+
+// Update Enclosure ID & Splitter ID Preview
+function updateEnclosureId() {
+  const olt = oltSelect ? oltSelect.value : '';
+  const port = portSelect ? portSelect.value : '';
+  const enc = enclosureSelect ? enclosureSelect.value : '';
+  if (!olt || !port || !enc) {
+    if (enclosureIdPreview) enclosureIdPreview.innerText = '---';
+    if (splitterIdPreview) splitterIdPreview.innerText = '---';
+    return;
+  }
+  const eid = computeEnclosureId(olt, port, enc);
+  if (enclosureIdPreview) enclosureIdPreview.innerText = eid || '---';
+
+  const spl = splitterIdSelect ? splitterIdSelect.value : '';
+  if (splitterIdPreview) {
+    if (eid && spl) {
+      splitterIdPreview.innerText = spl.toUpperCase().startsWith(eid.toUpperCase()) ? spl : `${eid}${spl}`;
+    } else {
+      splitterIdPreview.innerText = '---';
+    }
+  }
+}
+
+function getRegionForCenter(centerName) {
+  if (!centerName) return "";
+  const hier = DEFAULT_PRELOAD && DEFAULT_PRELOAD.hierarchy ? DEFAULT_PRELOAD.hierarchy : {};
+  let cData = hier[centerName];
+  if (!cData) {
+    const cNorm = (centerName || '').trim().toLowerCase();
+    const found = Object.keys(hier).find(k => k.trim().toLowerCase() === cNorm);
+    if (found) cData = hier[found];
+  }
+  if (cData && typeof cData === 'object') {
+    for (const rt of Object.keys(cData)) {
+      const olts = cData[rt];
+      if (olts && typeof olts === 'object') {
+        for (const oltName of Object.keys(olts)) {
+          const entry = olts[oltName];
+          if (entry && typeof entry === 'object' && entry.region) {
+            return String(entry.region).trim();
+          }
+        }
+      }
+    }
+  }
+  return "";
+}
+
+function getRtRoomsForCenter(c) {
+  if (!DEFAULT_PRELOAD || !DEFAULT_PRELOAD.hierarchy) return [];
+  if (DEFAULT_PRELOAD.hierarchy[c]) return Object.keys(DEFAULT_PRELOAD.hierarchy[c]);
+  const cNorm = (c || '').trim().toLowerCase();
+  const foundKey = Object.keys(DEFAULT_PRELOAD.hierarchy).find(k => k.trim().toLowerCase() === cNorm);
+  return (foundKey && DEFAULT_PRELOAD.hierarchy[foundKey]) ? Object.keys(DEFAULT_PRELOAD.hierarchy[foundKey]) : [];
+}
+
+function getOltsForRtRoom(c, rt) {
+  if (!DEFAULT_PRELOAD || !DEFAULT_PRELOAD.hierarchy) return [];
+  if (DEFAULT_PRELOAD.hierarchy[c] && DEFAULT_PRELOAD.hierarchy[c][rt]) {
+    return Object.keys(DEFAULT_PRELOAD.hierarchy[c][rt]);
+  }
+  const cNorm = (c || '').trim().toLowerCase();
+  const cKey = Object.keys(DEFAULT_PRELOAD.hierarchy).find(k => k.trim().toLowerCase() === cNorm);
+  if (!cKey || !DEFAULT_PRELOAD.hierarchy[cKey]) return [];
+  const rtMap = DEFAULT_PRELOAD.hierarchy[cKey];
+  if (rtMap[rt]) return Object.keys(rtMap[rt]);
+  const rtNorm = (rt || '').trim().toLowerCase();
+  const rtKey = Object.keys(rtMap).find(k => k.trim().toLowerCase() === rtNorm);
+  return (rtKey && rtMap[rtKey]) ? Object.keys(rtMap[rtKey]) : [];
+}
+
+function getAllRegions() {
+  const regions = new Set();
+  const hier = DEFAULT_PRELOAD && DEFAULT_PRELOAD.hierarchy ? DEFAULT_PRELOAD.hierarchy : {};
+  for (const c of Object.keys(hier)) {
+    const r = getRegionForCenter(c);
+    if (r) regions.add(r.trim());
+  }
+  if (regions.size === 0 && DEFAULT_PRELOAD && Array.isArray(DEFAULT_PRELOAD.regions)) {
+    DEFAULT_PRELOAD.regions.forEach(r => {
+      if (r && r.trim()) regions.add(r.trim());
+    });
+  }
+  if (regions.size === 0) regions.add("Thrissur");
+  return Array.from(regions).sort();
+}
+
+function getCentersForRegion(regionName) {
+  const hier = DEFAULT_PRELOAD && DEFAULT_PRELOAD.hierarchy ? DEFAULT_PRELOAD.hierarchy : {};
+  const centers = [];
+  const targetLower = (regionName || '').trim().toLowerCase();
+  for (const c of Object.keys(hier)) {
+    const r = getRegionForCenter(c);
+    if (!regionName || targetLower === 'all' || (r && r.toLowerCase() === targetLower)) {
+      centers.push(c);
+    }
+  }
+  return centers.sort();
+}
+
+function getUserAvailableRegions() {
+  const allRegions = getAllRegions();
+  if (!currentUser) return allRegions;
+
+  const role = normalizeClientRole(currentUser.role);
+  if (role === 'super_admin' || role === 'admin') return allRegions;
+
+  // 1. Explicit assigned regions
+  let assignedRegs = [];
+  if (Array.isArray(currentUser.assigned_regions) && currentUser.assigned_regions.length > 0) {
+    assignedRegs = currentUser.assigned_regions;
+  } else if (currentUser.assigned_region) {
+    assignedRegs = currentUser.assigned_region.split(',').map(s => s.trim()).filter(Boolean);
+  }
+  assignedRegs = assignedRegs.filter(r => r.toLowerCase() !== 'unassigned');
+
+  // If user is explicitly assigned 'ALL' regions, they can access all regions
+  if (assignedRegs.some(r => r.toUpperCase() === 'ALL')) {
+    return allRegions;
+  }
+
+  // If specific assigned regions exist, the user's available regions MUST be strictly limited to these!
+  if (assignedRegs.length > 0) {
+    const userRegsLower = assignedRegs.map(r => r.toLowerCase());
+    const matched = allRegions.filter(ar => userRegsLower.includes(ar.toLowerCase()));
+    if (matched.length > 0) {
+      return matched.sort();
+    }
+    return assignedRegs.sort();
+  }
+
+  // 2. Fallback ONLY if NO explicit assigned regions are set: derive from assigned centers
+  let assignedCenters = [];
+  if (Array.isArray(currentUser.assigned_centers) && currentUser.assigned_centers.length > 0) {
+    assignedCenters = currentUser.assigned_centers;
+  } else if (currentUser.assigned_center) {
+    assignedCenters = currentUser.assigned_center.split(',').map(s => s.trim()).filter(Boolean);
+  }
+  assignedCenters = assignedCenters.filter(c => c.toLowerCase() !== 'unassigned');
+
+  // If centers is 'ALL' and NO regions were assigned, grant all regions
+  if (assignedCenters.some(c => c.toUpperCase() === 'ALL')) {
+    return allRegions;
+  }
+
+  if (assignedCenters.length > 0) {
+    const regionSet = new Set();
+    assignedCenters.forEach(c => {
+      const r = getRegionForCenter(c);
+      if (r) regionSet.add(r);
+    });
+    const list = Array.from(regionSet).filter(Boolean);
+    if (list.length > 0) {
+      const matched = allRegions.filter(ar => list.map(x => x.toLowerCase()).includes(ar.toLowerCase()));
+      if (matched.length > 0) return matched.sort();
+      return list.sort();
+    }
+  }
+
+  return allRegions;
+}
+
+function updateCentersForSelectedRegion(selectedReg, prevCenter = '') {
+  centerSelect.innerHTML = '';
+
+  // Guard: User must not access centers in an unpermitted region
+  const allowedRegs = getUserAvailableRegions();
+  const allowedRegsLower = allowedRegs.map(r => r.toLowerCase());
+  if (selectedReg && !allowedRegsLower.includes(selectedReg.toLowerCase())) {
+    centerSelect.innerHTML = '<option value="">⚠️ Region Not Permitted</option>';
+    centerSelect.disabled = true;
+    return;
+  }
+
+  let centers = getCentersForRegion(selectedReg);
+
+  // Filter centers based on logged-in user assignment
+  if (currentUser && currentUser.assigned_center && currentUser.assigned_center.toUpperCase() !== 'ALL') {
+    let assignedList = [];
+    if (Array.isArray(currentUser.assigned_centers) && currentUser.assigned_centers.length > 0) {
+      assignedList = currentUser.assigned_centers;
+    } else if (currentUser.assigned_center) {
+      assignedList = currentUser.assigned_center.split(',').map(s => s.trim()).filter(Boolean);
+    }
+    assignedList = assignedList.filter(a => a.toLowerCase() !== 'unassigned');
+
+    if (assignedList.length === 0) {
+      centerSelect.innerHTML = '<option value="">⚠️ No Center Assigned (Pending Admin)</option>';
+      centerSelect.disabled = true;
+      return;
+    } else if (assignedList.some(a => a.toUpperCase() === 'ALL')) {
+      // User has access to ALL centers in this permitted region
+      centerSelect.disabled = (centers.length <= 1);
+    } else {
+      // User has specific center charges: intersect with centers in this region
+      const userAssignedLower = assignedList.map(s => s.trim().toLowerCase());
+      const filtered = centers.filter(c => userAssignedLower.includes(c.trim().toLowerCase()));
+      if (filtered.length > 0) {
+        centers = filtered;
+      } else if (!selectedReg || selectedReg.toLowerCase() === 'all') {
+        const hierCenters = Object.keys(DEFAULT_PRELOAD.hierarchy || {});
+        centers = hierCenters.filter(c => userAssignedLower.includes(c.trim().toLowerCase()));
+      } else {
+        centers = filtered;
+      }
+      centerSelect.disabled = (centers.length <= 1);
+    }
+  } else {
+    centerSelect.disabled = (centers.length <= 1);
+  }
+
+  if (centers.length === 0) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.innerText = '-- No Centers in Region --';
+    centerSelect.appendChild(opt);
+    centerSelect.disabled = true;
+  } else {
+    centers.forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c;
+      opt.innerText = c;
+      centerSelect.appendChild(opt);
+    });
+
+    if (prevCenter && centers.includes(prevCenter)) {
+      centerSelect.value = prevCenter;
+    } else {
+      centerSelect.value = centers[0];
+    }
+  }
+}
+
+function onRegionChange() {
+  const selReg = regionSelect ? regionSelect.value : '';
+  updateCentersForSelectedRegion(selReg);
+  if (splitterRatioSelect) splitterRatioSelect.value = '';
+  currentActiveEnclosure = '';
+  resetPoleFields();
+  clearCustomerInputs();
+  onCenterChange();
+  fetchSurveyedPoints();
+}
+
+function initDropdowns(preserveSelection = false) {
+  const prevReg = preserveSelection && regionSelect ? regionSelect.value : '';
+  const prevCenter = preserveSelection && centerSelect ? centerSelect.value : '';
+  const prevRt = preserveSelection && rtRoomSelect ? rtRoomSelect.value : '';
+  const prevOlt = preserveSelection && oltSelect ? oltSelect.value : '';
+
+  // 1. Region Dropdown
+  const availableRegions = getUserAvailableRegions();
+  if (regionSelect) {
+    regionSelect.innerHTML = '';
+    if (availableRegions.length === 0) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.innerText = '-- No Regions Available --';
+      regionSelect.appendChild(opt);
+      regionSelect.disabled = true;
+    } else {
+      availableRegions.forEach(r => {
+        const opt = document.createElement('option');
+        opt.value = r;
+        opt.innerText = r;
+        regionSelect.appendChild(opt);
+      });
+
+      // Default selection logic:
+      if (prevReg && availableRegions.includes(prevReg)) {
+        regionSelect.value = prevReg;
+      } else if (prevCenter) {
+        const rForCenter = getRegionForCenter(prevCenter);
+        if (rForCenter && availableRegions.includes(rForCenter)) {
+          regionSelect.value = rForCenter;
+        } else {
+          regionSelect.value = availableRegions[0];
+        }
+      } else if (currentUser && currentUser.assigned_center && currentUser.assigned_center !== 'ALL' && currentUser.assigned_center !== 'Unassigned') {
+        const firstC = currentUser.assigned_center.split(',')[0].trim();
+        const rForFirstC = getRegionForCenter(firstC);
+        if (rForFirstC && availableRegions.includes(rForFirstC)) {
+          regionSelect.value = rForFirstC;
+        } else {
+          regionSelect.value = availableRegions[0];
+        }
+      } else if (availableRegions.includes("Thrissur")) {
+        regionSelect.value = "Thrissur";
+      } else {
+        regionSelect.value = availableRegions[0];
+      }
+
+      // If user has multiple regions, keep it interactive! If single region, lock it.
+      regionSelect.disabled = (availableRegions.length <= 1);
+    }
+  }
+
+  // 2. Center Dropdown for selected Region
+  const activeReg = regionSelect ? regionSelect.value : '';
+  updateCentersForSelectedRegion(activeReg, prevCenter);
+
+  // 3. Technologies (Read-only, auto-reflected from Node Master Data)
+  techSelect.innerHTML = '';
+  (DEFAULT_PRELOAD.technologies || ["GPON", "FTTH", "WDM", "EDFA"]).forEach(t => {
+    const opt = document.createElement('option');
+    opt.value = t;
+    opt.innerText = t;
+    techSelect.appendChild(opt);
+  });
+  techSelect.disabled = true;
+
+  if (oltTypeSelect) {
+    oltTypeSelect.disabled = true;
+  }
+
+  // Enclosures - placeholder only; cascade via updateAvailableEnclosures() will rebuild
+  enclosureSelect.innerHTML = '';
+  const encDefOpt = document.createElement('option');
+  encDefOpt.value = '';
+  encDefOpt.innerText = '-- Select Enclosure --';
+  enclosureSelect.appendChild(encDefOpt);
+
+  // Splitter Ratio - always rebuild with empty default (no auto-selection)
+  splitterRatioSelect.innerHTML = '';
+  const ratioDefOpt = document.createElement('option');
+  ratioDefOpt.value = '';
+  ratioDefOpt.innerText = '-- Select Splitter Ratio --';
+  splitterRatioSelect.appendChild(ratioDefOpt);
+  DEFAULT_PRELOAD.ratios.forEach(r => {
+    const opt = document.createElement('option');
+    opt.value = r;
+    opt.innerText = r;
+    splitterRatioSelect.appendChild(opt);
+  });
+
+  // Splitter ID - placeholder only; cascade via updateAvailableSplitters() will rebuild
+  splitterIdSelect.innerHTML = '';
+  const sidDefOpt = document.createElement('option');
+  sidDefOpt.value = '';
+  sidDefOpt.innerText = '-- Select Splitter ID --';
+  splitterIdSelect.appendChild(sidDefOpt);
+
+  updateSplitterColorOptions();
+  onCenterChange(prevRt, prevOlt);
+}
+
+// Splitter Out dynamically based on Splitter Ratio and Survey Status
+function updateSplitterColorOptions() {
+  if (!splitterColorSelect) return;
+  const olt = oltSelect ? oltSelect.value : '';
+  const port = portSelect ? portSelect.value : '';
+  const enc = enclosureSelect ? enclosureSelect.value : '';
+  const spl = splitterIdSelect ? splitterIdSelect.value : '';
+  const ratio = splitterRatioSelect ? splitterRatioSelect.value : '';
+  const eid = (olt && port && enc) ? computeEnclosureId(olt, port, enc) : '';
+
+  const prev = splitterColorSelect.value;
+  splitterColorSelect.innerHTML = '';
+
+  const defOpt = document.createElement('option');
+  defOpt.value = '';
+  defOpt.innerText = ratio ? `-- Select Splitter Out (Optional) --` : '-- Select Ratio First --';
+  splitterColorSelect.appendChild(defOpt);
+
+  if (!ratio) {
+    handleColorSelectionChange();
+    return;
+  }
+
+  const colorList = (DEFAULT_PRELOAD.color_codes_by_ratio && DEFAULT_PRELOAD.color_codes_by_ratio[ratio])
+    ? DEFAULT_PRELOAD.color_codes_by_ratio[ratio]
+    : (DEFAULT_PRELOAD.color_codes || []);
+
+  const role = currentUser ? normalizeClientRole(currentUser.role) : 'field_technician';
+  const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'admin' || role === 'super_admin');
+
+  let firstAvailableVal = '';
+
+  colorList.forEach(col => {
+    const opt = document.createElement('option');
+    opt.value = col;
+
+    const leadSurvey = (eid && spl) ? getLeadSurveyedInfo(eid, spl, col) : null;
+    if (leadSurvey) {
+      const byWho = leadSurvey.surveyor_name || leadSurvey.surveyor_username || 'Surveyor';
+      if (isSupervisor) {
+        opt.innerText = `${col} — ✏️ Surveyed (${byWho})`;
+        opt.style.color = '#0284c7';
+        opt.style.fontWeight = '600';
+      } else {
+        opt.innerText = `${col} — 🔒 Surveyed (${byWho})`;
+        opt.disabled = true;
+        opt.style.color = '#94a3b8';
+        opt.style.backgroundColor = '#f1f5f9';
+      }
+    } else {
+      opt.innerText = `${col} — ✅ Available`;
+      opt.style.color = '#15803d';
+      opt.style.fontWeight = '600';
+      if (!firstAvailableVal) firstAvailableVal = col;
+    }
+
+    splitterColorSelect.appendChild(opt);
+  });
+
+  // Preserve previous selection only if still valid and not disabled.
+  // NEVER auto-select a lead: user must explicitly choose an out, or leave empty if 0 connections.
+  if (prev) {
+    const prevVars = getColorVariants(prev);
+    const optMatch = Array.from(splitterColorSelect.options).find(o => prevVars.some(v => getColorVariants(o.value).includes(v)) && !o.disabled);
+    if (optMatch) {
+      splitterColorSelect.value = optMatch.value;
+    } else {
+      splitterColorSelect.value = '';
+    }
+  } else {
+    splitterColorSelect.value = '';
+  }
+
+  handleColorSelectionChange();
+}
+
+// Filter Enclosures to reflect survey status and role rights
+function updateAvailableEnclosures() {
+  const olt = oltSelect ? oltSelect.value : '';
+  const port = portSelect ? portSelect.value : '';
+
+  const prevVal = enclosureSelect.value;
+  enclosureSelect.innerHTML = '';
+
+  // Empty default placeholder
+  const defOpt = document.createElement('option');
+  defOpt.value = '';
+  defOpt.innerText = (olt && port) ? '-- Select Enclosure --' : '-- Select Port First --';
+  enclosureSelect.appendChild(defOpt);
+
+  const role = currentUser ? normalizeClientRole(currentUser.role) : 'field_technician';
+  const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'admin' || role === 'super_admin');
+
+  if (olt && port) {
+    DEFAULT_PRELOAD.enclosures.forEach(e => {
+      const eid = computeEnclosureId(olt, port, e);
+      const surveyedSplitters = getSurveyedSplittersForEnclosure(eid);
+      const hasSurvey = surveyedSplitters.length > 0;
+
+      const opt = document.createElement('option');
+      opt.value = e;
+
+      if (hasSurvey) {
+        if (isSupervisor) {
+          opt.innerText = `${e} (✏️ ${surveyedSplitters.length} Splitter${surveyedSplitters.length > 1 ? 's' : ''} Mapped)`;
+          opt.style.color = '#0284c7';
+        } else {
+          opt.innerText = `${e} (${surveyedSplitters.length} Splitter${surveyedSplitters.length > 1 ? 's' : ''} Mapped)`;
+          opt.style.color = '#0f172a';
+        }
+      } else {
+        opt.innerText = e;
+      }
+
+      enclosureSelect.appendChild(opt);
+    });
+
+    if (prevVal) {
+      const optMatch = Array.from(enclosureSelect.options).find(o => o.value === prevVal && !o.disabled);
+      if (optMatch) {
+        enclosureSelect.value = prevVal;
+      }
+    }
+  }
+
+  updateEnclosureId();
+  updateAvailableSplitters();
+}
+
+// Filter Splitter IDs to enforce Field Tech capacity lock and ACSO update rights
+function updateAvailableSplitters() {
+  const olt = oltSelect ? oltSelect.value : '';
+  const port = portSelect ? portSelect.value : '';
+  const enc = enclosureSelect ? enclosureSelect.value : '';
+
+  const prevVal = splitterIdSelect.value;
+  splitterIdSelect.innerHTML = '';
+
+  // Empty default placeholder
+  const defOpt = document.createElement('option');
+  defOpt.value = '';
+  defOpt.innerText = enc ? '-- Select Splitter ID --' : '-- Select Enclosure First --';
+  splitterIdSelect.appendChild(defOpt);
+
+  const role = currentUser ? normalizeClientRole(currentUser.role) : 'field_technician';
+  const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'admin' || role === 'super_admin');
+
+  if (enc) {
+    const eid = computeEnclosureId(olt, port, enc);
+
+    DEFAULT_PRELOAD.splitters.forEach((s, idx) => {
+      const splSummary = getSplitterSummary(eid, s);
+      const opt = document.createElement('option');
+      opt.value = s;
+
+      const count = splSummary ? splSummary.count : 0;
+      const ratio = (splSummary && splSummary.splitter_ratio) || (splitterRatioSelect ? splitterRatioSelect.value : '');
+      const totalLeads = (ratio && DEFAULT_PRELOAD.color_codes_by_ratio && DEFAULT_PRELOAD.color_codes_by_ratio[ratio])
+        ? DEFAULT_PRELOAD.color_codes_by_ratio[ratio].length
+        : 0;
+
+      if (count > 0) {
+        const capText = totalLeads ? `${count}/${totalLeads} mapped` : `${count} lead${count > 1 ? 's' : ''} mapped`;
+        const isFull = totalLeads > 0 && count >= totalLeads;
+
+        if (isFull) {
+          if (isSupervisor) {
+            opt.innerText = `${s} — ✏️ Full (${capText})`;
+            opt.style.color = '#0284c7';
+            opt.style.fontWeight = '600';
+          } else {
+            opt.innerText = `${s} — 🔒 Full (${capText})`;
+            opt.disabled = true;
+            opt.style.color = '#94a3b8';
+            opt.style.backgroundColor = '#f1f5f9';
+          }
+        } else {
+          // Open leads available! Both tech and supervisor can select!
+          opt.innerText = `${s} (${capText})`;
+          opt.style.color = '#0f172a';
+          opt.style.fontWeight = '500';
+        }
+      } else if (splSummary) {
+        // Splitter surveyed with 0 leads mapped (zero connections recorded)
+        opt.innerText = `${s} (0 mapped)`;
+        opt.style.color = '#0f172a';
+        opt.style.fontWeight = '500';
+      } else {
+        // Brand new splitter with 0 mapped leads
+        // Enforce sequential splitter addition (S2 requires S1, S3 requires S2, etc.)
+        if (idx > 0) {
+          const prevSplitter = DEFAULT_PRELOAD.splitters[idx - 1];
+          const prevSummary = getSplitterSummary(eid, prevSplitter);
+          if (!prevSummary) {
+            opt.innerText = `${s} — 🔒 Add ${prevSplitter} first`;
+            opt.disabled = true;
+            opt.style.color = '#94a3b8';
+            opt.style.backgroundColor = '#f8fafc';
+          } else {
+            opt.innerText = s;
+          }
+        } else {
+          opt.innerText = s;
+        }
+      }
+
+      splitterIdSelect.appendChild(opt);
+    });
+
+    if (prevVal) {
+      const optMatch = Array.from(splitterIdSelect.options).find(o => o.value === prevVal && !o.disabled);
+      if (optMatch) {
+        splitterIdSelect.value = prevVal;
+      } else {
+        const firstAvail = Array.from(splitterIdSelect.options).find(o => o.value && !o.disabled);
+        if (firstAvail) splitterIdSelect.value = firstAvail.value;
+      }
+    } else {
+      const firstAvail = Array.from(splitterIdSelect.options).find(o => o.value && !o.disabled);
+      if (firstAvail) splitterIdSelect.value = firstAvail.value;
+    }
+  }
+
+  handleSplitterSelectionChange();
+}
+
+// Reset customer-specific subscriber inputs and editing state (preserves splitter-level connected customers)
+function clearCustomerInputs() {
+  currentActiveLeadColor = null;
+  if (adlSubInput) adlSubInput.value = '';
+  if (acsSubInput) acsSubInput.value = '';
+  currentAcsoEditingUuid = null;
+  const banner = document.getElementById('acso-update-banner');
+  if (banner) banner.style.display = 'none';
+  const submitBtn = document.getElementById('btn-save-record') || document.querySelector('.btn-add-row');
+  if (submitBtn) {
+    submitBtn.innerHTML = '<span>➕</span> Submit';
+    submitBtn.style.background = '';
+  }
+  updateSubscriberInputsState();
+}
+
+// Toggle customer subscriber inputs editable state: only editable when a Splitter Out Colour Code is selected
+function updateSubscriberInputsState() {
+  const hasColor = !!(splitterColorSelect && splitterColorSelect.value);
+  if (adlSubInput) {
+    adlSubInput.disabled = !hasColor;
+    if (!hasColor) {
+      adlSubInput.value = '';
+      adlSubInput.placeholder = 'Select Splitter Out first';
+      adlSubInput.style.backgroundColor = '#f1f5f9';
+      adlSubInput.style.cursor = 'not-allowed';
+    } else {
+      adlSubInput.placeholder = 'e.g. ADL10234';
+      adlSubInput.style.backgroundColor = '';
+      adlSubInput.style.cursor = '';
+    }
+  }
+  if (acsSubInput) {
+    acsSubInput.disabled = !hasColor;
+    if (!hasColor) {
+      acsSubInput.value = '';
+      acsSubInput.placeholder = 'Select Splitter Out first';
+      acsSubInput.style.backgroundColor = '#f1f5f9';
+      acsSubInput.style.cursor = 'not-allowed';
+    } else {
+      acsSubInput.placeholder = 'e.g. ACS56789';
+      acsSubInput.style.backgroundColor = '';
+      acsSubInput.style.cursor = '';
+    }
+  }
+}
+
+// Reset pole-specific fields when changing equipment locations
+function resetPoleFields(force = true) {
+  if (!force && postInput && postInput.value.trim()) {
+    // Preserve user-entered KSEB pole number and GPS coordinates
+    return;
+  }
+  custCountManuallyEdited = false;
+  currentActiveSplitter = null;
+  currentActiveLeadColor = null;
+  if (postInput) postInput.value = '';
+  if (landmarkInput) landmarkInput.value = '';
+  if (custCountInput) custCountInput.value = '0';
+  currentLat = null;
+  currentLon = null;
+  currentAccuracy = null;
+  bestAccuracy = Infinity;
+  if (manualCoordsInput) {
+    manualCoordsInput.value = '';
+    manualCoordsInput.placeholder = 'e.g. 10.606650, 76.214490 (Mandatory)';
+  }
+  if (gpsAccText) {
+    gpsAccText.innerHTML = '<span style="color:#d97706; font-weight:600;">⚠️ Tap 🎯 GPS at pole</span>';
+  }
+  if (mapMarker && mapInstance) {
+    mapInstance.removeLayer(mapMarker);
+    mapMarker = null;
+  }
+  if (accuracyCircle && mapInstance) {
+    mapInstance.removeLayer(accuracyCircle);
+    accuracyCircle = null;
+  }
+}
+
+// Retrieve pole info (coordinates, post number, landmark) for an enclosure if already surveyed
+function getEnclosurePoleInfo(eid) {
+  if (!eid) return null;
+  const eidUp = eid.trim().toUpperCase();
+
+  // 1. Search in local records (latest survey first)
+  for (let i = records.length - 1; i >= 0; i--) {
+    const r = records[i];
+    const rEid = (r["Enclosure ID"] || r.enclosure_id || '').trim().toUpperCase();
+    if (rEid === eidUp) {
+      const latLong = r["Lat /Long"] || r.lat_long || '';
+      const kseb = r["KSEB Post Number"] || r.kseb_post_number || '';
+      const lmark = r["Land Mark"] || r.landmark || '';
+      if (latLong || kseb || lmark) {
+        return { lat_long: latLong, kseb_post_number: kseb, landmark: lmark };
+      }
+    }
+  }
+
+  // 2. Search in networkSurveyedPoints
+  if (networkSurveyedPoints) {
+    const matchingKey = Object.keys(networkSurveyedPoints).find(k => k.toUpperCase().startsWith(eidUp + '|'));
+    if (matchingKey && networkSurveyedPoints[matchingKey]) {
+      const pt = networkSurveyedPoints[matchingKey];
+      return {
+        lat_long: pt.lat_long || '',
+        kseb_post_number: pt.kseb_post_number || '',
+        landmark: pt.landmark || ''
+      };
+    }
+  }
+
+  return null;
+}
+
+// Handle Enclosure Selection Change: Loads surveyed pole data if enclosure was surveyed, or resets pole fields for new site
+function handleEnclosureChange() {
+  const olt = oltSelect ? oltSelect.value : '';
+  const port = portSelect ? portSelect.value : '';
+  const newEnc = enclosureSelect ? enclosureSelect.value : '';
+  const prevEnc = currentActiveEnclosure;
+
+  custCountManuallyEdited = false;
+  clearCustomerInputs();
+
+  // Reset Splitter Ratio to null / empty default when changing enclosure
+  if (splitterRatioSelect) {
+    splitterRatioSelect.value = '';
+  }
+
+  if (newEnc && olt && port) {
+    const eid = computeEnclosureId(olt, port, newEnc);
+    const poleInfo = getEnclosurePoleInfo(eid);
+    if (poleInfo && (poleInfo.lat_long || poleInfo.kseb_post_number || poleInfo.landmark)) {
+      if (postInput) postInput.value = poleInfo.kseb_post_number || '';
+      if (landmarkInput) landmarkInput.value = poleInfo.landmark || '';
+      if (poleInfo.lat_long && poleInfo.lat_long.includes(',')) {
+        if (manualCoordsInput) manualCoordsInput.value = poleInfo.lat_long;
+        const parts = poleInfo.lat_long.split(',').map(s => parseFloat(s.trim()));
+        if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+          currentLat = parts[0];
+          currentLon = parts[1];
+          if (gpsAccText) {
+            gpsAccText.innerHTML = `<span style="color:#0284c7; font-weight:600;">📍 Existing Survey Coords (${poleInfo.lat_long})</span>`;
+          }
+          if (mapInstance && typeof L !== 'undefined') {
+            updateMapPosition(currentLat, currentLon, 10);
+          }
+        }
+      }
+    } else {
+      // New / unmapped enclosure:
+      // If surveyor switched from an existing enclosure (e.g. E1 -> E2), clear pole fields to null
+      // so E1's pole number and GPS do not contaminate E2.
+      // But if this is the first enclosure selection for this site (prevEnc is empty),
+      // preserve user-entered KSEB pole number and GPS coordinates!
+      if (prevEnc && prevEnc !== newEnc) {
+        resetPoleFields(true);
+      }
+    }
+    currentActiveEnclosure = newEnc;
+  } else {
+    // No enclosure selected: Reset pole fields to empty
+    currentActiveEnclosure = '';
+    resetPoleFields(true);
+  }
+
+  updateEnclosureId();
+  updateAvailableSplitters();
+  handleSplitterSelectionChange();
+}
+
+// Handle Splitter Selection: Auto-fills splitter metadata & triggers color updates
+function handleSplitterSelectionChange() {
+  updateEnclosureId();
+  const olt = oltSelect ? oltSelect.value : '';
+  const port = portSelect ? portSelect.value : '';
+  const enc = enclosureSelect ? enclosureSelect.value : '';
+  const spl = splitterIdSelect ? splitterIdSelect.value : '';
+
+  if (!olt || !port || !enc || !spl) {
+    currentActiveSplitter = null;
+    updateSplitterColorOptions();
+    return;
+  }
+
+  const eid = computeEnclosureId(olt, port, enc);
+  // Key by Enclosure ID + Splitter ID so E1/S1 -> E2/S1 counts as a different splitter
+  const splKey = `${eid}|${spl}`.toUpperCase();
+  const isSplitterChanged = (currentActiveSplitter !== splKey);
+  currentActiveSplitter = splKey;
+
+  if (isSplitterChanged) {
+    custCountManuallyEdited = false;
+  }
+
+  const splSummary = getSplitterSummary(eid, spl);
+
+  if (splSummary) {
+    // If splitter already has surveyed leads, pre-fill common splitter ratio and pole details
+    if (splSummary.splitter_ratio && splitterRatioSelect) {
+      splitterRatioSelect.value = splSummary.splitter_ratio;
+    }
+    // Pre-fill existing connected customers count for this splitter if already surveyed
+    // GUARD: Never overwrite if user is actively editing this field or manually changed it
+    if (custCountInput && splSummary.customers_connected !== undefined && splSummary.customers_connected !== null && splSummary.customers_connected !== '') {
+      if (!custCountManuallyEdited && document.activeElement !== custCountInput) {
+        custCountInput.value = splSummary.customers_connected;
+      }
+    }
+    if (postInput && (!postInput.value.trim() || isSplitterChanged)) {
+      if (splSummary.kseb_post_number && document.activeElement !== postInput) {
+        postInput.value = splSummary.kseb_post_number;
+      }
+    }
+    if (landmarkInput && (!landmarkInput.value.trim() || isSplitterChanged)) {
+      if (splSummary.landmark && document.activeElement !== landmarkInput) {
+        landmarkInput.value = splSummary.landmark;
+      }
+    }
+    if (splSummary.lat_long && splSummary.lat_long.includes(',')) {
+      if (isSplitterChanged || !manualCoordsInput || !manualCoordsInput.value.trim()) {
+        if (manualCoordsInput && document.activeElement !== manualCoordsInput) {
+          manualCoordsInput.value = splSummary.lat_long;
+        }
+        const parts = splSummary.lat_long.split(',').map(s => parseFloat(s.trim()));
+        if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+          currentLat = parts[0];
+          currentLon = parts[1];
+          if (gpsAccText) {
+            gpsAccText.innerHTML = `<span style="color:#0284c7; font-weight:600;">📍 Existing Survey Coords (${splSummary.lat_long})</span>`;
+          }
+          if (mapInstance && typeof L !== 'undefined') {
+            updateMapPosition(currentLat, currentLon, 10);
+          }
+        }
+      }
+    }
+  } else if (isSplitterChanged) {
+    // Brand new splitter: default customer count to 0 unless manually changed
+    if (custCountInput && !custCountManuallyEdited && document.activeElement !== custCountInput) {
+      custCountInput.value = '0';
+    }
+  }
+
+  updateSplitterColorOptions();
+}
+
+// Handle Lead Color Selection: Toggles ACSO Update Banner & Pre-fills Existing Lead Survey Data
+function handleColorSelectionChange(forceReset = false) {
+  const banner = document.getElementById('acso-update-banner');
+  const descEl = document.getElementById('acso-update-desc');
+  const submitBtn = document.getElementById('btn-save-record') || document.querySelector('.btn-add-row');
+
+  const olt = oltSelect ? oltSelect.value : '';
+  const port = portSelect ? portSelect.value : '';
+  const enc = enclosureSelect ? enclosureSelect.value : '';
+  const spl = splitterIdSelect ? splitterIdSelect.value : '';
+  const col = splitterColorSelect ? splitterColorSelect.value : '';
+
+  const role = currentUser ? normalizeClientRole(currentUser.role) : 'field_technician';
+  const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'admin' || role === 'super_admin');
+
+  if (!olt || !port || !enc || !spl || !col) {
+    currentActiveLeadColor = null;
+    if (banner) banner.style.display = 'none';
+    if (submitBtn) {
+      submitBtn.innerHTML = '<span>➕</span> Submit';
+      submitBtn.style.background = '';
+    }
+    currentAcsoEditingUuid = null;
+    updateSubscriberInputsState();
+    return;
+  }
+
+  const eid = computeEnclosureId(olt, port, enc);
+  const leadKey = `${eid}|${spl}|${col}`.toUpperCase();
+  const isColorChanged = (currentActiveLeadColor !== leadKey);
+  currentActiveLeadColor = leadKey;
+  if (isColorChanged) lastConflictWarningKey = '';
+
+  const leadSurvey = getLeadSurveyedInfo(eid, spl, col);
+
+  if (leadSurvey && isSupervisor) {
+    // Supervisor Update Mode for THIS specific lead!
+    currentAcsoEditingUuid = leadSurvey.client_uuid;
+    const by = leadSurvey.surveyor_name || leadSurvey.surveyor_username || 'another surveyor';
+    const dt = leadSurvey.survey_date_time || leadSurvey["Date & Time"] || 'previous survey';
+
+    if (banner && descEl) {
+      descEl.innerHTML = `Editing customer on <strong>${eid} (${spl} - ${col})</strong>, originally surveyed by <strong>${by}</strong> (${dt}). Submitting will overwrite this record.`;
+      banner.style.display = 'block';
+    }
+    if (submitBtn) {
+      submitBtn.innerHTML = '<span>✏️</span> Update Master Record';
+      submitBtn.style.background = '#0284c7';
+    }
+
+    // Pre-populate subscriber inputs from existing record only if switched color or forced
+    if (isColorChanged || forceReset) {
+      if (adlSubInput && document.activeElement !== adlSubInput) {
+        adlSubInput.value = leadSurvey.adl_subscriber_id || leadSurvey["ADL Subscriber ID"] || '';
+      }
+      if (acsSubInput && document.activeElement !== acsSubInput) {
+        acsSubInput.value = leadSurvey.acs_subscriber_id || leadSurvey["ACS Subscriber ID"] || '';
+      }
+    }
+  } else {
+    // Normal / Brand-New Lead Entry Mode!
+    currentAcsoEditingUuid = null;
+    if (banner) banner.style.display = 'none';
+    if (submitBtn) {
+      submitBtn.innerHTML = '<span>➕</span> Submit';
+      submitBtn.style.background = '';
+    }
+    // CRITICAL: Only wipe subscriber inputs if the user switched to a DIFFERENT lead color!
+    // NEVER wipe them during background refreshes or when user is on the same lead!
+    if (isColorChanged || forceReset) {
+      if (adlSubInput && document.activeElement !== adlSubInput) adlSubInput.value = '';
+      if (acsSubInput && document.activeElement !== acsSubInput) acsSubInput.value = '';
+    }
+  }
+
+  // Splitter Out is selected: enable subscriber inputs
+  updateSubscriberInputsState();
+
+  // Only auto-focus ADL input if the surveyor explicitly switched color, not during background polling.
+  // Small delay lets Android/iOS native pickers close first, then focus moves to ADL input.
+  if (isColorChanged && adlSubInput && !adlSubInput.disabled) {
+    setTimeout(() => {
+      const active = document.activeElement;
+      const okToFocus = !active || active === document.body || active === splitterColorSelect;
+      if (okToFocus && adlSubInput && !adlSubInput.disabled) {
+        try { adlSubInput.focus(); } catch (e) {}
+      }
+    }, 150);
+  }
+}
+
+
+function onCenterChange(targetRt = null, targetOlt = null) {
+  const c = centerSelect.value;
+  if (regionSelect && c) {
+    const reg = getRegionForCenter(c);
+    if (reg && regionSelect.value !== reg) {
+      const avail = (typeof getUserAvailableRegions === 'function') ? getUserAvailableRegions() : [];
+      if (avail.includes(reg)) {
+        regionSelect.value = reg;
+      }
+    }
+  }
+  rtRoomSelect.innerHTML = '';
+  const rtRooms = getRtRoomsForCenter(c);
+
+  // Empty default placeholder
+  const rtDefOpt = document.createElement('option');
+  rtDefOpt.value = '';
+  rtDefOpt.innerText = '-- Select RT Room --';
+  rtRoomSelect.appendChild(rtDefOpt);
+
+  rtRooms.forEach(rt => {
+    const opt = document.createElement('option');
+    opt.value = rt;
+    opt.innerText = rt;
+    rtRoomSelect.appendChild(opt);
+  });
+  if (targetRt && rtRooms.includes(targetRt)) {
+    rtRoomSelect.value = targetRt;
+  } else {
+    rtRoomSelect.value = '';
+  }
+  onRTRoomChange(targetOlt);
+}
+
+function onRTRoomChange(targetOlt = null) {
+  const c = centerSelect ? centerSelect.value : '';
+  const rt = rtRoomSelect ? rtRoomSelect.value : '';
+  oltSelect.innerHTML = '';
+  const olts = getOltsForRtRoom(c, rt);
+
+  // Empty default placeholder
+  const oltDefOpt = document.createElement('option');
+  oltDefOpt.value = '';
+  oltDefOpt.innerText = rt ? '-- Select Node Name --' : '-- Select RT Room First --';
+  oltSelect.appendChild(oltDefOpt);
+
+  olts.forEach(o => {
+    const opt = document.createElement('option');
+    opt.value = o;
+    opt.innerText = o;
+    oltSelect.appendChild(opt);
+  });
+  if (targetOlt && olts.includes(targetOlt)) {
+    oltSelect.value = targetOlt;
+  } else {
+    oltSelect.value = '';
+  }
+  onOLTChange();
+}
+
+function findNodeEntry(c, rt, olt) {
+  if (!DEFAULT_PRELOAD || !DEFAULT_PRELOAD.hierarchy) return null;
+  // 1. Direct key match
+  if (DEFAULT_PRELOAD.hierarchy[c] && DEFAULT_PRELOAD.hierarchy[c][rt] && DEFAULT_PRELOAD.hierarchy[c][rt][olt]) {
+    return DEFAULT_PRELOAD.hierarchy[c][rt][olt];
+  }
+  // 2. Case-insensitive & trimmed fallback
+  const cNorm = (c || '').trim().toLowerCase();
+  const cKey = Object.keys(DEFAULT_PRELOAD.hierarchy).find(k => k.trim().toLowerCase() === cNorm);
+  if (!cKey) return null;
+
+  const rtMap = DEFAULT_PRELOAD.hierarchy[cKey];
+  if (!rtMap) return null;
+  const rtNorm = (rt || '').trim().toLowerCase();
+  const rtKey = Object.keys(rtMap).find(k => k.trim().toLowerCase() === rtNorm);
+  if (!rtKey) return null;
+
+  const oltMap = rtMap[rtKey];
+  if (!oltMap) return null;
+  const oltNorm = (olt || '').trim().toLowerCase();
+  const oltKey = Object.keys(oltMap).find(k => k.trim().toLowerCase() === oltNorm);
+  if (!oltKey) return null;
+
+  return oltMap[oltKey];
+}
+
+function onOLTChange() {
+  const c = centerSelect ? centerSelect.value : '';
+  const rt = rtRoomSelect ? rtRoomSelect.value : '';
+  const olt = oltSelect ? oltSelect.value : '';
+
+  const entry = findNodeEntry(c, rt, olt);
+  if (entry) {
+    if (entry.region && regionSelect) {
+      regionSelect.value = entry.region;
+    }
+
+    // 1. Reflect Technology from Node Master Data & lock as read-only
+    if (techSelect) {
+      const tVal = (entry.tech || 'GPON').trim();
+      let matched = false;
+      for (let i = 0; i < techSelect.options.length; i++) {
+        if (techSelect.options[i].value.toLowerCase() === tVal.toLowerCase()) {
+          techSelect.selectedIndex = i;
+          matched = true;
+          break;
+        }
+      }
+      if (!matched && tVal) {
+        const opt = document.createElement('option');
+        opt.value = tVal;
+        opt.innerText = tVal;
+        techSelect.appendChild(opt);
+        techSelect.value = tVal;
+      }
+      techSelect.disabled = true; // Read-only mode
+    }
+
+    // 2. Reflect Number of Ports from Node Master Data & lock as read-only
+    if (oltTypeSelect) {
+      let portCount = 8;
+      if (entry.olt_type) {
+        const clean = String(entry.olt_type).replace(/\s+/g, '');
+        if (clean.includes('32')) portCount = 32;
+        else if (clean.includes('16')) portCount = 16;
+        else portCount = 8;
+      } else if (Array.isArray(entry.ports) && entry.ports.length > 0) {
+        portCount = entry.ports.length;
+      } else if (Array.isArray(entry) && entry.length > 0) {
+        portCount = entry.length;
+      }
+      oltTypeSelect.value = (portCount >= 32 ? '32P' : (portCount >= 16 ? '16P' : '8P'));
+      oltTypeSelect.disabled = true; // Read-only mode
+    }
+  } else {
+    if (techSelect) techSelect.disabled = true;
+    if (oltTypeSelect) oltTypeSelect.disabled = true;
+  }
+
+  onOLTTypeChange();
+}
+
+// --- Multi-Port Checkbox Selection Management ---
+let currentAvailablePorts = [];
+
+function togglePortDropdown(e) {
+  if (e) {
+    e.stopPropagation();
+    e.preventDefault();
+  }
+  const panel = document.getElementById('port-dropdown-panel');
+  const trigger = document.getElementById('btn-port-picker');
+  if (!panel) return;
+  
+  const olt = oltSelect ? oltSelect.value : '';
+  if (!olt) {
+    showToast('⚠️ Please select a Node Name first!', false);
+    if (oltSelect) oltSelect.focus();
+    return;
+  }
+
+  const isHidden = (panel.style.display === 'none' || panel.style.display === '');
+  if (isHidden) {
+    panel.style.display = 'block';
+    if (trigger) trigger.classList.add('active');
+  } else {
+    panel.style.display = 'none';
+    if (trigger) trigger.classList.remove('active');
+  }
+}
+
+function closePortDropdown() {
+  const panel = document.getElementById('port-dropdown-panel');
+  const trigger = document.getElementById('btn-port-picker');
+  if (panel) panel.style.display = 'none';
+  if (trigger) trigger.classList.remove('active');
+}
+
+function renderPortCheckboxes(ports, selectedPorts = []) {
+  currentAvailablePorts = Array.isArray(ports) ? ports : [];
+  const grid = document.getElementById('port-checkbox-grid');
+  if (!grid) return;
+
+  grid.innerHTML = '';
+
+  if (!currentAvailablePorts.length) {
+    grid.innerHTML = '<div style="text-align:center; color:#94a3b8; font-size:0.85rem; padding:12px;">Select Node to view ports</div>';
+    syncPortSelection([]);
+    return;
+  }
+
+  // 1. Top default option: -- Select Port -- (matches Enclosure's -- Select Enclosure --)
+  const isNoneSelected = (!selectedPorts || selectedPorts.length === 0);
+  const resetTile = document.createElement('div');
+  resetTile.className = 'port-checkbox-tile port-reset-tile' + (isNoneSelected ? ' checked' : '');
+  resetTile.innerHTML = `<span style="color:#64748b; font-style:italic;">-- Select Port --</span>`;
+  resetTile.addEventListener('click', (e) => selectSinglePort('', e));
+  grid.appendChild(resetTile);
+
+  // 2. Continuous one-by-one port list with tick box
+  currentAvailablePorts.forEach(p => {
+    const isChecked = selectedPorts.includes(p);
+    const tile = document.createElement('div');
+    tile.className = 'port-checkbox-tile' + (isChecked ? ' checked' : '');
+    tile.dataset.port = p;
+    tile.innerHTML = `
+      <input type="checkbox" value="${escapeHtml(p)}" ${isChecked ? 'checked' : ''} tabindex="-1" style="pointer-events:none;">
+      <span>${escapeHtml(p)}</span>
+    `;
+    tile.addEventListener('click', (e) => selectSinglePort(p, e));
+    grid.appendChild(tile);
+  });
+
+  syncPortSelection(selectedPorts);
+}
+
+function selectSinglePort(portValue, event) {
+  if (event) {
+    event.stopPropagation();
+    event.preventDefault();
+  }
+
+  const grid = document.getElementById('port-checkbox-grid');
+  if (grid) {
+    grid.querySelectorAll('.port-checkbox-tile').forEach(tile => {
+      const cb = tile.querySelector('input[type="checkbox"]');
+      const isTarget = (tile.dataset.port === portValue && portValue !== '');
+      if (cb) cb.checked = isTarget;
+      if (isTarget || (!portValue && tile.classList.contains('port-reset-tile'))) {
+        tile.classList.add('checked');
+      } else {
+        tile.classList.remove('checked');
+      }
+    });
+  }
+
+  const selectedArray = portValue ? [portValue] : [];
+  if (enclosureSelect) enclosureSelect.value = '';
+  if (splitterRatioSelect) splitterRatioSelect.value = '';
+  currentActiveEnclosure = '';
+  resetPoleFields(true);
+  clearCustomerInputs();
+  syncPortSelection(selectedArray);
+
+  // Automatically close dropdown window immediately upon selection (matching Enclosure behavior)
+  setTimeout(closePortDropdown, 120);
+}
+
+function syncPortSelection(selected) {
+  const labelEl = document.getElementById('port-picker-label');
+  const badgeEl = document.getElementById('selected-ports-count-badge');
+  const hiddenInput = document.getElementById('port-select');
+
+  const commaStr = (Array.isArray(selected) ? selected : []).join(', ');
+
+  if (hiddenInput) {
+    hiddenInput.value = commaStr;
+  }
+
+  if (!selected || selected.length === 0) {
+    if (labelEl) {
+      const olt = oltSelect ? oltSelect.value : '';
+      labelEl.innerText = olt ? '-- Select Port --' : '-- Select Node First --';
+      labelEl.className = 'port-picker-placeholder';
+    }
+    if (badgeEl) badgeEl.style.display = 'none';
+  } else if (selected.length === 1) {
+    if (labelEl) {
+      labelEl.innerText = selected[0];
+      labelEl.className = 'port-picker-selected';
+    }
+    if (badgeEl) badgeEl.style.display = 'none';
+  } else {
+    if (labelEl) {
+      labelEl.innerText = commaStr;
+      labelEl.className = 'port-picker-selected';
+    }
+    if (badgeEl) badgeEl.style.display = 'none';
+  }
+
+  // Trigger cascade updates
+  updateAvailableEnclosures();
+  updateAvailableSplitters();
+  updateEnclosureId();
+}
+
+function onOLTTypeChange() {
+  const c = centerSelect ? centerSelect.value : '';
+  const rt = rtRoomSelect ? rtRoomSelect.value : '';
+  const olt = oltSelect ? oltSelect.value : '';
+
+  // Get current selected ports if any, to keep if valid for the new node
+  const prevVal = portSelect ? portSelect.value : '';
+  const prevSelected = prevVal ? prevVal.split(',').map(s => s.trim()).filter(Boolean) : [];
+
+  if (olt) {
+    const entry = findNodeEntry(c, rt, olt);
+    let ports = null;
+    if (entry && Array.isArray(entry.ports) && entry.ports.length > 0) {
+      ports = entry.ports;
+    } else if (Array.isArray(entry) && entry.length > 0) {
+      ports = entry;
+    } else {
+      const oType = oltTypeSelect ? oltTypeSelect.value : '8P';
+      ports = (DEFAULT_PRELOAD.ports_by_type && DEFAULT_PRELOAD.ports_by_type[oType])
+        ? DEFAULT_PRELOAD.ports_by_type[oType]
+        : (oType === '16P' ? Array.from({length: 16}, (_, i) => `P${i + 1}`) : (oType === '32P' ? Array.from({length: 32}, (_, i) => `P${i + 1}`) : Array.from({length: 8}, (_, i) => `P${i + 1}`)));
+    }
+
+    const validPrev = prevSelected.filter(p => ports.includes(p));
+    renderPortCheckboxes(ports, validPrev);
+  } else {
+    renderPortCheckboxes([]);
+  }
+}
+
+// Event Listeners for Cascading
+if (regionSelect) {
+  regionSelect.addEventListener('change', onRegionChange);
+}
+centerSelect.addEventListener('change', () => {
+  if (splitterRatioSelect) splitterRatioSelect.value = '';
+  currentActiveEnclosure = '';
+  resetPoleFields();
+  clearCustomerInputs();
+  onCenterChange();
+  fetchSurveyedPoints();
+});
+rtRoomSelect.addEventListener('change', () => {
+  if (splitterRatioSelect) splitterRatioSelect.value = '';
+  currentActiveEnclosure = '';
+  resetPoleFields();
+  clearCustomerInputs();
+  onRTRoomChange();
+});
+oltSelect.addEventListener('change', () => {
+  if (splitterRatioSelect) splitterRatioSelect.value = '';
+  currentActiveEnclosure = '';
+  resetPoleFields();
+  clearCustomerInputs();
+  onOLTChange();
+});
+if (oltTypeSelect) oltTypeSelect.addEventListener('change', onOLTTypeChange);
+if (portSelect) portSelect.addEventListener('change', () => {
+  if (enclosureSelect) enclosureSelect.value = '';
+  if (splitterRatioSelect) splitterRatioSelect.value = '';
+  currentActiveEnclosure = '';
+  resetPoleFields(true);
+  clearCustomerInputs();
+  updateAvailableEnclosures();
+  updateAvailableSplitters();
+});
+enclosureSelect.addEventListener('change', handleEnclosureChange);
+splitterRatioSelect.addEventListener('change', () => {
+  clearCustomerInputs();
+  updateSplitterColorOptions();
+});
+splitterIdSelect.addEventListener('change', () => {
+  custCountManuallyEdited = false;
+  clearCustomerInputs();
+  handleSplitterSelectionChange();
+});
+if (splitterColorSelect) splitterColorSelect.addEventListener('change', () => handleColorSelectionChange());
+if (custCountInput) {
+  custCountInput.addEventListener('input', () => {
+    custCountManuallyEdited = true;
+  });
+  custCountInput.addEventListener('change', () => {
+    custCountManuallyEdited = true;
+  });
+}
+const entryFormCard = document.getElementById('entry-form-card');
+if (entryFormCard) {
+  entryFormCard.addEventListener('focusout', () => {
+    // Wait for focus to settle on the next element before deciding the user is idle
+    setTimeout(applyPendingSurveyRefresh, 400);
+  });
+}
+
+// Close port dropdown panel on tap/click outside
+document.addEventListener('click', (e) => {
+  const panel = document.getElementById('port-dropdown-panel');
+  const trigger = document.getElementById('btn-port-picker');
+  if (!panel || panel.style.display === 'none') return;
+  if (!panel.contains(e.target) && (!trigger || !trigger.contains(e.target))) {
+    closePortDropdown();
+  }
+});
+
+// High-Precision GNSS / GPS Geolocation Engine (Multi-Sample Satellite Convergence)
+function captureGPS() {
+  if (!navigator.geolocation) {
+    showToast('GPS is not supported on this browser/device', false);
+    return;
+  }
+  
+  // Clear any existing active GPS watcher or timeout
+  if (gpsWatchId !== null) {
+    navigator.geolocation.clearWatch(gpsWatchId);
+    gpsWatchId = null;
+  }
+  if (gpsWatchTimer !== null) {
+    clearTimeout(gpsWatchTimer);
+    gpsWatchTimer = null;
+  }
+
+  const gpsBtn = document.querySelector('.btn-gps-sheet');
+  if (gpsBtn) {
+    gpsBtn.innerHTML = '⏳ Locating...';
+    gpsBtn.disabled = true;
+  }
+  manualCoordsInput.placeholder = 'Acquiring GNSS Satellites...';
+  gpsAccText.innerHTML = '<span style="color:#0284c7; font-weight:600;">📡 Connecting to satellites...</span>';
+
+  bestAccuracy = Infinity;
+  let sampleCount = 0;
+  let firstFixReceived = false;
+
+  const onLocationSuccess = (pos) => {
+    sampleCount++;
+    const lat = pos.coords.latitude;
+    const lon = pos.coords.longitude;
+    const acc = pos.coords.accuracy;
+
+    // Retain the fix with the tightest accuracy radius
+    if (acc < bestAccuracy || currentLat === null) {
+      bestAccuracy = acc;
+      currentLat = lat;
+      currentLon = lon;
+      currentAccuracy = acc;
+
+      // 6 decimal places = ~10 cm ground resolution (Google Maps standard)
+      manualCoordsInput.value = `${currentLat.toFixed(6)}, ${currentLon.toFixed(6)}`;
+
+      // Live Color-coded accuracy indicator
+      let accBadge = '';
+      if (acc <= 5) {
+        accBadge = `<span style="color:#10b981; font-weight:700;">🟢 ±${Math.round(acc)}m (High Satellite Precision)</span>`;
+      } else if (acc <= 12) {
+        accBadge = `<span style="color:#059669; font-weight:600;">🟢 ±${Math.round(acc)}m (Good GNSS Fix)</span>`;
+      } else if (acc <= 25) {
+        accBadge = `<span style="color:#d97706; font-weight:600;">🟡 ±${Math.round(acc)}m (Moderate - Adjust on Map)</span>`;
+      } else {
+        accBadge = `<span style="color:#dc2626; font-weight:600;">🔴 ±${Math.round(acc)}m (Wi-Fi / Network - Adjust on Map)</span>`;
+      }
+      gpsAccText.innerHTML = accBadge;
+
+      // Update map marker and accuracy circle
+      updateMapPosition(currentLat, currentLon, currentAccuracy);
+    }
+
+    // Smart Multi-Tier Lock (Fast on Phones, Reliable on Laptops):
+    // Tier 1: Instant Lock if High Precision (<= 6m) achieved immediately (~1s)
+    if (acc <= 6.0) {
+      finalizeGPS(gpsBtn, `High precision satellite fix locked (±${Math.round(acc)}m)!`);
+      return;
+    }
+    // Tier 2: Quick Lock if Good GNSS fix (<= 12m) confirmed across 2 samples (~1.5-2s on phone)
+    if (acc <= 12.0 && sampleCount >= 2) {
+      finalizeGPS(gpsBtn, `Good GNSS fix locked (±${Math.round(acc)}m)!`);
+      return;
+    }
+    // Tier 3: Laptop / Desktop Wi-Fi location (acc > 20m):
+    // Laptops do not have satellite chips and only fire 1 Wi-Fi reading. Lock immediately!
+    if (acc > 20.0) {
+      finalizeGPS(gpsBtn, `Location locked via Wi-Fi/Network (±${Math.round(acc)}m)`);
+      return;
+    }
+
+    // Tier 4: For mid-range mobile GPS (7m - 20m), start a fast 2.5s settle timer once first fix arrives
+    if (!firstFixReceived) {
+      firstFixReceived = true;
+      if (gpsWatchTimer !== null) clearTimeout(gpsWatchTimer);
+      gpsWatchTimer = setTimeout(() => {
+        finalizeGPS(gpsBtn, `Location locked at best accuracy (±${Math.round(bestAccuracy)}m)`);
+      }, 2500);
+    }
+  };
+
+  const onLocationError = (err) => {
+    if (currentLat === null) {
+      manualCoordsInput.placeholder = 'GPS unavailable - enter manually or tap map';
+      gpsAccText.innerHTML = `<span style="color:#dc2626; font-weight:600;">⚠️ ${err.message || 'Signal lost'}</span>`;
+      showToast(err.code === 1 ? '⚠️ Location permission denied in browser.' : 'GPS signal weak or unavailable. Tap map to select pole.', false);
+    }
+    finalizeGPS(gpsBtn);
+  };
+
+  try {
+    gpsWatchId = navigator.geolocation.watchPosition(
+      onLocationSuccess,
+      onLocationError,
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 0
+      }
+    );
+  } catch (e) {
+    navigator.geolocation.getCurrentPosition(onLocationSuccess, onLocationError, {
+      enableHighAccuracy: true,
+      timeout: 10000,
+      maximumAge: 0
+    });
+  }
+
+  // Initial acquisition timeout: Give up to 10 seconds to receive the VERY FIRST fix (essential for laptops using Wi-Fi positioning)
+  gpsWatchTimer = setTimeout(() => {
+    if (currentLat !== null) {
+      finalizeGPS(gpsBtn, `Location locked (±${Math.round(bestAccuracy)}m)`);
+    } else {
+      manualCoordsInput.placeholder = 'GPS unavailable - enter manually or tap map';
+      gpsAccText.innerHTML = `<span style="color:#dc2626; font-weight:600;">⚠️ Location timeout - enter or tap map</span>`;
+      showToast('⚠️ No location signal received within 10s. Tap map or enter manually.', false);
+      finalizeGPS(gpsBtn);
+    }
+  }, 10000);
+}
+
+function finalizeGPS(btn, successMsg = null) {
+  if (gpsWatchId !== null) {
+    navigator.geolocation.clearWatch(gpsWatchId);
+    gpsWatchId = null;
+  }
+  if (gpsWatchTimer !== null) {
+    clearTimeout(gpsWatchTimer);
+    gpsWatchTimer = null;
+  }
+  if (btn) {
+    btn.innerHTML = '🎯 GPS';
+    btn.disabled = false;
+  }
+  if (successMsg) {
+    showToast(successMsg, true);
+  }
+}
+
+// High-Definition Crisp Red Pole Pin Marker Icon (100% Offline SVG, Zero 404s)
+function getPolePinIcon() {
+  if (typeof L === 'undefined') return undefined;
+  return L.divIcon({
+    className: 'gpon-pole-pin-icon',
+    html: `<div style="width:32px; height:42px; filter:drop-shadow(0 3px 5px rgba(0,0,0,0.45)); cursor:grab;">
+      <svg width="32" height="42" viewBox="0 0 32 42" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M16 0C7.16344 0 0 7.16344 0 16C0 27.5 16 42 16 42C16 42 32 27.5 32 16C32 7.16344 24.8366 0 16 0Z" fill="#EA4335"/>
+        <circle cx="16" cy="15" r="6.5" fill="#FFFFFF"/>
+        <circle cx="16" cy="15" r="3.5" fill="#B31412"/>
+      </svg>
+    </div>`,
+    iconSize: [32, 42],
+    iconAnchor: [16, 42],
+    popupAnchor: [0, -42]
+  });
+}
+
+// Fix Leaflet default icon paths to prevent broken image requests
+if (typeof L !== 'undefined' && L.Icon && L.Icon.Default) {
+  try {
+    delete L.Icon.Default.prototype._getIconUrl;
+    L.Icon.Default.mergeOptions({
+      iconRetinaUrl: 'vendor/marker-icon-2x.png',
+      iconUrl: 'vendor/marker-icon.png',
+      shadowUrl: 'vendor/marker-shadow.png'
+    });
+  } catch (err) {
+    console.warn('[Leaflet] Error configuring default icon fallback:', err);
+  }
+}
+
+// Update Map Position, Marker, and Accuracy Halo
+function updateMapPosition(lat, lon, acc = null) {
+  if (!mapInstance) return;
+
+  if (mapMarker) {
+    mapMarker.setLatLng([lat, lon]);
+  } else {
+    const pinIcon = getPolePinIcon();
+    const markerOpts = { draggable: true, autoPan: true };
+    if (pinIcon) markerOpts.icon = pinIcon;
+    mapMarker = L.marker([lat, lon], markerOpts).addTo(mapInstance);
+    mapMarker.bindPopup("<b>📍 Pole Location</b><br>Drag to fine-tune exact post spot.").openPopup();
+    mapMarker.on('dragend', function(e) {
+      const pt = e.target.getLatLng();
+      currentLat = pt.lat;
+      currentLon = pt.lng;
+      manualCoordsInput.value = `${currentLat.toFixed(6)}, ${currentLon.toFixed(6)}`;
+      gpsAccText.innerHTML = '<span style="color:#0284c7; font-weight:600;">📍 Fine-tuned via Satellite Map</span>';
+      showToast('Pin position updated!');
+    });
+  }
+
+  if (acc) {
+    if (accuracyCircle) {
+      accuracyCircle.setLatLng([lat, lon]).setRadius(acc);
+    } else {
+      accuracyCircle = L.circle([lat, lon], {
+        radius: acc,
+        color: '#1a73e8',
+        fillColor: '#1a73e8',
+        fillOpacity: 0.16,
+        weight: 1.5
+      }).addTo(mapInstance);
+    }
+  }
+
+  mapInstance.setView([lat, lon], Math.max(mapInstance.getZoom(), 19));
+}
+
+// Initialize Leaflet Map with Google Satellite, Google Streets, Esri & OSM
+function initMap(lat, lon) {
+  if (mapInstance) return;
+
+  mapInstance = L.map('map-container', {
+    maxZoom: 21,
+    zoomControl: false
+  }).setView([lat, lon], 19);
+
+  // Zoom control in top-left
+  L.control.zoom({ position: 'topleft' }).addTo(mapInstance);
+
+  // 1. Google Satellite (Hybrid - Aerial Imagery + Road Overlay + Building Labels)
+  const googleHybrid = L.tileLayer('https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', {
+    subdomains: ['0', '1', '2', '3'],
+    maxZoom: 21,
+    maxNativeZoom: 20,
+    attribution: '© Google Maps'
+  });
+
+  // 2. Google Streets (Standard Google Road Map)
+  const googleStreets = L.tileLayer('https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', {
+    subdomains: ['0', '1', '2', '3'],
+    maxZoom: 21,
+    maxNativeZoom: 20,
+    attribution: '© Google Maps'
+  });
+
+  // 3. Esri World Imagery (Satellite)
+  const esriSatellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 19,
+    attribution: '© Esri World Imagery'
+  });
+
+  // 4. OpenStreetMap
+  const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '© OpenStreetMap'
+  });
+
+  // Default Layer: Google Hybrid Satellite
+  googleHybrid.addTo(mapInstance);
+
+  // Top-Right Layer Switcher
+  const baseLayers = {
+    "🛰️ Google Satellite": googleHybrid,
+    "🗺️ Google Streets": googleStreets,
+    "🌍 Esri Satellite": esriSatellite,
+    "📍 OpenStreetMap": osm
+  };
+  L.control.layers(baseLayers, null, { position: 'topright', collapsed: true }).addTo(mapInstance);
+
+  // Initial Marker and Accuracy Halo
+  if (currentAccuracy) {
+    accuracyCircle = L.circle([lat, lon], {
+      radius: currentAccuracy,
+      color: '#1a73e8',
+      fillColor: '#1a73e8',
+      fillOpacity: 0.16,
+      weight: 1.5
+    }).addTo(mapInstance);
+  }
+
+  const pinIcon = getPolePinIcon();
+  const markerOpts = { draggable: true, autoPan: true };
+  if (pinIcon) markerOpts.icon = pinIcon;
+  mapMarker = L.marker([lat, lon], markerOpts).addTo(mapInstance);
+  mapMarker.bindPopup("<b>📍 Pole Location</b><br>Drag to fine-tune exact post spot.").openPopup();
+
+  // Dragend event
+  mapMarker.on('dragend', function(e) {
+    const pt = e.target.getLatLng();
+    currentLat = pt.lat;
+    currentLon = pt.lng;
+    manualCoordsInput.value = `${currentLat.toFixed(6)}, ${currentLon.toFixed(6)}`;
+    gpsAccText.innerHTML = '<span style="color:#0284c7; font-weight:600;">📍 Fine-tuned via Satellite Map</span>';
+    showToast('Pin position updated!');
+  });
+
+  // Map tap / click event
+  mapInstance.on('click', function(e) {
+    currentLat = e.latlng.lat;
+    currentLon = e.latlng.lng;
+    mapMarker.setLatLng(e.latlng);
+    mapMarker.openPopup();
+    if (accuracyCircle) accuracyCircle.setLatLng(e.latlng);
+    manualCoordsInput.value = `${currentLat.toFixed(6)}, ${currentLon.toFixed(6)}`;
+    gpsAccText.innerHTML = '<span style="color:#0284c7; font-weight:600;">📍 Selected on Satellite Map</span>';
+  });
+}
+
+// Map Toggle (Open / Hide Google Satellite Map)
+function toggleMap() {
+  const mapWrapper = document.getElementById('map-wrapper');
+  const targetEl = mapWrapper || mapContainer;
+  const isHidden = (targetEl.style.display === 'none' || !targetEl.style.display);
+
+  if (isHidden) {
+    targetEl.style.display = 'block';
+    mapToggleBtn.innerText = '✕ Close Map';
+    mapToggleBtn.style.color = '#ef4444';
+    
+    const lat = currentLat || 10.60665;
+    const lon = currentLon || 76.21449;
+
+    if (!mapInstance) {
+      initMap(lat, lon);
+    }
+
+    setTimeout(() => {
+      if (mapInstance) {
+        mapInstance.invalidateSize();
+        if (currentLat && currentLon) {
+          updateMapPosition(currentLat, currentLon, currentAccuracy);
+        }
+      }
+    }, 150);
+  } else {
+    targetEl.style.display = 'none';
+    mapToggleBtn.innerText = '🗺️ Google Satellite Map';
+    mapToggleBtn.style.color = '#0284c7';
+  }
+}
+
+// Counter helpers
+function adjustCustomer(delta) {
+  let val = parseInt(custCountInput.value) || 0;
+  val = Math.max(0, val + delta);
+  custCountInput.value = val;
+  custCountManuallyEdited = true;
+}
+
+// Save Entry
+function saveRecord() {
+  if (!postInput.value.trim()) {
+    showToast('Please enter KSEB Post Number', false);
+    postInput.focus();
+    return;
+  }
+
+  let latLongStr = '';
+  if (currentLat && currentLon) {
+    latLongStr = `${currentLat.toFixed(6)}, ${currentLon.toFixed(6)}`;
+  } else if (manualCoordsInput && manualCoordsInput.value) {
+    const parsed = parseCoordinates(manualCoordsInput.value);
+    if (parsed) {
+      currentLat = parsed.lat;
+      currentLon = parsed.lon;
+      latLongStr = parsed.formatted;
+      manualCoordsInput.value = parsed.formatted;
+    }
+  }
+
+  // Mandatory GPS Enforcement: Network mapping strictly requires coordinates for every surveyed pole
+  if (!latLongStr) {
+    showToast('⚠️ GPS location is mandatory! Paste coordinates from Excel or tap [🎯 GPS].', false);
+    const gpsBtn = document.querySelector('.btn-gps-sheet');
+    if (gpsBtn) {
+      gpsBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      gpsBtn.focus();
+      gpsBtn.style.boxShadow = '0 0 0 3px #ef4444';
+      setTimeout(() => { if (gpsBtn) gpsBtn.style.boxShadow = ''; }, 2500);
+    }
+    if (manualCoordsInput) {
+      manualCoordsInput.style.borderColor = '#ef4444';
+      setTimeout(() => { if (manualCoordsInput) manualCoordsInput.style.borderColor = ''; }, 2500);
+    }
+    return;
+  }
+
+  // Mandatory Dropdown Validation: All cascading fields must be explicitly selected
+  const mandatoryDropdowns = [
+    { el: rtRoomSelect, label: 'RT Room' },
+    { el: oltSelect, label: 'Node Name' },
+    { el: portSelect, label: 'Port Number', triggerEl: document.getElementById('btn-port-picker') },
+    { el: enclosureSelect, label: 'Enclosure #' },
+    { el: splitterRatioSelect, label: 'Splitter Ratio' },
+    { el: splitterIdSelect, label: 'Splitter ID' }
+  ];
+  for (const dd of mandatoryDropdowns) {
+    if (!dd.el || !dd.el.value) {
+      showToast(`⚠️ ${dd.label} is mandatory! Please select a value.`, false);
+      const targetEl = dd.triggerEl || dd.el;
+      if (targetEl) {
+        targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        targetEl.focus();
+        targetEl.style.borderColor = '#ef4444';
+        targetEl.style.boxShadow = '0 0 0 3px rgba(239,68,68,0.2)';
+        setTimeout(() => { targetEl.style.borderColor = ''; targetEl.style.boxShadow = ''; }, 2500);
+      }
+      return;
+    }
+  }
+
+  const olt = oltSelect.value;
+  const port = portSelect.value;
+  const enc = enclosureSelect.value;
+  const eid = computeEnclosureId(olt, port, enc);
+  const spl = splitterIdSelect.value;
+  const colorCode = splitterColorSelect ? splitterColorSelect.value : '';
+  const adlId = (colorCode && adlSubInput) ? adlSubInput.value.trim() : '';
+  const acsId = (colorCode && acsSubInput) ? acsSubInput.value.trim() : '';
+
+  // Mandatory check: Splitter Out is strictly required if entering a Subscriber ID
+  const rawAdl = adlSubInput ? adlSubInput.value.trim() : '';
+  const rawAcs = acsSubInput ? acsSubInput.value.trim() : '';
+  if ((rawAdl || rawAcs) && !colorCode) {
+    showToast('⚠️ Splitter Out is mandatory to enter a Subscriber ID!', false);
+    if (splitterColorSelect) {
+      splitterColorSelect.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      splitterColorSelect.focus();
+      splitterColorSelect.style.borderColor = '#ef4444';
+      splitterColorSelect.style.boxShadow = '0 0 0 3px rgba(239,68,68,0.2)';
+      setTimeout(() => {
+        if (splitterColorSelect) {
+          splitterColorSelect.style.borderColor = '';
+          splitterColorSelect.style.boxShadow = '';
+        }
+      }, 2500);
+    }
+    return;
+  }
+
+  const role = currentUser ? normalizeClientRole(currentUser.role) : 'field_technician';
+  const isSupervisor = (role === 'acso' || role === 'rcsm' || role === 'admin' || role === 'super_admin');
+
+  // Check if this SPECIFIC lead (or zero-connection splitter) is already surveyed
+  const existingLeadSurvey = getLeadSurveyedInfo(eid, spl, colorCode);
+
+  // OPTION D: Field Technician Hard Block on already surveyed lead or splitter
+  if (existingLeadSurvey && !isSupervisor) {
+    const surveyor = existingLeadSurvey.surveyor_name || existingLeadSurvey.surveyor_username || 'another surveyor';
+    const blockedMsg = colorCode
+      ? `❌ Splitter Out "${colorCode}" of Splitter ${spl} under Enclosure ${eid} was already surveyed by ${surveyor}! Field technicians cannot overwrite existing records.`
+      : `❌ Splitter ${spl} under Enclosure ${eid} was already surveyed by ${surveyor}! Field technicians cannot overwrite existing records.`;
+    showToast(blockedMsg, false);
+    if (splitterColorSelect) splitterColorSelect.focus();
+    return;
+  }
+
+  // OPTION C: ACSO Supervisor Update Mode for this specific lead
+  const isAcsoUpdate = !!(existingLeadSurvey && isSupervisor);
+
+  // Safety: supervisor started a NEW entry, but another surveyor saved this lead in the meantime.
+  // Do not silently overwrite their record — ask first.
+  if (isAcsoUpdate && colorCode && currentAcsoEditingUuid !== existingLeadSurvey.client_uuid) {
+    const byWho = existingLeadSurvey.surveyor_name || existingLeadSurvey.surveyor_username || 'another surveyor';
+    const ok = window.confirm(`${spl} • ${colorCode} in ${eid} was just surveyed by ${byWho}.\n\nOK = overwrite their record with your entry\nCancel = go back and review (your typed values are kept)`);
+    if (!ok) return;
+  }
+
+  if (!isAcsoUpdate) {
+    // Condition for brand-new entries: prevent duplicate lead in same enclosure locally
+    const isDuplicateLead = records.some(r => {
+      const rEid = (r["Enclosure ID"] || r.enclosure_id || '').trim().toUpperCase();
+      const rSpl = (r["Splitter ID"] || r.splitter_id || '').trim().toUpperCase();
+      if (rEid !== eid.toUpperCase() || rSpl !== spl.toUpperCase()) return false;
+      const rCol = (r["Splitter Out"] || r["Splitter Lead Colour Code"] || r.splitter_lead_color || '').trim().toUpperCase();
+      if (!colorCode && !rCol) return true;
+      if (!colorCode || !rCol) return false;
+      const colVars = getColorVariants(colorCode);
+      const rVars = getColorVariants(rCol);
+      return colVars.some(v => rVars.includes(v));
+    });
+
+    if (isDuplicateLead) {
+      const msg = colorCode
+        ? `❌ Splitter Out "${colorCode}" of Splitter ${spl} is already in your pending records! Duplicate entry not allowed.`
+        : `❌ Splitter ${spl} is already in your pending records with zero connections!`;
+      showToast(msg, false);
+      if (splitterColorSelect) splitterColorSelect.focus();
+      return;
+    }
+
+    // Condition: S2, S3, S4 can only be added if prior splitter was already surveyed
+    if (spl !== 'S1') {
+      const sIndex = DEFAULT_PRELOAD.splitters.indexOf(spl);
+      if (sIndex > 0) {
+        const prevSplitter = DEFAULT_PRELOAD.splitters[sIndex - 1];
+        const prevSummary = getSplitterSummary(eid, prevSplitter);
+        if (!prevSummary) {
+          showToast(`❌ Splitter ${prevSplitter} must be added first before adding ${spl} in Enclosure ${enc}!`, false);
+          splitterIdSelect.focus();
+          return;
+        }
+      }
+    }
+  }
+
+  const clientUuid = isAcsoUpdate
+    ? (existingLeadSurvey.client_uuid || currentAcsoEditingUuid || crypto.randomUUID())
+    : ((typeof crypto !== 'undefined' && crypto.randomUUID) 
+        ? crypto.randomUUID() 
+        : ('rec_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9)));
+
+  const now = new Date();
+  const formattedDateTime = getFormattedDateTime(now);
+  const isoTimestamp = now.toISOString();
+
+  const entry = {
+    client_uuid: clientUuid,
+    sync_status: 'pending',
+    id: Date.now(),
+    "Date & Time": formattedDateTime,
+    Region: (regionSelect && regionSelect.value) ? regionSelect.value : getRegionForCenter(centerSelect.value),
+    Center: centerSelect.value,
+    "RT Room": rtRoomSelect.value,
+    "GPON/FTTH/WDM": techSelect.value,
+    "OLT/Node  Name": olt,
+    "Port Number": port,
+    "KSEB Post Number": postInput.value.trim(),
+    "Land Mark": landmarkInput.value.trim(),
+    "Enclosure Number": enc,
+    "Enclosure ID": eid,
+    "Lat /Long": latLongStr,
+    "Splitter ID": spl,
+    "Splitter Unique ID": `${eid}-${spl}`,
+    "Splitter Ratio": splitterRatioSelect.value,
+    "No: Of Customer Connected": parseInt(custCountInput.value) || 0,
+    "Splitter Out": colorCode,
+    "Splitter Lead Colour Code": colorCode,
+    "ADL Subscriber ID": adlId,
+    "ACS Subscriber ID": acsId,
+    splitter_lead_color: colorCode,
+    splitter_unique_id: `${eid}-${spl}`,
+    adl_subscriber_id: adlId,
+    acs_subscriber_id: acsId,
+    survey_date_time: formattedDateTime,
+    timestamp: isoTimestamp,
+    created_at: isoTimestamp,
+    surveyor_username: currentUser ? currentUser.username : '',
+    surveyor_name: currentUser ? (currentUser.full_name || currentUser.username) : ''
+  };
+
+  try {
+    if (isAcsoUpdate) {
+      const existingIdx = records.findIndex(r => r.client_uuid === clientUuid);
+      if (existingIdx >= 0) {
+        records[existingIdx] = entry;
+      } else {
+        records.push(entry);
+      }
+    } else {
+      records.push(entry);
+    }
+
+    const newCustCount = entry["No: Of Customer Connected"];
+    const targetEid = eid.trim().toUpperCase();
+    const targetSpl = spl.trim().toUpperCase();
+
+    // Splitter-level dynamic synchronization:
+    // Update all existing local records sharing this (Enclosure ID + Splitter ID) so customer count is 100% unified
+    records.forEach(r => {
+      const rEid = (r["Enclosure ID"] || r.enclosure_id || '').trim().toUpperCase();
+      const rSpl = (r["Splitter ID"] || r.splitter_id || '').trim().toUpperCase();
+      if (rEid === targetEid && rSpl === targetSpl) {
+        r["No: Of Customer Connected"] = newCustCount;
+        r.customers_connected = newCustCount;
+      }
+    });
+
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+
+    // Update in-memory and local cache map immediately for this lead
+    const leadKey = getLeadKey(eid, spl, colorCode);
+    networkSurveyedPoints[leadKey] = entry;
+
+    const variants = getColorVariants(colorCode);
+    variants.forEach(v => {
+      networkSurveyedPoints[`${eid}|${spl}|${v}`.toUpperCase()] = entry;
+    });
+
+    // Also cascade updated customer count to all existing lead entries in local surveyed cache
+    if (networkSurveyedPoints) {
+      const splPrefix = `${targetEid}|${targetSpl}|`;
+      Object.keys(networkSurveyedPoints).forEach(k => {
+        if (k.startsWith(splPrefix) && networkSurveyedPoints[k]) {
+          networkSurveyedPoints[k]["No: Of Customer Connected"] = newCustCount;
+          networkSurveyedPoints[k].customers_connected = newCustCount;
+        }
+      });
+    }
+
+    // Update splitter summary in cache
+    const splKey = getSplitterKey(eid, spl);
+    if (!networkSurveyedPoints[splKey]) {
+      networkSurveyedPoints[splKey] = {
+        is_summary: true,
+        enclosure_id: eid,
+        splitter_id: spl,
+        splitter_ratio: entry["Splitter Ratio"],
+        leads: [],
+        count: 0,
+        kseb_post_number: entry["KSEB Post Number"],
+        landmark: entry["Land Mark"],
+        lat_long: entry["Lat /Long"],
+        surveyor_name: entry.surveyor_name,
+        survey_date_time: formattedDateTime
+      };
+    }
+    const normC = colorCode.trim().toUpperCase();
+    if (normC && !networkSurveyedPoints[splKey].leads.includes(normC)) {
+      networkSurveyedPoints[splKey].leads.push(normC);
+    }
+    networkSurveyedPoints[splKey].count = networkSurveyedPoints[splKey].leads.length;
+    networkSurveyedPoints[splKey].customers_connected = newCustCount;
+    localStorage.setItem('gpon_network_surveyed_points', JSON.stringify(networkSurveyedPoints));
+  } catch (err) {
+    console.error('Local storage write failed:', err);
+    showToast('Failed to save on device storage: ' + (err.message || 'Storage full'), false);
+    return;
+  }
+
+  updateRecordsBadge();
+  updateSyncUI();
+  if (isAcsoUpdate) {
+    showToast('✏️ Master Record Updated Successfully');
+  } else {
+    showToast('Record Submitted Successfully');
+  }
+  showSubmitConfirmModal(entry, isAcsoUpdate);
+
+  // Clear customer-specific subscriber inputs only (keep equipment & pole strictly pinned!)
+  clearCustomerInputs();
+  custCountManuallyEdited = false;
+  currentActiveEnclosure = entry["Enclosure"] || (enclosureSelect ? enclosureSelect.value : '');
+
+  const savedSpl = splitterIdSelect ? splitterIdSelect.value : '';
+  const savedRatio = splitterRatioSelect ? splitterRatioSelect.value : '';
+
+  // Refresh available splitters to reflect new capacity count
+  updateAvailableSplitters();
+
+  // Retain Splitter Ratio
+  if (savedRatio && splitterRatioSelect) {
+    splitterRatioSelect.value = savedRatio;
+  }
+
+  // Clear color selection so surveyor must explicitly select the next splitter lead
+  if (splitterColorSelect) splitterColorSelect.value = '';
+  updateSplitterColorOptions();
+
+  // Prompt surveyor to select the next Splitter Out lead
+  if (splitterColorSelect) {
+    setTimeout(() => {
+      try { splitterColorSelect.focus(); } catch (e) {}
+    }, 300);
+  }
+
+  // Trigger silent background sync if server is reachable
+  syncWithServer(true);
+}
+
+// Confirmation Message Modal
+function showSubmitConfirmModal(entry, isAcsoUpdate = false) {
+  const modal = document.getElementById('submit-confirm-modal');
+  const detailsEl = document.getElementById('submit-confirm-details');
+  const iconEl = document.getElementById('submit-confirm-icon');
+  const titleEl = document.getElementById('submit-confirm-title');
+  const descEl = document.getElementById('submit-confirm-desc');
+  if (!modal || !detailsEl) return;
+
+  if (isAcsoUpdate) {
+    if (iconEl) iconEl.innerText = '✏️';
+    if (titleEl) {
+      titleEl.innerText = 'Master Record Updated';
+      titleEl.style.color = '#0284c7';
+    }
+    if (descEl) {
+      descEl.innerText = 'Supervisor update saved. Central database will be overwritten with corrections.';
+    }
+  } else {
+    if (iconEl) iconEl.innerText = '✅';
+    if (titleEl) {
+      titleEl.innerText = 'Record Submitted Successfully';
+      titleEl.style.color = '#0f9d58';
+    }
+    if (descEl) {
+      descEl.innerText = 'The survey record has been recorded and safely saved.';
+    }
+  }
+
+  const encId = entry["Enclosure ID"] || '-';
+  const rawSpl = entry["Splitter ID"] || '';
+  const displaySplId = (rawSpl && encId && encId !== '-') 
+    ? (rawSpl.toUpperCase().startsWith(encId.toUpperCase()) ? rawSpl : `${encId}${rawSpl}`)
+    : (rawSpl || '-');
+  const splitInfo = `${displaySplId} (${entry["Splitter Ratio"] || '-'})`;
+  const portStr = entry["Port Number"] || '-';
+  const portLabel = (portStr && portStr.includes(',')) ? 'Ports' : 'Port';
+  const nodeInfo = `${entry["OLT/Node  Name"] || '-'} [${portLabel} ${portStr}]`;
+  const centerInfo = entry["Center"] || '-';
+  const custCount = entry["No: Of Customer Connected"] || 0;
+  const timeStr = entry["Date & Time"] || '';
+
+  const syncText = (entry.sync_status === 'synced')
+    ? '<span style="color:#10b981; font-weight:700;">☁️ Synced to Server ✓</span>'
+    : (isServerReachable 
+        ? '<span style="color:#0284c7; font-weight:600;">☁️ Syncing to Server...</span>' 
+        : '<span style="color:#f59e0b; font-weight:600;">💾 Saved on Phone (Pending Sync)</span>');
+
+  detailsEl.innerHTML = `
+    ${isAcsoUpdate ? `
+    <div style="background:#eff6ff; border:1px solid #bfdbfe; border-radius:6px; padding:6px 10px; margin-bottom:10px; font-size:0.8rem; color:#1e40af; display:flex; align-items:center; gap:6px;">
+      <span>✏️</span> <strong>ACSO Correction:</strong> Master database record updated.
+    </div>` : ''}
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+      <span style="color:#64748b;">Enclosure ID:</span>
+      <strong style="color:#0284c7; font-family:monospace; font-size:1.05rem;">${encId}</strong>
+    </div>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+      <span style="color:#64748b;">Splitter & Out:</span>
+      <strong style="color:#334155;">${splitInfo} • ${entry["Splitter Out"] || entry["Splitter Lead Colour Code"] || 'No Out (0 Connected)'}</strong>
+    </div>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+      <span style="color:#64748b;">Subscriber ID:</span>
+      <strong style="color:#0284c7; font-family:monospace;">${entry["ADL Subscriber ID"] || entry["ACS Subscriber ID"] || '-'}</strong>
+    </div>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+      <span style="color:#64748b;">Center / Node:</span>
+      <span style="color:#334155; font-size:0.83rem;">${centerInfo} • ${nodeInfo}</span>
+    </div>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+      <span style="color:#64748b;">Connected Customers:</span>
+      <strong style="color:#10b981; font-size:0.95rem;">${custCount}</strong>
+    </div>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+      <span style="color:#64748b;">Storage & Sync:</span>
+      <span id="confirm-sync-status-badge">${syncText}</span>
+    </div>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; padding-top:6px; border-top:1px dashed #cbd5e1; font-size:0.75rem;">
+      <span style="color:#64748b;">Survey Time:</span>
+      <span style="color:#64748b; font-family:monospace;">${timeStr}</span>
+    </div>
+  `;
+
+  modal.style.display = 'flex';
+  const okBtn = document.getElementById('btn-submit-confirm-ok');
+  if (okBtn) okBtn.focus();
+}
+
+
+function closeSubmitConfirmModal() {
+  const modal = document.getElementById('submit-confirm-modal');
+  if (modal) modal.style.display = 'none';
+  if (adlSubInput && adlSubInput.offsetParent !== null) {
+    adlSubInput.focus();
+  } else if (postInput) {
+    postInput.focus();
+  }
+}
+
+// Allow Enter key or Escape to dismiss confirmation modal
+document.addEventListener('keydown', (e) => {
+  const modal = document.getElementById('submit-confirm-modal');
+  if (modal && modal.style.display === 'flex') {
+    if (e.key === 'Enter' || e.key === 'Escape') {
+      e.preventDefault();
+      closeSubmitConfirmModal();
+    }
+  }
+});
+
+function updateRecordsBadge() {
+  if (recordsBadge) recordsBadge.innerText = records.length;
+  renderSheetTable();
+}
+
+function renderSheetTable() {
+  const tbody = document.getElementById('sheet-table-body');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+
+  if (records.length === 0) {
+    tbody.innerHTML = `
+      <tr>
+        <td colspan="16" style="text-align: center; padding: 24px; color: #80868b;">
+          No survey points entered yet. Fill the row above and tap "Submit".
+        </td>
+      </tr>
+    `;
+    return;
+  }
+
+  records.forEach((r, idx) => {
+    const isSynced = r.sync_status === 'synced';
+    const syncTag = isSynced 
+      ? '<span class="gs-tag-synced">✓ Synced</span>' 
+      : '<span class="gs-tag-pending">⏳ Pending</span>';
+
+    const timeDisplay = r["Date & Time"] || r.survey_date_time || (r.timestamp ? r.timestamp.slice(0, 19).replace('T', ' ') : '-');
+    const colorDisplay = r["Splitter Out"] || r["Splitter Lead Colour Code"] || r.splitter_lead_color || '-';
+    const adlDisplay = r["ADL Subscriber ID"] || r.adl_subscriber_id || '-';
+    const acsDisplay = r["ACS Subscriber ID"] || r.acs_subscriber_id || '-';
+
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="gs-row-num">${idx + 1}</td>
+      <td style="font-family: monospace; font-size: 0.75rem; color:#5f6368;">${escapeHtml(timeDisplay)}</td>
+      <td class="gs-id-cell">${escapeHtml(r["Enclosure ID"]) || '-'}</td>
+      <td><strong>${escapeHtml(r["KSEB Post Number"]) || '-'}</strong></td>
+      <td>${escapeHtml(r["Land Mark"]) || '-'}</td>
+      <td>${escapeHtml(r["Center"]) || '-'}</td>
+      <td>${escapeHtml(r["RT Room"]) || '-'}</td>
+      <td>${escapeHtml(r["OLT/Node  Name"]) || '-'} [${escapeHtml(r["Port Number"]) || '-'}]</td>
+      <td style="font-family: monospace; font-size: 0.75rem;">${escapeHtml(r["Lat /Long"]) || '-'}</td>
+      <td>${escapeHtml(r["Splitter Ratio"]) || '-'}</td>
+      <td style="text-align:center;">${r["No: Of Customer Connected"] || 0}</td>
+      <td><span style="background:#e8f0fe; color:#1a73e8; padding:2px 6px; border-radius:4px; font-size:0.75rem; font-weight:600;">${escapeHtml(colorDisplay)}</span></td>
+      <td style="font-family: monospace; font-size: 0.75rem;">${escapeHtml(adlDisplay)}</td>
+      <td style="font-family: monospace; font-size: 0.75rem;">${escapeHtml(acsDisplay)}</td>
+      <td>${syncTag}</td>
+      <td style="text-align:center;"><button class="btn-del-cell" onclick="deleteRecord(${idx})" title="Delete Row">🗑️</button></td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+// Export to Excel (.xlsx) - Downloads central server survey records for the user's center
+async function exportToExcel() {
+  if (currentUser && normalizeClientRole(currentUser.role) === 'field_technician') {
+    showToast('Permission Denied: Field Technicians cannot download survey data.', false);
+    return;
+  }
+
+  // 1. Determine target center to export
+  let targetCenter = '';
+  if (centerSelect && centerSelect.value) {
+    targetCenter = centerSelect.value.trim();
+  } else if (currentUser && currentUser.assigned_center) {
+    targetCenter = currentUser.assigned_center.trim();
+  } else {
+    targetCenter = 'ALL';
+  }
+
+  // If user is assigned to multiple centers, provide option to download active center or all assigned centers
+  if (currentUser && currentUser.assigned_center && currentUser.assigned_center.includes(',')) {
+    const centersList = currentUser.assigned_center.split(',').map(s => s.trim()).filter(Boolean);
+    if (centersList.length > 1) {
+      const choice = confirm(`You have charge of multiple centers: ${centersList.join(', ')}.\n\n• Click OK to download all data for currently selected center "${targetCenter}".\n• Click Cancel to download combined data for ALL your assigned centers.`);
+      if (!choice) {
+        targetCenter = currentUser.assigned_center;
+      }
+    }
+  }
+
+  showToast(`Preparing Excel export for ${targetCenter}...`);
+
+  // 2. Online Mode: Stream live central survey data from Ubuntu Server SQLite database
+  if (isServerReachable) {
+    try {
+      const authToken = localStorage.getItem('gpon_auth_token') || (currentUser && currentUser.token) || '';
+      const headers = authToken ? { 'Authorization': `Bearer ${authToken}` } : {};
+      const exportUrl = `${serverUrl}/api/export-center-excel?center=${encodeURIComponent(targetCenter)}${authToken ? `&token=${encodeURIComponent(authToken)}` : ''}`;
+      const res = await fetch(exportUrl, { headers });
+      if (res.ok) {
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        const today = new Date().toISOString().slice(0, 10);
+        const safeCenterName = targetCenter.replace(/[\s,]+/g, '_');
+        a.download = `${safeCenterName}_Survey_Data_${today}.xlsx`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+        showToast(`Excel downloaded for Center: ${targetCenter}!`);
+        return;
+      } else {
+        const errJson = await res.json().catch(() => ({}));
+        showToast(errJson.detail || 'Server export error, trying local records...', false);
+      }
+    } catch (err) {
+      console.warn('Server export fetch failed, falling back to local storage:', err);
+    }
+  }
+
+  // 3. Offline Mode Fallback: Export local records saved on this device
+  let localExportRows = records;
+  if (targetCenter && targetCenter.toUpperCase() !== 'ALL') {
+    const targetCentersList = targetCenter.split(',').map(s => s.trim().toLowerCase());
+    const filtered = records.filter(r => r.Center && targetCentersList.includes(r.Center.trim().toLowerCase()));
+    if (filtered.length > 0) {
+      localExportRows = filtered;
+    }
+  }
+
+  if (!localExportRows || localExportRows.length === 0) {
+    showToast(`No records found for center: ${targetCenter}`, false);
+    return;
+  }
+
+  // Column headers matching standard target template
+  const headers = [
+    'Region', 'Center', 'RT Room', 'GPON/FTTH/WDM', 'OLT/Node  Name', 
+    'Port Number', 'KSEB Post Number', 'Land Mark', 'Enclosure Number', 
+    'Enclosure ID', 'Lat /Long', 'Splitter ID', 'Splitter Ratio', 
+    'No: Of Customer Connected', 'Splitter Out', 
+    'ADL Subscriber ID', 'ACS Subscriber ID', 'Date & Time'
+  ];
+
+  const rows = [
+    [], // Row 1 blank like original
+    headers
+  ];
+
+  localExportRows.forEach(r => {
+    const rawEid = (r["Enclosure ID"] || r.enclosure_id || "").trim();
+    const rawSpl = (r["Splitter ID"] || r.splitter_id || "").trim();
+    let formattedSpl = rawSpl;
+    if (rawSpl && rawEid) {
+      formattedSpl = rawSpl.toUpperCase().startsWith(rawEid.toUpperCase()) ? rawSpl : `${rawEid}${rawSpl}`;
+    }
+
+    rows.push([
+      r["Region"] || "Thrissur",
+      r["Center"] || "",
+      r["RT Room"] || "",
+      r["GPON/FTTH/WDM"] || "",
+      r["OLT/Node  Name"] || "",
+      r["Port Number"] || "",
+      r["KSEB Post Number"] || "",
+      r["Land Mark"] || "",
+      r["Enclosure Number"] || "",
+      rawEid,
+      r["Lat /Long"] || "",
+      formattedSpl,
+      r["Splitter Ratio"] || "",
+      r["No: Of Customer Connected"] || 0,
+      r["Splitter Out"] || r["Splitter Lead Colour Code"] || r["splitter_lead_color"] || "",
+      r["ADL Subscriber ID"] || r["adl_subscriber_id"] || "",
+      r["ACS Subscriber ID"] || r["acs_subscriber_id"] || "",
+      r["Date & Time"] || r["survey_date_time"] || (r["timestamp"] ? r["timestamp"].slice(0, 19).replace('T', ' ') : "")
+    ]);
+  });
+
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+
+  const today = new Date().toISOString().slice(0, 10);
+  const safeName = targetCenter.replace(/[\s,]+/g, '_');
+  XLSX.writeFile(wb, `${safeName}_Survey_Export_${today}.xlsx`);
+  showToast(`Offline Excel exported for ${targetCenter}!`);
+}
+
+let pendingDeleteIndex = null;
+
+function deleteRecord(index) {
+  if (index < 0 || index >= records.length) return;
+  pendingDeleteIndex = index;
+  const r = records[index];
+
+  const modal = document.getElementById('delete-confirm-modal');
+  const detailsEl = document.getElementById('delete-confirm-details');
+
+  if (!modal || !detailsEl) {
+    if (confirm('Are you sure you want to permanently delete this survey point from this device and the server?')) {
+      executeDeleteRecord(index);
+    }
+    return;
+  }
+
+  const eid = r["Enclosure ID"] || r.enclosure_id || '-';
+  const spl = r["Splitter ID"] || r.splitter_id || '-';
+  const post = r["KSEB Post Number"] || r.kseb_post_number || '-';
+  const lmark = r["Land Mark"] || r.landmark || '-';
+  const olt = r["OLT/Node  Name"] || r["OLT/Node Name"] || r.olt_name || '-';
+  const port = r["Port Number"] || r.port_number || '-';
+  const isSynced = r.sync_status === 'synced';
+
+  detailsEl.innerHTML = `
+    <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+      <span style="color:#7f1d1d;">Enclosure ID:</span>
+      <strong style="font-family:monospace; color:#991b1b;">${escapeHtml(eid)}</strong>
+    </div>
+    <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+      <span style="color:#7f1d1d;">Splitter:</span>
+      <strong style="color:#991b1b;">${escapeHtml(spl)} (${escapeHtml(r["Splitter Ratio"] || r.splitter_ratio || '-')})</strong>
+    </div>
+    <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+      <span style="color:#7f1d1d;">KSEB Post / Landmark:</span>
+      <strong style="color:#991b1b;">${escapeHtml(post)} / ${escapeHtml(lmark)}</strong>
+    </div>
+    <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+      <span style="color:#7f1d1d;">OLT / Port:</span>
+      <strong style="color:#991b1b;">${escapeHtml(olt)} [${escapeHtml(port)}]</strong>
+    </div>
+    <div style="display:flex; justify-content:space-between;">
+      <span style="color:#7f1d1d;">Server Status:</span>
+      <strong style="color:${isSynced ? '#059669' : '#d97706'};">${isSynced ? 'Synced on Server' : 'Pending Local Sync'}</strong>
+    </div>
+  `;
+
+  const confirmBtn = document.getElementById('btn-confirm-delete-action');
+  if (confirmBtn) {
+    confirmBtn.onclick = () => {
+      confirmDeleteRecord();
+    };
+  }
+
+  modal.style.display = 'flex';
+}
+
+function confirmDeleteRecord() {
+  if (pendingDeleteIndex !== null && pendingDeleteIndex !== undefined) {
+    const idx = pendingDeleteIndex;
+    closeDeleteConfirmModal();
+    executeDeleteRecord(idx);
+  }
+}
+
+function closeDeleteConfirmModal() {
+  const modal = document.getElementById('delete-confirm-modal');
+  if (modal) modal.style.display = 'none';
+  pendingDeleteIndex = null;
+}
+
+async function executeDeleteRecord(index) {
+  if (index === null || index < 0 || index >= records.length) {
+    closeDeleteConfirmModal();
+    return;
+  }
+  const r = records[index];
+  const clientUuid = r.client_uuid || '';
+  const eid = (r["Enclosure ID"] || r.enclosure_id || '').trim();
+  const spl = (r["Splitter ID"] || r.splitter_id || '').trim();
+  const col = (r["Splitter Lead Colour Code"] || r.splitter_lead_color || '').trim();
+
+  // Guarantee modal is closed immediately
+  closeDeleteConfirmModal();
+
+  try {
+    // 1. Remove from local array & localStorage
+    records.splice(index, 1);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+
+    // 2. Clear from local surveyed points cache so UI unlocks immediately
+    if (eid && spl) {
+      if (typeof networkSurveyedPoints !== 'undefined') {
+        const variants = getColorVariants(col);
+        variants.forEach(v => {
+          const k = `${eid}|${spl}|${v}`.toUpperCase();
+          delete networkSurveyedPoints[k];
+        });
+        const kEmpty = `${eid}|${spl}|`.toUpperCase();
+        if (!col) delete networkSurveyedPoints[kEmpty];
+
+        const splKey = `${eid}|${spl}`.toUpperCase();
+        if (networkSurveyedPoints[splKey]) {
+          const s = networkSurveyedPoints[splKey];
+          if (Array.isArray(s.leads)) {
+            const normC = col.toUpperCase();
+            s.leads = s.leads.filter(l => l !== normC);
+            s.count = s.leads.length;
+            if (s.count === 0 && !col) {
+              delete networkSurveyedPoints[splKey];
+            }
+          }
+        }
+        try {
+          localStorage.setItem('gpon_network_surveyed_points', JSON.stringify(networkSurveyedPoints));
+        } catch (quotaErr) {
+          console.warn('[Storage] Quota exceeded for surveyed points cache, keeping in-memory:', quotaErr);
+        }
+      }
+    }
+
+    // 3. Update UI
+    updateRecordsBadge();
+    updateSyncUI();
+    updateAvailableEnclosures();
+    updateAvailableSplitters();
+  } catch (err) {
+    console.error('Error during local record deletion:', err);
+  }
+
+  // 4. Send DELETE to server with both UUID and natural key fallback
+  let serverDeleted = false;
+  try {
+    const authToken = localStorage.getItem('gpon_auth_token') || (currentUser && currentUser.token) || '';
+    const headers = authToken ? { 'Authorization': `Bearer ${authToken}` } : {};
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
+
+    const uuidParam = encodeURIComponent(clientUuid || 'by-point');
+    const qParams = new URLSearchParams();
+    if (eid) qParams.append('enclosure_id', eid);
+    if (spl) qParams.append('splitter_id', spl);
+    if (col) qParams.append('splitter_lead_color', col);
+
+    const deleteUrl = `${serverUrl}/api/records/${uuidParam}?${qParams.toString()}`;
+    const res = await fetch(deleteUrl, {
+      method: 'DELETE',
+      headers: headers,
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+    if (res.ok) {
+      serverDeleted = true;
+    }
+  } catch (err) {
+    console.warn('[Delete] Could not delete from server right now (network offline):', err);
+  }
+
+  if (serverDeleted) {
+    showToast('✓ Record permanently deleted from device and server');
+    // Refresh surveyed points in background
+    if (typeof fetchSurveyedPoints === 'function') {
+      fetchSurveyedPoints().catch(() => {});
+    }
+  } else {
+    // Offline fallback: queue clientUuid for deletion on next server sync
+    if (clientUuid) {
+      let pendingDeletions = [];
+      try {
+        pendingDeletions = JSON.parse(localStorage.getItem('gpon_pending_deletions') || '[]');
+      } catch(e) { pendingDeletions = []; }
+      if (!pendingDeletions.includes(clientUuid)) {
+        pendingDeletions.push(clientUuid);
+        localStorage.setItem('gpon_pending_deletions', JSON.stringify(pendingDeletions));
+      }
+    }
+    showToast('✓ Record deleted locally (will delete from server when connected)');
+  }
+}
+
+// ==========================================
+// OFFLINE-FIRST SYNC ENGINE (UBUNTU SERVER)
+// ==========================================
+
+async function checkServerConnection() {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3500);
+    const res = await fetch(`${serverUrl}/api/health`, { signal: controller.signal });
+    clearTimeout(timeoutId);
+    if (res.ok) {
+      isServerReachable = true;
+      fetchSurveyedPoints(true);
+      const data = await res.json().catch(() => null);
+      if (data && data.hierarchy_version) {
+        // Only record the version as "known" when logged in, because fetchHierarchyFromServer() is auth-guarded
+        if (currentUser && (data.hierarchy_version !== lastKnownHierarchyVersion || !DEFAULT_PRELOAD.hierarchy || Object.keys(DEFAULT_PRELOAD.hierarchy).length === 0)) {
+          lastKnownHierarchyVersion = data.hierarchy_version;
+          localStorage.setItem('gpon_hierarchy_version', String(data.hierarchy_version));
+          fetchHierarchyFromServer();
+        }
+      } else if (!DEFAULT_PRELOAD.hierarchy || Object.keys(DEFAULT_PRELOAD.hierarchy).length === 0) {
+        fetchHierarchyFromServer();
+      }
+    } else {
+      isServerReachable = false;
+    }
+  } catch (err) {
+    isServerReachable = false;
+  } finally {
+    serverConnectionChecked = true;
+    updateSyncUI();
+  }
+}
+
+async function fetchHierarchyFromServer() {
+  if (!currentUser) return; // Guard: Never fetch hierarchy or populate dropdowns when unauthenticated
+  try {
+    const token = localStorage.getItem('gpon_auth_token') || '';
+    const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+    const res = await fetch(`${serverUrl}/api/hierarchy?t=${Date.now()}`, { headers });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.hierarchy && typeof data.hierarchy === 'object' && Object.keys(data.hierarchy).length > 0) {
+        const newStr = JSON.stringify(data.hierarchy);
+        const oldStr = localStorage.getItem('gpon_custom_hierarchy');
+        const hierEmpty = !DEFAULT_PRELOAD.hierarchy || Object.keys(DEFAULT_PRELOAD.hierarchy).length === 0;
+        if (newStr !== oldStr || hierEmpty) {
+          DEFAULT_PRELOAD.hierarchy = data.hierarchy;
+          localStorage.setItem('gpon_custom_hierarchy', newStr);
+          initDropdowns(true);
+        }
+      }
+    }
+  } catch (e) {}
+}
+
+async function refreshCurrentUserProfile() {
+  if (!currentUser || !currentUser.username) return;
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
+    const token = localStorage.getItem('gpon_auth_token') || '';
+    const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+    const res = await fetch(`${serverUrl}/api/user-profile?username=${encodeURIComponent(currentUser.username)}`, {
+      headers,
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.user) {
+        const oldRole = currentUser.role;
+        const oldCenters = currentUser.assigned_center;
+        const oldRegion = currentUser.assigned_region;
+        currentUser = data.user;
+        localStorage.setItem('gpon_logged_in_user', JSON.stringify(currentUser));
+        updateUserBar();
+        if (oldRole !== currentUser.role || oldCenters !== currentUser.assigned_center || oldRegion !== currentUser.assigned_region) {
+          initDropdowns();
+          console.log(`[Auth] User profile auto-refreshed from server. Role: ${currentUser.role}, Region: ${currentUser.assigned_region}`);
+        }
+      }
+    }
+  } catch (e) {
+    // Offline or server unreachable
+  }
+}
+
+function updateSyncUI() {
+  const badge = document.getElementById('sync-status-badge') || document.querySelector('.gs-doc-subtitle');
+  const dot = document.getElementById('sync-dot');
+  const text = document.getElementById('sync-text');
+  if (!text) return;
+
+  const unsyncedCount = records.filter(r => r.sync_status !== 'synced' && r.sync_status !== 'duplicate_skipped').length;
+  const duplicateSkippedCount = records.filter(r => r.sync_status === 'duplicate_skipped').length;
+
+  if (isSyncing) {
+    if (dot) dot.style.background = '#38bdf8';
+    text.innerText = 'Syncing with Server...';
+    if (badge) badge.title = 'Uploading survey records to Ubuntu server...';
+    return;
+  }
+
+  if (!serverConnectionChecked) {
+    if (dot) dot.style.background = '#f59e0b';
+    text.innerText = 'Checking server...';
+    if (badge) badge.title = 'Testing connection to Ubuntu server...';
+    return;
+  }
+
+  if (!isServerReachable) {
+    if (dot) dot.style.background = '#ef4444';
+    text.innerText = unsyncedCount > 0 
+      ? `Server Disconnected (${unsyncedCount} unsynced)` 
+      : 'Server Disconnected';
+    if (badge) badge.title = 'Ubuntu server unreachable / offline. Data is saved safely on your device. Tap to test connection.';
+  } else {
+    if (unsyncedCount === 0) {
+      if (dot) dot.style.background = '#10b981';
+      text.innerText = duplicateSkippedCount > 0 
+        ? `Server Connected (Synced ✓, ${duplicateSkippedCount} dupe skipped)` 
+        : 'Server Connected (Synced ✓)';
+      if (badge) badge.title = 'Connected to Ubuntu server. All records synced! Tap to re-check.';
+    } else {
+      if (dot) dot.style.background = '#0284c7';
+      text.innerText = `Server Connected (${unsyncedCount} unsynced)`;
+      if (badge) badge.title = `Connected to Ubuntu server. ${unsyncedCount} records ready to sync. Tap to sync now.`;
+    }
+  }
+}
+
+async function syncWithServer(silent = false) {
+  if (isSyncing) return;
+
+  // 1. Process queued offline deletions safely without overwriting concurrent in-flight deletions
+  let pendingDeletions = [];
+  try {
+    pendingDeletions = JSON.parse(localStorage.getItem('gpon_pending_deletions') || '[]');
+  } catch(e) { pendingDeletions = []; }
+
+  if (pendingDeletions.length > 0) {
+    try {
+      const syncToken = localStorage.getItem('gpon_auth_token') || '';
+      const delHeaders = { 'Content-Type': 'application/json' };
+      if (syncToken) delHeaders['Authorization'] = 'Bearer ' + syncToken;
+      const delRes = await fetch(`${serverUrl}/api/records/bulk-delete`, {
+        method: 'POST',
+        headers: delHeaders,
+        body: JSON.stringify({ uuids: pendingDeletions })
+      });
+      if (delRes.ok) {
+        let currentPending = [];
+        try { currentPending = JSON.parse(localStorage.getItem('gpon_pending_deletions') || '[]'); } catch(e){}
+        const sentSet = new Set(pendingDeletions);
+        const remaining = currentPending.filter(uuid => !sentSet.has(uuid));
+        if (remaining.length > 0) {
+          localStorage.setItem('gpon_pending_deletions', JSON.stringify(remaining));
+        } else {
+          localStorage.removeItem('gpon_pending_deletions');
+        }
+      }
+    } catch(err) {
+      console.warn('[Sync] Could not process pending deletions:', err);
+    }
+  }
+  
+  // 2. Filter un-synced records, excluding already rejected duplicates to prevent infinite retry loops
+  const pendingRecords = records.filter(r => r.sync_status !== 'synced' && r.sync_status !== 'duplicate_skipped');
+  if (pendingRecords.length === 0) {
+    if (!silent) showToast('All records are already synced with Ubuntu server!');
+    checkServerConnection();
+    updateRecordsBadge();
+    return;
+  }
+
+  isSyncing = true;
+  updateSyncUI();
+
+  try {
+    const formattedRecords = pendingRecords.map(r => ({
+      client_uuid: r.client_uuid,
+      region: r.Region || r.region || 'Thrissur',
+      center: r.Center || r.center || '',
+      rt_room: r['RT Room'] || r.rt_room || '',
+      technology: r['GPON/FTTH/WDM'] || r.technology || 'GPON',
+      olt_name: r['OLT/Node  Name'] || r['OLT/Node Name'] || r.olt_name || '',
+      port_number: r['Port Number'] || r.port_number || '',
+      kseb_post_number: r['KSEB Post Number'] || r.kseb_post_number || '',
+      landmark: r['Land Mark'] || r.landmark || '',
+      enclosure_number: r['Enclosure Number'] || r.enclosure_number || '',
+      enclosure_id: r['Enclosure ID'] || r.enclosure_id || '',
+      lat_long: r['Lat /Long'] || r['Lat/Long'] || r.lat_long || '',
+      splitter_id: r['Splitter ID'] || r.splitter_id || '',
+      splitter_ratio: r['Splitter Ratio'] || r.splitter_ratio || '',
+      customers_connected: r['No: Of Customer Connected'] || r['No: of Customer Connected'] || r.customers_connected || 0,
+      splitter_lead_color: r['Splitter Lead Colour Code'] || r.splitter_lead_color || '',
+      adl_subscriber_id: r['ADL Subscriber ID'] || r.adl_subscriber_id || '',
+      acs_subscriber_id: r['ACS Subscriber ID'] || r.acs_subscriber_id || '',
+      survey_date_time: r['Date & Time'] || r.survey_date_time || r.timestamp || '',
+      device_id: deviceId,
+      surveyor_username: r.surveyor_username || (currentUser ? currentUser.username : ''),
+      surveyor_name: r.surveyor_name || (currentUser ? currentUser.full_name : ''),
+      created_at: r.timestamp || r.created_at || r['Date & Time'] || ''
+    }));
+
+    const syncToken = localStorage.getItem('gpon_auth_token') || '';
+    const syncHeaders = { 'Content-Type': 'application/json' };
+    if (syncToken) syncHeaders['Authorization'] = 'Bearer ' + syncToken;
+
+    // 3. Batch processing (25 records per chunk) with 25s timeout for resilient field 2G/3G sync
+    const BATCH_SIZE = 25;
+    let totalSyncedCount = 0;
+    let totalSkippedCount = 0;
+
+    for (let i = 0; i < formattedRecords.length; i += BATCH_SIZE) {
+      const batch = formattedRecords.slice(i, i + BATCH_SIZE);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 25000); // 25s for slow mobile networks
+
+      try {
+        const res = await fetch(`${serverUrl}/api/sync`, {
+          method: 'POST',
+          headers: syncHeaders,
+          body: JSON.stringify({
+            device_id: deviceId,
+            records: batch
+          }),
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+
+        if (res.ok) {
+          const data = await res.json();
+          const syncedIds = new Set(data.synced_uuids || []);
+          const skippedDupes = data.skipped_duplicates || [];
+          const skippedIds = new Set(skippedDupes.map(d => d.client_uuid));
+
+          records.forEach(r => {
+            if (syncedIds.has(r.client_uuid)) {
+              r.sync_status = 'synced';
+            } else if (skippedIds.has(r.client_uuid)) {
+              r.sync_status = 'duplicate_skipped';
+            }
+          });
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+          totalSyncedCount += syncedIds.size;
+          totalSkippedCount += skippedDupes.length;
+          isServerReachable = true;
+        } else if (res.status === 401) {
+          isServerReachable = true;
+          serverConnectionChecked = true;
+          showToast('⚠️ Session expired. Please log in again to sync records.', false);
+          break;
+        } else {
+          isServerReachable = false;
+          serverConnectionChecked = true;
+          if (!silent) showToast(`Server returned error ${res.status}. Data is safe locally.`, false);
+          break;
+        }
+      } catch (batchErr) {
+        clearTimeout(timeoutId);
+        isServerReachable = false;
+        serverConnectionChecked = true;
+        if (!silent) showToast('Network timeout or connection lost. Data is stored safely on phone.', false);
+        break;
+      }
+    }
+
+    if (totalSyncedCount > 0 || totalSkippedCount > 0) {
+      const modalSyncBadge = document.getElementById('confirm-sync-status-badge');
+      if (modalSyncBadge) {
+        modalSyncBadge.innerHTML = '<span style="color:#10b981; font-weight:700;">☁️ Synced to Server ✓</span>';
+      }
+
+      if (totalSkippedCount > 0) {
+        showToast(`⚠️ ${totalSkippedCount} duplicate record(s) rejected by server (already surveyed).`, false);
+      }
+      if (totalSyncedCount > 0 && !silent) {
+        showToast(`Synced ${totalSyncedCount} records with Ubuntu server!`);
+      }
+
+      fetchSurveyedPoints(true);
+      updateRecordsBadge();
+    }
+  } catch (err) {
+    isServerReachable = false;
+    serverConnectionChecked = true;
+    if (!silent) showToast('Could not reach server. Data is stored safely on phone.', false);
+  } finally {
+    isSyncing = false;
+    serverConnectionChecked = true;
+    updateSyncUI();
+    updateRecordsBadge();
+  }
+}
+
+async function triggerManualSync() {
+  await checkServerConnection();
+  refreshCurrentUserProfile();
+  syncWithServer(false);
+}
+
+// Register Service Worker for Offline PWA
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js')
+      .then(reg => {
+        console.log('SW registered successfully:', reg.scope);
+        reg.update();
+      })
+      .catch(err => console.log('SW registration failed:', err));
+  });
+}
+
+// Auto-Sync Listeners
+window.addEventListener('online', () => {
+  showToast('Internet connected. Checking server...');
+  checkServerConnection();
+  syncWithServer(true);
+});
+
+window.addEventListener('offline', () => {
+  isServerReachable = false;
+  serverConnectionChecked = true;
+  updateSyncUI();
+});
+
+// Init App Lifecycle
+function bootApp() {
+  // Ensure Submit button label is strictly set to 'Submit'
+  const submitBtnEl = document.getElementById('btn-save-record') || document.querySelector('.btn-add-row');
+  if (submitBtnEl) {
+    submitBtnEl.innerHTML = '<span>➕</span> Submit';
+  }
+
+  // Pre-fill username if remembered
+  const isRemembered = localStorage.getItem('gpon_remember_creds') === 'true';
+  const savedU = localStorage.getItem('gpon_remembered_username') || '';
+  const uInput = document.getElementById('login-username');
+  const rCheckbox = document.getElementById('login-remember-me');
+  if (uInput && savedU) uInput.value = savedU;
+  if (rCheckbox && localStorage.getItem('gpon_remember_creds') !== null) {
+    rCheckbox.checked = isRemembered;
+  }
+  // Purge any legacy plaintext passwords stored previously
+  localStorage.removeItem('gpon_remembered_password');
+
+  // Check Login State
+  if (!currentUser) {
+    showLoginOverlay();
+  } else {
+    hideLoginOverlay();
+    updateUserBar();
+    refreshCurrentUserProfile();
+    initDropdowns();
+    fetchSurveyedPoints();
+    scheduleMidnightLogout();
+    if (!DEFAULT_PRELOAD.hierarchy || Object.keys(DEFAULT_PRELOAD.hierarchy).length === 0) {
+      fetchHierarchyFromServer();
+    }
+  }
+
+  updateSubscriberInputsState();
+  updateRecordsBadge();
+  updateSyncUI();
+  checkServerConnection();
+}
+
+// Ensure bootApp executes regardless of whether DOMContentLoaded already fired
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', bootApp);
+} else {
+  bootApp();
+}
+
+// Smart Lightweight Heartbeat: Periodic background check (every 20 seconds, active tab only)
+setInterval(() => {
+  // If phone is locked or surveyor switched apps, pause heartbeat to save phone battery & data
+  if (document.visibilityState !== 'visible') return;
+
+  checkMidnightExpiration();
+  checkServerConnection();
+  if (isServerReachable && records.some(r => r.sync_status !== 'synced')) {
+    syncWithServer(true);
+  }
+}, 20000);
+
+// Live auto-refresh when surveyor returns to the app
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    checkMidnightExpiration();
+    checkServerConnection();
+    refreshCurrentUserProfile();
+  }
+});
+window.addEventListener('focus', () => {
+  checkMidnightExpiration();
+  checkServerConnection();
+  refreshCurrentUserProfile();
+});
